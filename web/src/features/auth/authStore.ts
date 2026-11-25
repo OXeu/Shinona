@@ -3,24 +3,33 @@ import { ref } from 'vue'
 
 import { requestJSON } from '../../shared/http'
 
-interface User {
+export interface User {
   id: string
   email: string
+  loginEmail: string
+  name: string
   avatarUrl?: string
+  hasAvatar: boolean
+  hasPassword: boolean
+  admin: boolean
+  disabled: boolean
 }
 
-interface AuthSession {
+export interface AuthSession {
   user: User | null
   oauthEnabled: boolean
+  emailEnabled: boolean
 }
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const oauthEnabled = ref(false)
+  const emailEnabled = ref(false)
 
   function apply(session: AuthSession) {
     user.value = session.user
     oauthEnabled.value = session.oauthEnabled
+    emailEnabled.value = session.emailEnabled
   }
 
   async function refresh() {
@@ -36,5 +45,5 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
   }
 
-  return { user, oauthEnabled, refresh, signIn, signOut }
+  return { user, oauthEnabled, emailEnabled, apply, refresh, signIn, signOut }
 })

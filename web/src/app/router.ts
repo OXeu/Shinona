@@ -13,6 +13,8 @@ export const router = createRouter({
     { path: '/sessions/:id', name: 'session', props: true, component: agent },
     { path: '/pinned/:id', redirect: (to) => ({ name: 'session', params: { id: to.params.id } }) },
     { path: '/settings', name: 'settings', component: () => import('../features/sessions/SettingsView.vue') },
+    { path: '/account', name: 'account', component: () => import('../features/auth/AccountView.vue') },
+    { path: '/admin/users', name: 'admin-users', meta: { admin: true }, component: () => import('../features/auth/AdminUsersView.vue') },
     { path: '/:pathMatch(.*)*', redirect: { name: 'sessions' } },
   ],
 })
@@ -32,4 +34,5 @@ router.beforeEach(async (to) => {
   }
   sessions.useAccount(auth.user?.id)
   if (!auth.user) return { name: 'login' }
+  if (to.meta.admin && !auth.user.admin) return { name: 'account' }
 })

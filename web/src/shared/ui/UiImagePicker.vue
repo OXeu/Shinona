@@ -2,7 +2,7 @@
 import { useTemplateRef } from 'vue'
 import UiIconButton from './UiIconButton.vue'
 
-defineProps<{ label: string; disabled?: boolean }>()
+withDefaults(defineProps<{ label: string; disabled?: boolean; multiple?: boolean }>(), { multiple: true })
 const emit = defineEmits<{ files: [files: File[]] }>()
 const input = useTemplateRef('input')
 
@@ -18,7 +18,7 @@ function selected(event: Event) {
     ref="input"
     type="file"
     accept="image/png,image/jpeg,image/webp"
-    multiple
+    :multiple="multiple"
     hidden
     @change="selected"
   >

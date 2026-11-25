@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from '../features/auth/authStore'
 import { t } from '../shared/i18n'
@@ -12,13 +12,14 @@ import { UiBox, UiButton, UiImage, UiInline, UiNav } from '../shared/ui/elements
 const props = defineProps<{ collapsed: boolean; compact: boolean; signingOut: boolean }>()
 const emit = defineEmits<{ toggle: []; signOut: [] }>()
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 
 const links = [
   { name: 'sessions', key: 'nav.agent', icon: 'chat-3-line', routes: ['sessions', 'session'] },
   { name: 'settings', key: 'nav.settings', icon: 'settings-3-line', routes: ['settings'] },
 ] as const
-const name = computed(() => auth.user?.email.split('@')[0] || t('common.account'))
+const name = computed(() => auth.user?.name || auth.user?.email.split('@')[0] || t('common.account'))
 const initials = computed(() => name.value.slice(0, 2).toUpperCase())
 const collapseLabel = computed(() => t(props.collapsed ? 'nav.expandNavigation' : 'nav.collapseNavigation'))
 </script>
@@ -66,6 +67,12 @@ const collapseLabel = computed(() => t(props.collapsed ? 'nav.expandNavigation' 
         </template>
         <template #default="{ close }">
           <UiInline class="account-description">{{ auth.user?.email || name }}</UiInline>
+          <UiButton class="menu-item" @click="close(); router.push({ name: 'account' })">
+            <UiIcon name="user-settings-line" /> {{ t('account.title') }}
+          </UiButton>
+          <UiButton class="menu-item" :hidden="!auth.user?.admin" @click="close(); router.push({ name: 'admin-users' })">
+            <UiIcon name="group-line" /> {{ t('adminUsers.title') }}
+          </UiButton>
           <UiButton class="menu-item" :disabled="signingOut" @click="close(); emit('signOut')">
             <UiIcon name="logout-box-r-line" /> {{ t('auth.signOut') }}
           </UiButton>

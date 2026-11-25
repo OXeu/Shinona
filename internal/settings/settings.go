@@ -15,6 +15,8 @@ const (
 	OAuthIssuer   Key = "oauthIssuer"
 	OAuthClientID Key = "oauthClientId"
 	OAuthSecret   Key = "oauthClientSecret"
+	MailAPIKey    Key = "mailApiKey"
+	MailFrom      Key = "mailFrom"
 	ModelBaseURL  Key = "modelBaseUrl"
 	MCPServers    Key = "mcpServers"
 	ModelID       Key = "modelId"
@@ -39,6 +41,8 @@ var definitions = []definition{
 	{key: OAuthIssuer, env: "SHINONA_OAUTH_ISSUER"},
 	{key: OAuthClientID, env: "SHINONA_OAUTH_CLIENT_ID"},
 	{key: OAuthSecret, env: "SHINONA_OAUTH_CLIENT_SECRET", secret: true},
+	{key: MailAPIKey, env: "SHINONA_RESEND_API_KEY", secret: true},
+	{key: MailFrom, env: "SHINONA_RESEND_FROM"},
 	{key: ModelBaseURL, model: true},
 	{key: MCPServers, secret: true},
 	{key: ModelID, model: true},

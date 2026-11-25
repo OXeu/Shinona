@@ -86,30 +86,37 @@ func (p *Provider) Exchange(ctx context.Context, code string, flow auth.Flow) (a
 	if claims.EmailVerified {
 		identity.Email = claims.Email
 	}
-	identity.AvatarURL = pictureURL(verified)
+	identity.Name, identity.AvatarURL = profileClaims(verified)
 	if identity.AvatarURL == "" && token.AccessToken != "" {
 		userinfo := timing.Start(ctx, "oidc_userinfo")
 		info, err := p.metadata.UserInfo(ctx, oauth2.StaticTokenSource(token))
 		userinfo()
 		if err == nil && info.Subject == verified.Subject {
-			identity.AvatarURL = pictureURL(info)
+			name, avatarURL := profileClaims(info)
+			if identity.Name == "" {
+				identity.Name = name
+			}
+			if identity.AvatarURL == "" {
+				identity.AvatarURL = avatarURL
+			}
 		}
 	}
 	return identity, nil
 }
 
-func pictureURL(claims interface{ Claims(any) error }) string {
+func profileClaims(claims interface{ Claims(any) error }) (string, string) {
 	var profile struct {
+		Name    string `json:"name"`
 		Picture string `json:"picture"`
 	}
 	if err := claims.Claims(&profile); err != nil {
-		return ""
+		return "", ""
 	}
 	image, err := url.Parse(profile.Picture)
 	if err != nil || image.Hostname() == "" || image.User != nil || (image.Scheme != "https" && image.Scheme != "http") {
-		return ""
+		return profile.Name, ""
 	}
-	return image.String()
+	return profile.Name, image.String()
 }
 
 func (p *Provider) verifyToken(ctx context.Context, raw string) (*core.IDToken, error) {

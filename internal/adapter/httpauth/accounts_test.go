@@ -1,0 +1,215 @@
+package httpauth_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"image"
+	"image/png"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/OXeu/shinona/internal/adapter/httpauth"
+	"github.com/OXeu/shinona/internal/adapter/sqlite"
+	"github.com/OXeu/shinona/internal/auth"
+)
+
+type verificationMail struct{ email, code, id string }
+
+func (m *verificationMail) SendVerification(_ context.Context, email, code, id string) error {
+	m.email, m.code, m.id = email, code, id
+	return nil
+}
+
+type testHasher struct{}
+
+func (testHasher) Hash(value string) []byte             { return []byte(value) }
+func (testHasher) Match(value string, hash []byte) bool { return value == string(hash) }
+
+func accountFixture(t *testing.T, mailer auth.VerificationMailer) (*sqlite.Repository, *auth.Service, *http.ServeMux) {
+	t.Helper()
+	repo, err := sqlite.Open(t.Context(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repo.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	service := auth.New(repo, testHasher{}, uuid.NewString)
+	mux := http.NewServeMux()
+	handler := httpauth.NewWithConfig(service, func() httpauth.Config {
+		return httpauth.Config{Mailer: mailer}
+	}, slog.New(slog.DiscardHandler))
+	handler.Routes(mux, http.NewCrossOriginProtection().Handler)
+	return repo, service, mux
+}
+
+func accountCookie(t *testing.T, service *auth.Service, user auth.User) *http.Cookie {
+	t.Helper()
+	token, err := service.StartSession(t.Context(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Cookie{Name: "shinona_session", Value: token}
+}
+
+func accountResponse(t *testing.T, response *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	assertStatus(t, response, http.StatusOK)
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func assertAccountError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	assertStatus(t, response, status)
+	if got := response.Header().Get("X-Shinona-Error-Code"); got != code {
+		t.Fatalf("error code %q, expected %q", got, code)
+	}
+}
+
+func TestOAuthAccountCanBindEmailAndSetPassword(t *testing.T) {
+	mail := &verificationMail{}
+	_, service, mux := accountFixture(t, mail)
+	identity := auth.Identity{Issuer: "https://idp.example", Subject: "example", Email: "sso@example.com", Name: "SSO Name"}
+	user, err := service.OAuthUser(t.Context(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := accountCookie(t, service, user)
+	other := accountCookie(t, service, user)
+	const email = "member@example.com"
+	const password = "a-good-test-password"
+	assertAccountError(t, perform(t, mux, "POST", "/auth/account/password", `{"password":"`+password+`"}`, current),
+		http.StatusBadRequest, "ACCOUNT_BIND_EMAIL")
+	sent := accountResponse(t, perform(t, mux, "POST", "/auth/account/email/start", `{"email":"MEMBER@example.com"}`, current))
+	if got := sent["request"]; got != mail.id || mail.email != email || len(mail.code) != 8 || sent["code"] != nil {
+		t.Fatalf("unexpected verification result: %#v", sent)
+	}
+	assertAccountError(t, perform(t, mux, "POST", "/auth/account/email/start", `{"email":"other@example.com"}`, current),
+		http.StatusTooManyRequests, "ACCOUNT_EMAIL_WAIT")
+	verify := `{"request":"` + mail.id + `","code":"` + mail.code + `"}`
+	assertAccountError(t, perform(t, mux, "POST", "/auth/account/email/verify", verify, other),
+		http.StatusBadRequest, "ACCOUNT_EMAIL_CODE")
+	wrongCode := "00000000"
+	if wrongCode == mail.code {
+		wrongCode = "00000001"
+	}
+	assertAccountError(t, perform(t, mux, "POST", "/auth/account/email/verify", `{"request":"`+mail.id+`","code":"`+wrongCode+`"}`, current),
+		http.StatusBadRequest, "ACCOUNT_EMAIL_CODE")
+	assertStatus(t, perform(t, mux, "POST", "/auth/account/email/verify", verify, current), http.StatusOK)
+	assertAccountError(t, perform(t, mux, "POST", "/auth/account/email/verify", verify, current),
+		http.StatusBadRequest, "ACCOUNT_EMAIL_CODE")
+	assertStatus(t, perform(t, mux, "GET", "/auth/admin/users", "", other), http.StatusUnauthorized)
+	assertStatus(t, perform(t, mux, "POST", "/auth/account/password", `{"password":"`+password+`"}`, current), http.StatusOK)
+	login := perform(t, mux, "POST", "/auth/password", `{"email":"`+email+`","password":"`+password+`"}`)
+	assertStatus(t, login, http.StatusOK)
+	assertAvatar(t, mux, login.Result().Cookies()[0], user.ID, "")
+	linked, err := service.OAuthUser(t.Context(), identity)
+	if err != nil || linked.ID != user.ID || linked.LoginEmail != email {
+		t.Fatalf("OAuth account changed: %+v, %v", linked, err)
+	}
+}
+
+func TestPasswordChangeRevokesOtherSessions(t *testing.T) {
+	_, service, mux := accountFixture(t, nil)
+	const email = "local@example.com"
+	const password = "a-good-test-password"
+	user, err := service.CreatePasswordUser(t.Context(), email, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, other := accountCookie(t, service, user), accountCookie(t, service, user)
+	assertAccountError(t, perform(t, mux, "POST", "/auth/account/password", `{"currentPassword":"bad","password":"new-password-42"}`, current),
+		http.StatusForbidden, "ACCOUNT_PASSWORD_INCORRECT")
+	assertStatus(t, perform(t, mux, "POST", "/auth/account/password", `{"currentPassword":"`+password+`","password":"new-password-42"}`, current), http.StatusOK)
+	assertStatus(t, perform(t, mux, "POST", "/auth/account/profile", `{"name":"Revoked"}`, other), http.StatusUnauthorized)
+	assertStatus(t, perform(t, mux, "POST", "/auth/password", `{"email":"`+email+`","password":"`+password+`"}`), http.StatusUnauthorized)
+	assertStatus(t, perform(t, mux, "POST", "/auth/password", `{"email":"`+email+`","password":"new-password-42"}`), http.StatusOK)
+	assertAvatar(t, mux, current, user.ID, "")
+}
+
+func TestAccountProfileAndAdminAccess(t *testing.T) {
+	repo, service, mux := accountFixture(t, nil)
+	member, err := service.OAuthUser(t.Context(), auth.Identity{
+		Issuer: "https://idp.example", Subject: "member", Email: "member@example.com", AvatarURL: tokenAvatar,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := service.CreatePasswordUser(t.Context(), "admin@example.com", "admin-password-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetAdmin(t.Context(), admin.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	memberCookie, adminCookie := accountCookie(t, service, member), accountCookie(t, service, admin)
+	assertAccountError(t, perform(t, mux, "GET", "/auth/admin/users", "", memberCookie), http.StatusForbidden, "ADMIN_REQUIRED")
+	assertAccountError(t, perform(t, mux, "POST", "/auth/admin/users/"+admin.ID+"/access", `{"disabled":true}`, memberCookie),
+		http.StatusForbidden, "ADMIN_REQUIRED")
+	assertAccountError(t, perform(t, mux, "POST", "/auth/admin/users/"+admin.ID+"/access", `{"disabled":true}`, adminCookie),
+		http.StatusForbidden, "ACCOUNT_ADMIN_SELF")
+	created := accountResponse(t, perform(t, mux, "POST", "/auth/admin/users",
+		`{"email":"created@example.com","name":"Created user","password":"created-password-42"}`, adminCookie))
+	if created["name"] != "Created user" || created["admin"] != false || created["hasPassword"] != true {
+		t.Fatalf("unexpected created user: %+v", created)
+	}
+	var pngData bytes.Buffer
+	if err := png.Encode(&pngData, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"name":"  New Name  ","avatar":"` + base64.StdEncoding.EncodeToString(pngData.Bytes()) + `"}`
+	payload := accountResponse(t, perform(t, mux, "POST", "/auth/account/profile", body, memberCookie))
+	profile, ok := payload["user"].(map[string]any)
+	if !ok || profile["name"] != "New Name" || profile["hasAvatar"] != true {
+		t.Fatalf("profile did not update: %+v", payload)
+	}
+	avatar, ok := profile["avatarUrl"].(string)
+	if !ok || avatar == "" {
+		t.Fatalf("missing avatar URL: %+v", profile)
+	}
+	imageResponse := perform(t, mux, "GET", avatar, "", adminCookie)
+	assertStatus(t, imageResponse, http.StatusOK)
+	if imageResponse.Header().Get("Content-Type") != "image/png" || !bytes.Equal(imageResponse.Body.Bytes(), pngData.Bytes()) {
+		t.Fatal("avatar response does not match upload")
+	}
+	list := accountResponse(t, perform(t, mux, "GET", "/auth/admin/users?search=New+Name", "", adminCookie))
+	if list["total"] != float64(1) {
+		t.Fatalf("unexpected filtered list: %+v", list)
+	}
+	literal := accountResponse(t, perform(t, mux, "GET", "/auth/admin/users?search=%25", "", adminCookie))
+	if literal["total"] != float64(0) {
+		t.Fatal("search interpreted % as a wildcard")
+	}
+	accessPath := "/auth/admin/users/" + member.ID + "/access"
+	assertStatus(t, perform(t, mux, "POST", accessPath, `{"admin":true}`, adminCookie), http.StatusOK)
+	assertStatus(t, perform(t, mux, "GET", "/auth/admin/users", "", memberCookie), http.StatusOK)
+	assertStatus(t, perform(t, mux, "POST", accessPath, `{"admin":false}`, adminCookie), http.StatusOK)
+	assertAccountError(t, perform(t, mux, "GET", "/auth/admin/users", "", memberCookie), http.StatusForbidden, "ADMIN_REQUIRED")
+	assertStatus(t, perform(t, mux, "POST", accessPath, `{"disabled":true}`, adminCookie), http.StatusOK)
+	assertStatus(t, perform(t, mux, "POST", "/auth/account/profile", body, memberCookie), http.StatusUnauthorized)
+	identity := auth.Identity{Issuer: "https://idp.example", Subject: "member", Name: "Original", AvatarURL: userInfoAvatar}
+	if _, err := service.OAuthUser(t.Context(), identity); err == nil {
+		t.Fatal("disabled user could log in via OAuth")
+	}
+	assertStatus(t, perform(t, mux, "POST", accessPath, `{"disabled":false}`, adminCookie), http.StatusOK)
+	restored, err := service.OAuthUser(t.Context(), identity)
+	if err != nil || restored.Name != "New Name" || restored.AvatarURL != avatar {
+		t.Fatalf("custom profile did not survive OAuth login: %+v, %v", restored, err)
+	}
+	restoredCookie := accountCookie(t, service, restored)
+	assertStatus(t, perform(t, mux, "POST", "/auth/account/profile", `{"name":"New Name","removeAvatar":true}`, restoredCookie), http.StatusOK)
+	assertAvatar(t, mux, restoredCookie, member.ID, userInfoAvatar)
+	assertStatus(t, perform(t, mux, "GET", avatar, "", adminCookie), http.StatusNotFound)
+}

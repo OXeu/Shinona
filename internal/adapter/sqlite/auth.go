@@ -12,18 +12,30 @@ import (
 )
 
 type userRow struct {
-	ID           string `gorm:"primaryKey"`
-	Email        string `gorm:"not null"`
-	AvatarURL    string
-	Login        *string `gorm:"uniqueIndex"`
-	PasswordHash []byte
-	Admin        bool
+	ID            string `gorm:"primaryKey"`
+	Email         string `gorm:"not null"`
+	Name          string
+	AvatarURL     string
+	AvatarVersion string
+	Login         *string `gorm:"uniqueIndex"`
+	PasswordHash  []byte
+	Admin         bool
+	Disabled      bool `gorm:"not null;default:false"`
 }
 
 func (userRow) TableName() string { return "users" }
 
 func (row userRow) user() auth.User {
-	return auth.User{ID: row.ID, Email: row.Email, AvatarURL: row.AvatarURL, Admin: row.Admin}
+	user := auth.User{ID: row.ID, Email: row.Email, Name: row.Name, AvatarURL: row.AvatarURL,
+		HasPassword: len(row.PasswordHash) > 0, Admin: row.Admin, Disabled: row.Disabled}
+	if row.Login != nil {
+		user.LoginEmail = *row.Login
+	}
+	if row.AvatarVersion != "" {
+		user.HasAvatar = true
+		user.AvatarURL = "/auth/account/avatar/" + row.ID + "/" + row.AvatarVersion
+	}
+	return user
 }
 
 type identityRow struct {
@@ -36,7 +48,7 @@ func (identityRow) TableName() string { return "oauth_identities" }
 
 type loginRow struct {
 	Key       string    `gorm:"primaryKey"`
-	OwnerID   string    `gorm:"not null"`
+	OwnerID   string    `gorm:"not null;index"`
 	ExpiresAt time.Time `gorm:"not null;index"`
 }
 
@@ -53,8 +65,9 @@ type flowRow struct {
 func (flowRow) TableName() string { return "oauth_flows" }
 
 func (r *Repository) CreatePasswordUser(ctx context.Context, user auth.User, hash []byte) error {
-	login := user.Email
-	return r.db.WithContext(ctx).Create(&userRow{ID: user.ID, Email: user.Email, Login: &login, PasswordHash: hash}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return createPasswordAccount(tx, user, hash)
+	})
 }
 
 func (r *Repository) PasswordUser(ctx context.Context, email string) (auth.User, []byte, error) {
@@ -75,15 +88,16 @@ func (r *Repository) OAuthUser(ctx context.Context, identity auth.Identity, id s
 			if err := tx.First(&user, "id = ?", record.OwnerID).Error; err != nil {
 				return err
 			}
-			if user.AvatarURL == identity.AvatarURL {
+			if user.Disabled || user.AvatarURL == identity.AvatarURL {
 				return nil
 			}
-			return tx.Model(&user).Update("avatar_url", identity.AvatarURL).Error
+			user.AvatarURL = identity.AvatarURL
+			return tx.Model(&user).Update("avatar_url", user.AvatarURL).Error
 		}
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		user = userRow{ID: id, Email: identity.Email, AvatarURL: identity.AvatarURL}
+		user = userRow{ID: id, Email: identity.Email, Name: identity.Name, AvatarURL: identity.AvatarURL}
 		if err := tx.Create(&user).Error; err != nil {
 			return err
 		}
@@ -94,6 +108,10 @@ func (r *Repository) OAuthUser(ctx context.Context, identity auth.Identity, id s
 
 func (r *Repository) SaveSession(ctx context.Context, key, ownerID string, expiresAt time.Time) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account userRow
+		if err := readEnabledAccount(tx, ownerID, &account); err != nil {
+			return err
+		}
 		if err := tx.Where("expires_at <= ?", time.Now().UTC()).Delete(&loginRow{}).Error; err != nil {
 			return err
 		}
@@ -105,7 +123,7 @@ func (r *Repository) SessionUser(ctx context.Context, key string, now time.Time)
 	var user userRow
 	err := r.db.WithContext(ctx).
 		Joins("JOIN login_sessions ON login_sessions.owner_id = users.id").
-		First(&user, "login_sessions.key = ? AND login_sessions.expires_at > ?", key, now).Error
+		First(&user, "login_sessions.key = ? AND login_sessions.expires_at > ? AND users.disabled = ?", key, now, false).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}

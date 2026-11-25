@@ -67,7 +67,7 @@ Use **Revert message** under a user prompt once the session is idle. Confirm to 
 
 ## Authentication
 
-Password accounts are created by an operator and use Argon2id. Passwords must be 12–128 bytes. Login uses revocable, seven-day, HTTP-only cookies with SameSite Lax. An HTTPS `SHINONA_WEB_ORIGIN` enables secure cookies. HTTP origins are accepted on loopback or an explicitly configured private IP address. The API requires sign-in for GraphQL, scopes sessions and preferences by account ID, and requires same-origin browser requests for JSON mutations.
+Password login uses Argon2id and requires a password of 12–128 bytes. Login uses revocable, seven-day, HTTP-only cookies with SameSite Lax. An HTTPS `SHINONA_WEB_ORIGIN` enables secure cookies. HTTP origins are accepted on loopback or an explicitly configured private IP address. The API requires sign-in for GraphQL, scopes sessions and preferences by account ID, and requires same-origin browser requests for JSON mutations.
 
 Configure OpenID Connect in **Settings → Shinona SSO** and register the callback with the issuer. The corresponding startup variables are listed below. Clear the issuer, client ID, and secret together to disable OAuth.
 
@@ -78,7 +78,19 @@ Configure OpenID Connect in **Settings → Shinona SSO** and register the callba
 | `SHINONA_OAUTH_CLIENT_ID`, `SHINONA_OAUTH_CLIENT_SECRET` | The provider's confidential web client credentials. |
 | Callback URL | Append `/auth/oauth/callback` to `SHINONA_WEB_ORIGIN`. Open the app from that exact origin. |
 
-OAuth uses the authorization-code flow with PKCE, state, and nonce checks. A verified issuer and subject identify each OAuth account. Matching email addresses on password and OAuth accounts remain separate. OAuth accounts are created on first sign-in. Password reset, linking, invitations, and account administration screens are outside this pass. [OpenID Connect Go library](https://github.com/coreos/go-oidc)
+OAuth uses the authorization-code flow with PKCE, state, and nonce checks. A verified issuer and subject identify each OAuth account. Matching email addresses on password and OAuth accounts remain separate. OAuth accounts are created on first sign-in. [OpenID Connect Go library](https://github.com/coreos/go-oidc)
+
+### Account
+
+Open **Account** from the avatar menu to edit the nickname or upload a PNG, JPEG, or WebP avatar up to 512 KiB. Resetting an uploaded avatar restores the OAuth profile picture when available. Each account can bind one email address for password sign-in.
+
+To bind or change a sign-in email, enter the code from the new mailbox. The code lasts 10 minutes and allows five attempts. Changing credentials requires the current password or, for an account with only OAuth, a sign-in from the last 15 minutes. After the email is verified, an OAuth account can set its first password. Changing the sign-in email or password revokes other login sessions.
+
+Configure **Settings → Email delivery** with a Resend API key and a sender address on a verified domain to enable email binding. The startup fallbacks are `SHINONA_RESEND_API_KEY` and `SHINONA_RESEND_FROM`.
+
+### User management
+
+Grant the first super administrator role with `shinona grant-admin USER_ID`. Super administrators can open **User management** from the avatar menu to search accounts, create password users, grant or revoke administrator access, and disable or re-enable other users. A disabled account loses its login sessions and keeps its projects and conversation history.
 
 ## Sandboxes
 

@@ -14,7 +14,7 @@ import type { McpSettings } from './mcpSettingsApi'
 import { settingsApi } from './settingsApi'
 import type { SettingField } from './settingsApi'
 
-type Section = 'preferences' | 'model' | 'sandbox' | 'mcp' | 'oauth'
+type Section = 'preferences' | 'model' | 'sandbox' | 'mcp' | 'oauth' | 'mail'
 
 const savingInstance = ref(false)
 const fields = ref<SettingField[]>([])
@@ -32,6 +32,7 @@ const sections = computed(() => {
     { id: 'sandbox', label: t('workspace.sandbox'), visible: administrator },
     { id: 'mcp', label: t('composer.mcp'), visible: mcp.value !== null },
     { id: 'oauth', label: t('auth.oauth'), visible: administrator },
+    { id: 'mail', label: t('settings.mail'), visible: administrator },
   ]
   return entries.filter(({ visible }) => visible)
 })

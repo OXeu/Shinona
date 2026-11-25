@@ -28,6 +28,7 @@ type OAuthProvider interface {
 
 type Config struct {
 	OAuth       OAuthProvider
+	Mailer      auth.VerificationMailer
 	Secure      bool
 	FlowVersion string
 }
@@ -38,6 +39,7 @@ type Handler struct {
 	logger        *slog.Logger
 	loginRate     *rate.Limiter
 	oauthRate     *rate.Limiter
+	accountRate   *rate.Limiter
 	passwordSlots chan struct{}
 }
 
@@ -50,6 +52,7 @@ func NewWithConfig(service *auth.Service, config func() Config, logger *slog.Log
 		service: service, config: config, logger: logger,
 		loginRate:     rate.NewLimiter(rate.Every(time.Second), 5),
 		oauthRate:     rate.NewLimiter(rate.Every(time.Second), 5),
+		accountRate:   rate.NewLimiter(rate.Every(time.Second), 5),
 		passwordSlots: make(chan struct{}, 2),
 	}
 }
@@ -60,6 +63,7 @@ func (h *Handler) Routes(mux *http.ServeMux, post func(http.Handler) http.Handle
 	mux.Handle("POST /auth/logout", post(http.HandlerFunc(h.logout)))
 	mux.HandleFunc("GET /auth/oauth/start", h.oauthStart)
 	mux.HandleFunc("GET /auth/oauth/callback", h.oauthCallback)
+	h.accountRoutes(mux, post)
 }
 
 func (h *Handler) RequireUser(next http.Handler) http.Handler {
@@ -81,19 +85,37 @@ func (h *Handler) RequireUser(next http.Handler) http.Handler {
 type sessionResponse struct {
 	User         *userResponse `json:"user"`
 	OAuthEnabled bool          `json:"oauthEnabled"`
+	EmailEnabled bool          `json:"emailEnabled"`
 }
 
 type userResponse struct {
-	ID        string `json:"id"`
-	Email     string `json:"email"`
-	AvatarURL string `json:"avatarUrl,omitempty"`
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	LoginEmail  string `json:"loginEmail"`
+	Name        string `json:"name"`
+	AvatarURL   string `json:"avatarUrl,omitempty"`
+	HasAvatar   bool   `json:"hasAvatar"`
+	HasPassword bool   `json:"hasPassword"`
+	Admin       bool   `json:"admin"`
+	Disabled    bool   `json:"disabled"`
+}
+
+func publicUser(user auth.User) userResponse {
+	return userResponse{ID: user.ID, Email: user.Email, LoginEmail: user.LoginEmail, Name: user.Name,
+		AvatarURL: user.AvatarURL, HasAvatar: user.HasAvatar, HasPassword: user.HasPassword, Admin: user.Admin, Disabled: user.Disabled}
 }
 
 func (h *Handler) respond(w http.ResponseWriter, user *auth.User) {
-	payload := sessionResponse{OAuthEnabled: h.config().OAuth != nil}
+	config := h.config()
+	payload := sessionResponse{OAuthEnabled: config.OAuth != nil, EmailEnabled: config.Mailer != nil}
 	if user != nil {
-		payload.User = &userResponse{ID: user.ID, Email: user.Email, AvatarURL: user.AvatarURL}
+		account := publicUser(*user)
+		payload.User = &account
 	}
+	h.writeJSON(w, payload)
+}
+
+func (h *Handler) writeJSON(w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(payload); err != nil {

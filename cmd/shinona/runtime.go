@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"strings"
 	"sync"
@@ -13,9 +14,11 @@ import (
 	"time"
 
 	"github.com/OXeu/shinona/internal/adapter/e2b"
+	"github.com/OXeu/shinona/internal/adapter/email"
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/httpclient"
 	"github.com/OXeu/shinona/internal/adapter/mcp"
+	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
@@ -47,6 +50,7 @@ type runtimeConfig struct {
 	overrides settings.Values
 	values    settings.Values
 	oauth     httpauth.OAuthProvider
+	mailer    auth.VerificationMailer
 	provider  sandbox.Provider
 }
 
@@ -93,6 +97,16 @@ func newRuntime(ctx context.Context, repo runtimeRepository, environment environ
 
 func (r *runtime) prepare(ctx context.Context, overrides settings.Values, previous *runtimeConfig) (*runtimeConfig, error) {
 	values := settings.Effective(r.defaults, overrides)
+	var mailer auth.VerificationMailer
+	from, mailKey := values[settings.MailFrom], values[settings.MailAPIKey]
+	if from != "" {
+		if address, err := mail.ParseAddress(from); err != nil || !strings.Contains(address.Address, "@") || strings.ContainsAny(from, "\r\n") {
+			return nil, settings.Invalid("INVALID_MAIL_FROM", "enter a valid sender email address")
+		}
+		if mailKey != "" {
+			mailer = email.Resend{APIKey: mailKey, From: from, Client: r.accountHTTP}
+		}
+	}
 	provider, err := sandboxProvider(values, r.client, r.repo)
 	if err != nil {
 		return nil, err
@@ -107,7 +121,7 @@ func (r *runtime) prepare(ctx context.Context, overrides settings.Values, previo
 		}
 	}
 	return &runtimeConfig{overrides: overrides, values: values,
-		provider: provider, oauth: oauth}, nil
+		provider: provider, oauth: oauth, mailer: mailer}, nil
 }
 
 func sameOAuth(a, b settings.Values) bool {
@@ -136,7 +150,7 @@ func (r *runtime) Auth() httpauth.Config {
 	fingerprint := sha256.Sum256([]byte(strings.Join([]string{
 		r.origin.String(), config.values[settings.OAuthIssuer], config.values[settings.OAuthClientID],
 	}, "\x00")))
-	return httpauth.Config{OAuth: config.oauth, Secure: r.origin.Scheme == "https",
+	return httpauth.Config{OAuth: config.oauth, Mailer: config.mailer, Secure: r.origin.Scheme == "https",
 		FlowVersion: hex.EncodeToString(fingerprint[:])}
 }
 

@@ -28,6 +28,9 @@ const groups: Partial<Record<string, { label: MessageKey; fields: Record<string,
   oauth: { label: 'auth.oauth', fields: {
     oauthIssuer: 'settings.issuer', oauthClientId: 'settings.clientId', oauthClientSecret: 'settings.clientSecret',
   } },
+  mail: { label: 'settings.mail', fields: {
+    mailFrom: 'settings.mailFrom', mailApiKey: 'settings.mailApiKey',
+  } },
 }
 const e2bFields: Record<string, MessageKey> = {
   e2bApiKey: 'settings.e2bKey', e2bTemplate: 'settings.e2bTemplate', e2bBaseUrl: 'settings.e2bBaseUrl',

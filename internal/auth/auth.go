@@ -24,16 +24,22 @@ var (
 )
 
 type User struct {
-	ID        string
-	Email     string
-	AvatarURL string
-	Admin     bool
+	ID          string
+	Email       string
+	LoginEmail  string
+	Name        string
+	AvatarURL   string
+	HasAvatar   bool
+	HasPassword bool
+	Admin       bool
+	Disabled    bool
 }
 
 type Identity struct {
 	Issuer    string
 	Subject   string
 	Email     string
+	Name      string
 	AvatarURL string
 }
 
@@ -46,6 +52,7 @@ type Flow struct {
 }
 
 type Repository interface {
+	AccountRepository
 	CreatePasswordUser(context.Context, User, []byte) error
 	PasswordUser(context.Context, string) (User, []byte, error)
 	OAuthUser(context.Context, Identity, string) (User, error)
@@ -80,7 +87,7 @@ func (s *Service) CreatePasswordUser(ctx context.Context, email, password string
 	if len(password) < 12 || len(password) > 128 {
 		return User{}, ErrPassword
 	}
-	user := User{ID: s.newID(), Email: email}
+	user := User{ID: s.newID(), Email: email, LoginEmail: email, HasPassword: true}
 	return user, s.repo.CreatePasswordUser(ctx, user, s.hash.Hash(password))
 }
 
@@ -95,13 +102,13 @@ func (s *Service) PasswordUser(ctx context.Context, email, password string) (Use
 	if err != nil {
 		return User{}, err
 	}
-	if user.ID == "" {
+	if user.ID == "" || len(hash) == 0 {
 		hash = s.decoy
 	}
 	verify := timing.Start(ctx, "auth_password_verify")
 	matches := s.hash.Match(password, hash)
 	verify()
-	if !matches || user.ID == "" {
+	if !matches || user.ID == "" || !user.HasPassword || user.Disabled {
 		return User{}, ErrCredentials
 	}
 	return user, nil
@@ -111,8 +118,13 @@ func (s *Service) OAuthUser(ctx context.Context, identity Identity) (User, error
 	if identity.Issuer == "" || identity.Subject == "" {
 		return User{}, ErrCredentials
 	}
+	identity.Name, _ = normalizeName(identity.Name)
 	defer timing.Start(ctx, "auth_oauth_account")()
-	return s.repo.OAuthUser(ctx, identity, s.newID())
+	user, err := s.repo.OAuthUser(ctx, identity, s.newID())
+	if err == nil && user.Disabled {
+		return User{}, ErrCredentials
+	}
+	return user, err
 }
 
 func (s *Service) StartSession(ctx context.Context, user User) (string, error) {
