@@ -6,6 +6,7 @@
 *.db-wal
 /web/node_modules/
 /web/dist/
+/.tmp/
 /bin/
 shinona-machine.token
 /benchmarks/*
