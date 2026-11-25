@@ -1,0 +1,74 @@
+.composer-config { min-width: 0; max-width: 100%; }
+.config-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: min(100%, 19rem);
+  min-height: 32px;
+  padding-inline: 6px;
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.config-trigger:hover, .config-trigger[data-open='true'] {
+  background: var(--sidebar-bg);
+  color: var(--foreground);
+}
+.config-trigger .ui-icon { font-size: 1rem; }
+.config-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.config-trigger-permission { flex-shrink: 0; }
+.config-options-menu {
+  --category-width: min(44%, 13rem);
+  position: relative;
+  width: min(29rem, var(--dropdown-available-width, 100vw));
+}
+.config-categories, .config-choices {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--elevated);
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+}
+.config-categories { display: grid; gap: 2px; width: var(--category-width); padding: 5px; }
+.config-category {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  min-width: 0;
+  padding: 5px 7px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-align: start;
+}
+.config-category:hover { background: var(--sidebar-bg); }
+.config-category[aria-expanded='true'] { background: var(--selection-bg); }
+.config-category-label, .config-category-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.config-category-label { flex: 1; }
+.config-category-value { max-width: 43%; color: var(--muted); }
+.config-category .ui-icon { color: var(--muted); font-size: 0.875rem; }
+.config-choices {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline: calc(var(--category-width) + 5px) 0;
+  padding: 7px;
+}
+.config-mobile-trigger { width: 44px; height: 44px; }
+.config-sheet {
+  inset: auto 0 0;
+  width: 100%;
+  max-width: 100%;
+  max-height: 85dvh;
+  margin: 0;
+  padding-bottom: max(19px, env(safe-area-inset-bottom));
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  overflow: auto;
+}
+.config-sheet-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.config-sheet-header h2 { margin: 0; }
+.config-sheet-grid { display: grid; align-items: start; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.config-sheet-models { grid-column: 1 / -1; }

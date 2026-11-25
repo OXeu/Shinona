@@ -1,0 +1,15 @@
+.app-shell>.split-start {
+  --split-start-overflow: visible;
+  position: relative;
+  z-index: 5;
+}
+
+.app-shell > .split-divider:not(:hover, :active, :focus-visible)::after {
+  background: transparent;
+}
+
+.app-main {
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
+}

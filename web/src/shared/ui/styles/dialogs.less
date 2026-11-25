@@ -1,0 +1,47 @@
+.ui-dialog {
+  width: min(26rem, calc(100% - 2rem));
+  padding: 19px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--foreground);
+  background: var(--elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+.ui-dialog::backdrop {
+  background: var(--overlay);
+}
+
+.ui-dialog h2 {
+  margin-bottom: 12px;
+}
+
+.dialog-message {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 0.875rem;
+}
+
+.ui-dialog .form-actions {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  align-items: stretch;
+  inline-size: max-content;
+  max-inline-size: 100%;
+  margin-inline-start: auto;
+}
+
+.ui-dialog .form-actions > button {
+  padding: 8px 12px;
+  font-size: inherit;
+  overflow-wrap: anywhere;
+}

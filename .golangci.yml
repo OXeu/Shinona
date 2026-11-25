@@ -1,0 +1,39 @@
+version: "2"
+run:
+  timeout: 5m
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - depguard
+    - errorlint
+    - gocritic
+    - unconvert
+  settings:
+    depguard:
+      rules:
+        domain:
+          list-mode: strict
+          files:
+            - "**/internal/auth/*.go"
+            - "**/internal/auth/**/*.go"
+            - "**/internal/run/*.go"
+            - "**/internal/run/**/*.go"
+            - "**/internal/sandbox/*.go"
+            - "**/internal/sandbox/**/*.go"
+          allow:
+            - $gostd
+            - github.com/OXeu/shinona/internal/sandbox$
+        no-host-shell:
+          files:
+            - $all
+          deny:
+            - pkg: os/exec$
+              desc: Commands belong in a sandbox adapter.
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (net.Listener).Close
+formatters:
+  enable:
+    - gofmt

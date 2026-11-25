@@ -1,0 +1,16 @@
+:root .tst-viewport {
+  --tst-radius: var(--radius-lg);
+  --tst-bg: var(--elevated);
+  --tst-fg: var(--foreground);
+  --tst-ring: var(--border);
+  --tst-success: var(--success);
+  --tst-error: var(--danger);
+  --tst-warning: var(--warning);
+  --tst-info: var(--link);
+  --tst-shadow: var(--shadow-md);
+  z-index: var(--z-toast);
+}
+
+.tst-viewport .tst {
+  border-color: color-mix(in srgb, var(--c) 25%, var(--border));
+}

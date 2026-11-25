@@ -1,0 +1,84 @@
+.input {
+  display: block;
+  width: 100%;
+  height: var(--input-height);
+  padding: 12px;
+  border: 1px solid lightgrey;
+  border-radius: 12px;
+  outline: 1px solid transparent;
+  color: inherit;
+  background: var(--surface);
+  font: inherit;
+  transition-property: border-color, outline-color, box-shadow;
+  transition-duration: 0.3s;
+  transition-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+  box-shadow: 0 0 20px -18px;
+}
+
+.input:hover:where(:not(:disabled)) {
+  outline-color: lightgrey;
+  box-shadow: 0 0 20px -17px;
+}
+
+.input:focus-within {
+  border-color: grey;
+  outline-color: grey;
+}
+
+.search-field {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.search-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: var(--foreground);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  outline: none;
+}
+
+.search-field input::placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field+.field {
+  margin-top: 1rem;
+}
+
+.field label,
+.field-label {
+  display: block;
+  margin-bottom: 0.375rem;
+  font-weight: 550;
+}
+
+input[type='checkbox'],
+textarea {
+  display: block;
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  background: var(--surface);
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .input { transition: none; }
+}

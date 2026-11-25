@@ -1,0 +1,28 @@
+.menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--foreground);
+  background: transparent;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-align: start;
+  text-decoration: none;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--sidebar-bg);
+}
+
+.menu-item.danger {
+  color: var(--danger);
+}
+
+.menu-tail {
+  margin-left: auto;
+  color: var(--primary);
+}

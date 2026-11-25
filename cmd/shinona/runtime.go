@@ -1,0 +1,175 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/OXeu/shinona/internal/adapter/e2b"
+	"github.com/OXeu/shinona/internal/adapter/httpauth"
+	"github.com/OXeu/shinona/internal/adapter/httpclient"
+	"github.com/OXeu/shinona/internal/adapter/mcp"
+	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/settings"
+)
+
+type runtimeRepository interface {
+	settings.Repository
+	settings.ModelRepository
+	settings.MCPRepository
+	e2b.WorkspaceStore
+	mcp.OAuthStore
+}
+
+// runtime publishes immutable configurations after validation and persistence.
+type runtime struct {
+	repo        runtimeRepository
+	defaults    settings.Values
+	origin      *url.URL
+	client      *http.Client
+	mcpOAuth    *mcp.OAuth
+	models      *modelRuntime
+	accountHTTP *http.Client
+	mcpMu       sync.Mutex
+	mu          sync.Mutex
+	current     atomic.Pointer[runtimeConfig]
+}
+
+type runtimeConfig struct {
+	overrides settings.Values
+	values    settings.Values
+	oauth     httpauth.OAuthProvider
+	provider  sandbox.Provider
+}
+
+func newRuntime(ctx context.Context, repo runtimeRepository, environment environment) (*runtime, error) {
+	origin, err := webOrigin(environment.value("SHINONA_WEB_ORIGIN", "http://127.0.0.1:5173"))
+	if err != nil {
+		return nil, err
+	}
+	accountHTTP := httpclient.Public()
+	modelHTTP, err := httpclient.ForModels(environment.value("SHINONA_TRUSTED_MODEL_ORIGINS", ""))
+	if err != nil {
+		return nil, fmt.Errorf("SHINONA_TRUSTED_MODEL_ORIGINS: %w", err)
+	}
+	config := &runtime{
+		repo: repo, defaults: settings.Defaults(environment.lookup), origin: origin,
+		mcpOAuth:    mcp.NewOAuth(repo, origin.String()),
+		models:      newModelRuntime(repo, modelHTTP),
+		accountHTTP: accountHTTP,
+		client: &http.Client{
+			Timeout:       35 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+	}
+	stored, err := repo.SettingOverrides(ctx)
+	if err != nil {
+		return nil, err
+	}
+	overrides, err := settings.Apply(stored, nil)
+	if err != nil {
+		return nil, err
+	}
+	next, err := config.prepare(ctx, overrides, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(overrides) != len(stored) {
+		if err := repo.SaveSettingOverrides(ctx, overrides); err != nil {
+			return nil, err
+		}
+	}
+	config.current.Store(next)
+	return config, nil
+}
+
+func (r *runtime) prepare(ctx context.Context, overrides settings.Values, previous *runtimeConfig) (*runtimeConfig, error) {
+	values := settings.Effective(r.defaults, overrides)
+	provider, err := sandboxProvider(values, r.client, r.repo)
+	if err != nil {
+		return nil, err
+	}
+	var oauth httpauth.OAuthProvider
+	if previous != nil && sameOAuth(previous.values, values) {
+		oauth = previous.oauth
+	} else {
+		oauth, err = oauthProvider(ctx, values, r.origin)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &runtimeConfig{overrides: overrides, values: values,
+		provider: provider, oauth: oauth}, nil
+}
+
+func sameOAuth(a, b settings.Values) bool {
+	for _, key := range []settings.Key{settings.OAuthIssuer, settings.OAuthClientID, settings.OAuthSecret} {
+		if a[key] != b[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *runtime) Resolve(name string) run.Target {
+	if name != "" && name != "e2b" {
+		return run.Target{Name: name}
+	}
+	config := r.current.Load()
+	return run.Target{Name: "e2b", Provider: config.provider, ResolveAgent: r.resolveAgent}
+}
+
+func (*runtime) Mode() string { return "e2b" }
+
+func (r *runtime) Host() string { return r.origin.Host }
+
+func (r *runtime) Auth() httpauth.Config {
+	config := r.current.Load()
+	fingerprint := sha256.Sum256([]byte(strings.Join([]string{
+		r.origin.String(), config.values[settings.OAuthIssuer], config.values[settings.OAuthClientID],
+	}, "\x00")))
+	return httpauth.Config{OAuth: config.oauth, Secure: r.origin.Scheme == "https",
+		FlowVersion: hex.EncodeToString(fingerprint[:])}
+}
+
+func (r *runtime) Fields() []settings.Field {
+	config := r.current.Load()
+	return settings.Fields(config.values, config.overrides)
+}
+
+func (r *runtime) Update(ctx context.Context, changes []settings.Change) ([]settings.Field, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	current := r.current.Load()
+	overrides, err := settings.Apply(current.overrides, changes)
+	if err != nil {
+		return nil, err
+	}
+	next, err := r.publish(ctx, overrides, current)
+	if err != nil {
+		return nil, err
+	}
+	return settings.Fields(next.values, next.overrides), nil
+}
+
+// publish validates and persists a configuration before making it visible to readers.
+func (r *runtime) publish(ctx context.Context, overrides settings.Values, current *runtimeConfig) (*runtimeConfig, error) {
+	next, err := r.prepare(ctx, overrides, current)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.repo.SaveSettingOverrides(ctx, overrides); err != nil {
+		return nil, err
+	}
+	r.current.Store(next)
+	return next, nil
+}

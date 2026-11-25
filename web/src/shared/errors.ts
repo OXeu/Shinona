@@ -1,0 +1,61 @@
+import { GraphQLError } from './graphql'
+import { HttpError } from './http'
+import { t } from './i18n'
+import type { MessageKey } from './i18n'
+
+const errorKeys: Readonly<Partial<Record<string, MessageKey>>> = {
+  AUTH_CREDENTIALS: 'auth.credentialsIncorrect',
+  AUTH_INVALID_REQUEST: 'auth.invalidRequest',
+  AUTH_RATE_LIMITED: 'auth.rateLimited',
+  AUTH_BUSY: 'auth.busy',
+  AUTH_UNAVAILABLE: 'auth.serviceUnavailable',
+  INVALID_PROMPT: 'chat.invalidPrompt',
+  INVALID_SESSION_TITLE: 'sessions.invalidTitle',
+  SESSION_NOT_FOUND: 'sessions.notFound',
+  INVALID_PROJECT_NAME: 'projects.invalidName',
+  PROJECT_NAME_EXISTS: 'projects.nameExists',
+  PROJECT_NOT_FOUND: 'projects.notFound',
+  WORKSPACE_UNAVAILABLE: 'repository.unavailable',
+  WORKSPACE_BUSY: 'repository.busy',
+  WORKSPACE_NO_REPOSITORY: 'repository.noRepository',
+  WORKSPACE_INVALID_PATH: 'repository.invalidPath',
+  WORKSPACE_BINARY_FILE: 'repository.binary',
+  WORKSPACE_COMMIT_FAILED: 'repository.commitFailed',
+  ACTIVE_TURN: 'chat.activeTurn',
+  HISTORY_CHANGED: 'chat.historyChanged',
+  RETRY_TURN_UNAVAILABLE: 'chat.retryUnavailable',
+  SANDBOX_POLICY_UNAVAILABLE: 'sandbox.policyUnavailable',
+  ADMIN_REQUIRED: 'settings.adminRequired',
+  INVALID_SETTING_CHANGES: 'settings.invalidChanges',
+  INVALID_SETTING_VALUE: 'settings.invalidValue',
+  INVALID_E2B_CONFIG: 'settings.invalidE2B',
+  MISSING_MODEL_CONFIG: 'settings.missingModel',
+  INVALID_MODEL_BASE_URL: 'composer.invalidBaseUrl',
+  PRIVATE_ENDPOINT: 'settings.publicEndpointRequired',
+  MODEL_FETCH_FAILED: 'composer.modelsFailed',
+  INVALID_MCP_SERVERS: 'composer.invalidMcp',
+  MCP_SERVER_DUPLICATE: 'mcp.duplicate',
+  MCP_SERVER_FIELD_LIMIT: 'mcp.fieldLimit',
+  MCP_SERVER_LIMIT: 'mcp.limit',
+  MCP_SERVER_NOT_FOUND: 'mcp.notFound',
+  MCP_TOKEN_REQUIRED_FOR_URL_CHANGE: 'mcp.tokenForChangedUrl',
+  INVALID_MCP_OAUTH: 'mcp.oauthInvalid',
+  MCP_OAUTH_CLIENT_REQUIRED: 'mcp.oauthClientRequired',
+  MCP_OAUTH_START_FAILED: 'mcp.oauthStartFailed',
+  MCP_OAUTH_DISCONNECT_FAILED: 'mcp.oauthDisconnectFailed',
+  INVALID_IMAGES: 'composer.invalidImages',
+  INVALID_COMPOSER_OPTIONS: 'composer.invalidOptions',
+  RUN_NOT_ACCEPTING: 'composer.notRunning',
+  QUEUE_FULL: 'composer.queueFull',
+  TERMINAL_LIMIT: 'terminal.limit',
+  MISSING_OAUTH_CONFIG: 'settings.missingOAuth',
+  INVALID_OAUTH_ISSUER: 'settings.invalidIssuer',
+  OAUTH_DISCOVERY_FAILED: 'settings.discoveryFailed',
+}
+
+export function messageFor(error: unknown, fallback: MessageKey): string {
+  if ((error instanceof HttpError || error instanceof GraphQLError) && error.code && Object.hasOwn(errorKeys, error.code)) {
+    return t(errorKeys[error.code] ?? fallback)
+  }
+  return t(fallback)
+}

@@ -1,0 +1,142 @@
+// Package sqlite implements the application repositories with GORM and SQLite.
+package sqlite
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
+
+	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/sandbox"
+)
+
+type row struct {
+	ID            string `gorm:"primaryKey"`
+	OwnerID       string
+	SessionID     string `gorm:"index:idx_turns_session,priority:1;index:idx_runs_session_status,priority:1;index:idx_runs_retries,priority:1,where:retry_of <> ''"`
+	RetryOf       string
+	Sequence      int `gorm:"index:idx_turns_session,priority:2;index:idx_runs_retries,priority:2"`
+	Policy        sandbox.Policy
+	Backend       string
+	MachineID     string
+	Prompt        string                `gorm:"not null"`
+	Payload       run.Payload           `gorm:"serializer:json"`
+	Steering      []run.SteeringMessage `gorm:"serializer:json"`
+	Parts         []run.TurnPart        `gorm:"serializer:json"`
+	ContextTokens int
+	ContextWindow int
+	TokenUsage    *run.TokenUsage  `gorm:"serializer:json"`
+	LiveContext   run.ContextUsage `gorm:"-"`
+	Status        run.Status       `gorm:"not null;index:idx_runs_queue,priority:1;index:idx_runs_session_status,priority:2"`
+	Output        string
+	CreatedAt     time.Time `gorm:"not null;index:idx_runs_queue,priority:2;index"`
+	StartedAt     *time.Time
+	UpdatedAt     time.Time `gorm:"not null"`
+	RevertedAt    *time.Time
+}
+
+func (row) TableName() string { return "runs" }
+
+type Repository struct {
+	db *gorm.DB
+}
+
+func Open(ctx context.Context, filename string) (*Repository, error) {
+	db, err := gorm.Open(sqlite.Open(filename), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return nil, err
+	}
+	pool, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	// A single connection serializes SQLite writes and supports in-memory tests.
+	pool.SetMaxOpenConns(1)
+	if err := db.WithContext(ctx).AutoMigrate(&userRow{}, &identityRow{}, &loginRow{}, &flowRow{}, &projectRow{}, &sessionRow{}, &settingsRow{}, &composerDefaultsRow{}, &instanceSettingsRow{}, &modelSettingsRow{}, &mcpSettingsRow{}, &mcpGrantRow{}, &e2bWorkspaceRow{}, &row{}); err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
+	// Existing queued E2B turns should start with the project workspace after upgrade.
+	if err := db.WithContext(ctx).Model(&row{}).Where("backend = ? AND policy = ? AND status = ?", "e2b", sandbox.Fresh, run.Queued).
+		UpdateColumn("policy", sandbox.Shared).Error; err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
+	return &Repository{db: db}, nil
+}
+
+func (r *Repository) Close() error {
+	pool, err := r.db.DB()
+	if err != nil {
+		return err
+	}
+	return pool.Close()
+}
+
+func (r *Repository) ClaimNext(ctx context.Context, now time.Time) (*run.Run, error) {
+	db := r.db.WithContext(ctx)
+	next := db.Table("runs AS candidate").Select("candidate.id").
+		Where("candidate.status = ? AND candidate.owner_id <> '' AND candidate.session_id <> ''", run.Queued).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM runs AS earlier WHERE earlier.session_id = candidate.session_id
+			AND earlier.sequence < candidate.sequence AND earlier.status IN ?
+		)`, []run.Status{run.Queued, run.Running}).
+		Order("candidate.created_at, candidate.id").Limit(1)
+	var records []row
+	result := db.Model(&records).Clauses(clause.Returning{}).
+		Where("id = (?) AND status = ?", next, run.Queued).
+		Updates(map[string]any{"status": run.Running, "started_at": now, "updated_at": now})
+	if result.Error != nil || len(records) == 0 {
+		return nil, result.Error
+	}
+	item := run.Run(records[0])
+	return &item, nil
+}
+
+func (r *Repository) Complete(ctx context.Context, id string, completion run.Completion) error {
+	steering, err := json.Marshal(completion.Steering)
+	if err != nil {
+		return err
+	}
+	parts, err := json.Marshal(completion.Parts)
+	if err != nil {
+		return err
+	}
+	var usage any
+	if completion.TokenUsage != nil {
+		data, err := json.Marshal(completion.TokenUsage)
+		if err != nil {
+			return err
+		}
+		usage = string(data)
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var item row
+		result := tx.Model(&item).Clauses(clause.Returning{}).
+			Where("id = ? AND status = ?", id, run.Running).
+			Updates(map[string]any{
+				"status": completion.Status, "output": completion.Output, "updated_at": completion.UpdatedAt,
+				"steering": string(steering), "parts": string(parts), "context_tokens": completion.ContextTokens,
+				"context_window": completion.ContextWindow, "token_usage": usage,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("run %s is no longer running", id)
+		}
+		return tx.Model(&sessionRow{}).Where("id = ?", item.SessionID).Update("updated_at", completion.UpdatedAt).Error
+	})
+}
+
+func (r *Repository) FailInterrupted(ctx context.Context, now time.Time) error {
+	return r.db.WithContext(ctx).Model(&row{}).Where("status = ?", run.Running).
+		Updates(map[string]any{"status": run.Failed, "updated_at": now}).Error
+}
+
+var _ run.Repository = (*Repository)(nil)

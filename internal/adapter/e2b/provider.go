@@ -1,0 +1,329 @@
+// Package e2b provisions project sandboxes on E2B Cloud or self-hosted E2B.
+package e2b
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	sdk "github.com/eric642/e2b-go-sdk"
+
+	"github.com/OXeu/shinona/internal/adapter/envd"
+	"github.com/OXeu/shinona/internal/sandbox"
+)
+
+const (
+	envdPort    = 49983
+	awakeWindow = 5 * time.Minute
+	apiTimeout  = 20 * time.Second
+)
+
+type Config struct {
+	APIKey   string
+	Template string
+	BaseURL  string
+	ProxyURL string
+	Domain   string
+}
+
+type Provider struct {
+	api        *sdk.Client
+	data       *http.Client
+	config     Config
+	dataScheme string
+	endpoint   string
+	store      WorkspaceStore
+	provision  sync.Mutex
+}
+
+// WorkspaceStore persists sandbox IDs and private data-plane credentials.
+type WorkspaceStore interface {
+	E2BSandbox(ctx context.Context, ownerID, projectID, endpoint string) (sandboxID string, credentials []byte, err error)
+	// SaveE2BSandbox only writes if the current ID equals previousID, or if
+	// previousID is empty and the project has no workspace.
+	SaveE2BSandbox(ctx context.Context, ownerID, projectID, endpoint, previousID, sandboxID string, credentials []byte) (bool, error)
+	UpdateE2BCredentials(ctx context.Context, ownerID, projectID, endpoint, sandboxID string, credentials []byte) error
+}
+
+type credentials struct {
+	EnvdToken        string
+	TrafficToken     string
+	RecoverySnapshot string `json:",omitempty"`
+}
+
+type projectSandbox struct {
+	id     string
+	tokens credentials
+}
+
+func New(config Config, data *http.Client, store WorkspaceStore) (*Provider, error) {
+	if strings.EqualFold(os.Getenv("E2B_DEBUG"), "true") {
+		return nil, errors.New("E2B_DEBUG must be unset for sandbox provisioning")
+	}
+	if config.APIKey == "" {
+		return nil, errors.New("E2B requires an API key")
+	}
+	if store == nil {
+		return nil, errors.New("E2B requires a project workspace store")
+	}
+	scheme := "https"
+	if config.BaseURL != "" {
+		endpoint, err := parseEndpoint(config.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		scheme = endpoint.Scheme
+		if config.Domain == "" {
+			config.Domain = strings.TrimPrefix(endpoint.Hostname(), "api.")
+		}
+	}
+	if config.ProxyURL != "" {
+		if _, err := parseEndpoint(config.ProxyURL); err != nil {
+			return nil, err
+		}
+	}
+	if config.Domain == "" {
+		config.Domain = sdk.DefaultDomain
+	}
+	apiURL := config.BaseURL
+	if apiURL == "" {
+		apiURL = "https://api." + config.Domain
+		parsed, err := parseEndpoint(apiURL)
+		if err != nil || parsed.Host != "api."+config.Domain {
+			return nil, errors.New("E2B domain must be a hostname")
+		}
+	}
+	api, err := sdk.NewClient(sdk.Config{
+		APIKey: config.APIKey, APIURL: apiURL, SandboxURL: config.ProxyURL,
+		Domain: config.Domain, RequestTimeout: apiTimeout, HTTPClient: data,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Provider{api: api, data: data, config: config, dataScheme: scheme, endpoint: strings.TrimRight(apiURL, "/"), store: store}, nil
+}
+
+func parseEndpoint(value string) (*url.URL, error) {
+	endpoint, err := url.Parse(value)
+	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" ||
+		endpoint.Fragment != "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
+		return nil, errors.New("E2B endpoints must be HTTP(S) base URLs without credentials, query, or fragment")
+	}
+	return endpoint, nil
+}
+
+func (*Provider) Policies(string) []sandbox.Policy { return []sandbox.Policy{sandbox.Shared} }
+
+func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
+	if spec.Policy != sandbox.Shared {
+		return nil, sandbox.ErrPolicy
+	}
+	p.provision.Lock()
+	defer p.provision.Unlock()
+	workspace, err := p.acquireProject(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	workspace.keepAwake(ctx, max(awakeWindow, spec.TTL))
+	return workspace, nil
+}
+
+func (p *Provider) acquireProject(ctx context.Context, spec sandbox.Spec) (*projectWorkspace, error) {
+	previous, err := p.loadProject(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	if previous.id == "" {
+		return p.createProject(ctx, spec, "", "")
+	}
+	workspace, err := p.reconnectProject(ctx, spec, previous)
+	if !errors.Is(err, sandbox.ErrWorkspaceMissing) {
+		return workspace, err
+	}
+	return p.recoverProject(ctx, spec, previous)
+}
+
+func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
+	project, err := p.loadProject(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	workspace, err := p.reconnectProject(ctx, spec, project)
+	if err != nil {
+		return nil, err
+	}
+	return workspace, nil
+}
+
+func (p *Provider) loadProject(ctx context.Context, spec sandbox.Spec) (projectSandbox, error) {
+	id, stored, err := p.store.E2BSandbox(ctx, spec.OwnerID, spec.ProjectID, p.endpoint)
+	if err != nil {
+		return projectSandbox{}, err
+	}
+	project := projectSandbox{id: id}
+	if id != "" {
+		if err := json.Unmarshal(stored, &project.tokens); err != nil {
+			return projectSandbox{}, fmt.Errorf("read E2B sandbox credentials: %w", err)
+		}
+	}
+	return project, nil
+}
+
+func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, project projectSandbox) (*projectWorkspace, error) {
+	id := project.id
+	if id == "" {
+		return nil, sandbox.ErrWorkspaceMissing
+	}
+	connect := p.api.Connect
+	if p.config.BaseURL != "" {
+		connect = p.api.ConnectV1
+	}
+	box, err := connect(ctx, id, sdk.ConnectOptions{Timeout: max(awakeWindow, spec.TTL)})
+	if err != nil {
+		if isGone(err) {
+			return nil, fmt.Errorf("%w: %w", sandbox.ErrWorkspaceMissing, err)
+		}
+		return nil, fmt.Errorf("reconnect E2B project sandbox %s: %w", id, err)
+	}
+	if box.ID != id {
+		return nil, fmt.Errorf("E2B returned an unexpected sandbox while reconnecting %s", id)
+	}
+	tokens := boxCredentials(box, project.tokens)
+	workspace, err := p.dataPlane(box, tokens)
+	if err != nil {
+		return nil, err
+	}
+	if tokens != project.tokens {
+		encoded, err := json.Marshal(tokens)
+		if err != nil {
+			return nil, err
+		}
+		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := p.store.UpdateE2BCredentials(save, spec.OwnerID, spec.ProjectID, p.endpoint, id, encoded); err != nil {
+			return nil, err
+		}
+	}
+	return workspace, nil
+}
+
+func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previousID, snapshot string) (*projectWorkspace, error) {
+	options := sdk.CreateOptions{
+		Template:               p.config.Template,
+		Timeout:                max(awakeWindow, spec.TTL),
+		IdempotencyKey:         spec.RunID,
+		Lifecycle:              &sdk.LifecycleOptions{OnTimeout: "pause"},
+		AllowInternetAccess:    true,
+		AllowInternetAccessSet: true,
+		// Some self-hosted runtimes issue the traffic token only for private ingress.
+		Network: &sdk.NetworkOptions{AllowPublicTraffic: new(false)},
+	}
+	if snapshot != "" {
+		options.Template = snapshot
+		options.IdempotencyKey = snapshotKey(spec.RunID, snapshot)
+	}
+	create := p.api.Create
+	if p.config.BaseURL != "" {
+		create = p.api.CreateV1
+	}
+	box, err := create(ctx, options)
+	if err != nil {
+		if snapshot != "" && isGone(err) {
+			return nil, fmt.Errorf("%w: %w", errSnapshotMissing, err)
+		}
+		return nil, err
+	}
+
+	tokens := boxCredentials(box, credentials{RecoverySnapshot: snapshot})
+	workspace, err := p.dataPlane(box, tokens)
+	if err != nil {
+		return nil, p.discard(ctx, box, err)
+	}
+	saved, err := p.saveProject(ctx, spec, previousID, box.ID, tokens)
+	if err != nil {
+		return nil, p.discard(ctx, box, err)
+	}
+	if saved {
+		return workspace, nil
+	}
+	return p.useConcurrentProject(ctx, spec, box)
+}
+
+func (p *Provider) useConcurrentProject(ctx context.Context, spec sandbox.Spec, box *sdk.Sandbox) (*projectWorkspace, error) {
+	current, err := p.loadProject(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	// An idempotent create can return the sandbox that the other writer saved.
+	if current.id != box.ID {
+		if err := p.discard(ctx, box, nil); err != nil {
+			return nil, err
+		}
+	}
+	return p.reconnectProject(ctx, spec, current)
+}
+
+func (p *Provider) discard(ctx context.Context, box *sdk.Sandbox, err error) error {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return errors.Join(err, box.Kill(cleanup))
+}
+
+func (p *Provider) saveProject(ctx context.Context, spec sandbox.Spec, previousID, id string, tokens credentials) (bool, error) {
+	encoded, err := json.Marshal(tokens)
+	if err != nil {
+		return false, err
+	}
+	// A canceled turn can still have provisioned a workspace for the project.
+	save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return p.store.SaveE2BSandbox(save, spec.OwnerID, spec.ProjectID, p.endpoint, previousID, id, encoded)
+}
+
+func boxCredentials(box *sdk.Sandbox, previous credentials) credentials {
+	// Some self-hosted connect responses omit the still-valid traffic token.
+	if token := box.CurrentEnvdAccessToken(); token != "" {
+		previous.EnvdToken = token
+	}
+	if token := box.CurrentTrafficAccessToken(); token != "" {
+		previous.TrafficToken = token
+	}
+	return previous
+}
+
+func (p *Provider) dataPlane(box *sdk.Sandbox, tokens credentials) (*projectWorkspace, error) {
+	if tokens.EnvdToken == "" && tokens.TrafficToken == "" {
+		return nil, errors.New("E2B returned neither an envd access token nor a private traffic token")
+	}
+	headers := make(http.Header)
+	headers.Set("E2b-Sandbox-Id", box.ID)
+	headers.Set("E2b-Sandbox-Port", strconv.Itoa(envdPort))
+	if tokens.TrafficToken != "" {
+		headers.Set("E2b-Traffic-Access-Token", tokens.TrafficToken)
+	}
+	endpoint := p.config.ProxyURL
+	if endpoint == "" {
+		endpoint = p.dataScheme + "://" + box.GetHost(envdPort)
+	}
+	workspace, err := envd.New(p.data, envd.Config{
+		URL:       endpoint,
+		Token:     tokens.EnvdToken,
+		Directory: "/home/user",
+		User:      "user",
+		Headers:   headers,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &projectWorkspace{Workspace: workspace, terminal: workspace, sandboxID: box.ID, refresh: box.RefreshTimeout}, nil
+}
+
+var _ sandbox.ProjectProvider = (*Provider)(nil)

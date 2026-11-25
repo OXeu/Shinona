@@ -1,0 +1,77 @@
+button,
+.ghost-button {
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--duration-fast), color var(--duration-fast);
+}
+
+button:where(:hover:not(:disabled)) {
+  background: var(--primary-hover);
+}
+
+.ghost-button {
+  color: var(--foreground-soft);
+  background: transparent;
+  text-decoration: none;
+}
+
+.ghost-button:hover:not(:disabled) {
+  color: var(--foreground);
+  background: var(--selection-bg);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.icon-button {
+  display: inline-flex;
+  min-width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  background: transparent;
+  font-size: 1.05rem;
+}
+
+.icon-button { color: var(--muted-icon); }
+
+.icon-button:is(:hover, :focus-visible):not(:disabled) {
+  color: var(--foreground);
+  background: var(--sidebar-bg);
+}
+
+.icon-button[aria-expanded='true'],
+.ui-dropdown[open] .icon-button {
+  color: var(--foreground);
+  background: var(--selection-bg);
+}
+
+.recent-toggle,
+.secondary-button {
+  padding: 5px 8px;
+  color: var(--foreground-soft);
+  background: transparent;
+  font-size: 0.83rem;
+}
+
+.recent-toggle:hover:not(:disabled),
+.secondary-button:hover:not(:disabled) {
+  color: var(--foreground);
+  background: var(--selection-bg);
+}
+
+.secondary-action {
+  font-size: 0.875rem;
+}
