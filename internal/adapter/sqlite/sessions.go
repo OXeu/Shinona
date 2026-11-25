@@ -151,10 +151,23 @@ func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, 
 			return err
 		}
 		var turns []row
+		// Project image metadata by index. Reading json_each.value would
+		// materialize the entire image, including its base64 data.
 		query := conversationTurns(tx, ownerID, sessionID).Select(`id, owner_id, session_id, sequence, policy, backend, machine_id, prompt,
 			status, output, steering, parts, context_tokens, context_window, token_usage, created_at, started_at, updated_at,
-			json_replace(payload, '$.images', (SELECT json_group_array(json_remove(value, '$.data'))
-				FROM json_each(payload, '$.images'))) AS payload`).
+			CASE WHEN json_array_length(payload, '$.images') > 0 THEN
+				json_object('options', json_extract(payload, '$.options'), 'images', json((
+					WITH RECURSIVE image_indices(i) AS (
+						VALUES (0)
+						UNION ALL
+						SELECT i + 1 FROM image_indices WHERE i + 1 < json_array_length(payload, '$.images')
+					)
+					SELECT json_group_array(json_object(
+						'name', json_extract(payload, '$.images[' || i || '].name'),
+						'mediaType', json_extract(payload, '$.images[' || i || '].mediaType')
+					)) FROM image_indices
+				)))
+			ELSE payload END AS payload`).
 			Order("sequence DESC").Offset(window.offset)
 		if window.before != 0 {
 			query = query.Where("sequence < ?", window.before)

@@ -244,9 +244,13 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := service.Submit(ctx, "owner", session.ID, "first", run.Payload{Images: []run.Image{
+	images := []run.Image{
 		{Name: "shot.png", MediaType: "image/png", Data: "iVBORw0KGgo="},
-	}}, false)
+		{Name: `second "截图".png`, MediaType: "image/png", Data: "iVBORw0KGgo="},
+	}
+	first, err := service.Submit(ctx, "owner", session.ID, "first", run.Payload{
+		Images: images, Options: run.Options{Model: "fixture", ArrowJS: true},
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,9 +283,20 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending, err := service.Transcript(ctx, "owner", session.ID)
-	if err != nil || !pending.Session.Active || pending.Turns[0].Steering[0].Delivered ||
-		pending.Turns[0].Payload.Images[0].Name != "shot.png" || pending.Turns[0].Payload.Images[0].Data != "" {
+	if err != nil || pending == nil || len(pending.Turns) != 3 || !pending.Session.Active || pending.Turns[0].Steering[0].Delivered {
 		t.Fatalf("pending transcript: %+v, %v", pending, err)
+	}
+	wantImages := slices.Clone(images)
+	for i := range wantImages {
+		wantImages[i].Data = ""
+	}
+	payload := pending.Turns[0].Payload
+	if !slices.Equal(payload.Images, wantImages) || payload.Options.Model != "fixture" || !payload.Options.ArrowJS {
+		t.Fatal("the transcript must preserve attachment order and options without image data")
+	}
+	attachment, err := service.Attachment(ctx, "owner", session.ID, first.ID, 1)
+	if err != nil || attachment == nil || *attachment != images[1] {
+		t.Fatalf("stored attachment: %+v, %v", attachment, err)
 	}
 	close(agent.drain)
 	awaitInput(t, ctx, agent.inputs, "second")
