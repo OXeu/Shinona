@@ -316,8 +316,8 @@ func (p *Provider) dataPlane(box *sdk.Sandbox, tokens credentials) (*projectWork
 	workspace, err := envd.New(p.data, envd.Config{
 		URL:       endpoint,
 		Token:     tokens.EnvdToken,
-		Directory: "/home/user",
-		User:      "user",
+		Directory: "/root",
+		User:      "root",
 		Headers:   headers,
 	})
 	if err != nil {

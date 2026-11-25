@@ -62,9 +62,13 @@ func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 		if connected.Load() > 0 {
 			token = "resumed-token"
 		}
+		user, password, ok := r.BasicAuth()
+		if !ok || user != "root" || password != "" || r.URL.Query().Get("username") != "root" {
+			t.Error("envd must run workspace operations as root")
+		}
 		if r.Header.Get("X-Access-Token") != token || r.Header.Get("E2b-Traffic-Access-Token") != "traffic-token" ||
 			r.Header.Get("X-API-Key") != "" ||
-			r.Header.Get("E2b-Sandbox-Id") != "test-box" || r.URL.Query().Get("path") != "/home/user/hello.txt" {
+			r.Header.Get("E2b-Sandbox-Id") != "test-box" || r.URL.Query().Get("path") != "/root/hello.txt" {
 			t.Error("unexpected envd data-plane request")
 		}
 		_, _ = io.WriteString(w, "hello")
