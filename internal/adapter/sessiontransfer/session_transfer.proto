@@ -44,6 +44,8 @@ message TranscriptHeader {
   SessionSummary session = 1;
   SandboxSettings sandbox_settings = 2;
   RunOptions last_options = 3;
+  // Exclusive sequence for the next older page. Zero means there is no older page.
+  int32 next_before_sequence = 4;
 }
 
 message RunOptions {
@@ -114,6 +116,7 @@ message TurnPart {
 message LiveRequest {
   string session_id = 1;
   repeated TurnVersion known_turns = 2;
+  bool paged = 3;
 }
 
 message TurnVersion {
@@ -138,6 +141,7 @@ message LiveSync {
   repeated string turn_ids = 3;
   repeated Turn changed_turns = 4;
   RunOptions last_options = 5;
+  int32 next_before_sequence = 6;
 }
 
 message LiveProgress {

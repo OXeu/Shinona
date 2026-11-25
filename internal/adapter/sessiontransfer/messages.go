@@ -22,6 +22,7 @@ func sendTranscript(transcript *run.Transcript, settings run.Settings, send func
 	if transcript != nil {
 		header.Session = summary(transcript.Session)
 		header.LastOptions = runOptions(transcript.LastOptions())
+		header.NextBeforeSequence = int32(transcript.NextBeforeSequence)
 	}
 	if err := send(&sessionpb.TranscriptChunk{Item: &sessionpb.TranscriptChunk_Header{Header: header}}); err != nil {
 		return err

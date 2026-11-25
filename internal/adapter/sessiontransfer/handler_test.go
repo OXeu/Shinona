@@ -59,6 +59,22 @@ func (fixtureReader) Transcript(_ context.Context, owner, id string) (*run.Trans
 	return &run.Transcript{Session: run.Session{ID: id, TurnCount: len(turns)}, Turns: turns}, nil
 }
 
+func (f fixtureReader) TranscriptPage(ctx context.Context, owner, id string, before int) (*run.Transcript, error) {
+	page, err := f.Transcript(ctx, owner, id)
+	if page != nil {
+		end := len(page.Turns)
+		if before > 0 {
+			end = min(end, before-1)
+		}
+		start := max(0, end-5)
+		page.Turns = page.Turns[start:end]
+		if start > 0 {
+			page.NextBeforeSequence = page.Turns[0].Sequence
+		}
+	}
+	return page, err
+}
+
 func fixtureHandler(t *testing.T) *Handler {
 	t.Helper()
 	handler, err := New(fixtureReader{}, slog.New(slog.DiscardHandler))
@@ -152,11 +168,27 @@ func TestTranscriptFramesAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer decoder.Close()
-	for _, tc := range []struct{ owner, id string }{{"owner", "owner"}, {"other", "owner"}} {
-		request := httptest.NewRequest(http.MethodPost, TranscriptPath, strings.NewReader(`{"id":"`+tc.id+`"}`))
+	for _, tc := range []struct {
+		owner, body       string
+		first, last, next int32
+		invalidCursor     bool
+	}{
+		{owner: "owner", body: `{"id":"owner"}`},
+		{owner: "other", body: `{"id":"owner","paged":true,"beforeSequence":6}`},
+		{owner: "owner", body: `{"id":"owner","paged":true}`, first: 6, last: 10, next: 6},
+		{owner: "owner", body: `{"id":"owner","paged":true,"beforeSequence":6}`, first: 1, last: 5},
+		{owner: "owner", body: `{"id":"owner","paged":true,"beforeSequence":0}`, invalidCursor: true},
+	} {
+		request := httptest.NewRequest(http.MethodPost, TranscriptPath, strings.NewReader(tc.body))
 		request = request.WithContext(auth.WithUser(request.Context(), auth.User{ID: tc.owner}))
 		response := httptest.NewRecorder()
 		handler.Transcript(response, request)
+		if tc.invalidCursor {
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("invalid cursor: HTTP %d", response.Code)
+			}
+			continue
+		}
 		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != transcriptType || !response.Flushed {
 			t.Fatalf("unexpected transcript HTTP response: %d %v", response.Code, response.Header())
 		}
@@ -182,9 +214,20 @@ func TestTranscriptFramesAndOwnership(t *testing.T) {
 		if len(chunks) < 2 || chunks[0].GetHeader().GetSandboxSettings().GetSelected() != "FRESH" || !chunks[len(chunks)-1].GetDone() {
 			t.Fatalf("expected transcript header and completion marker, got %v", chunks)
 		}
-		if tc.owner != tc.id {
+		if tc.owner == "other" {
 			if len(chunks) != 2 || chunks[0].GetHeader().GetSession() != nil {
 				t.Fatalf("transcript disclosed another account's session: %v", chunks)
+			}
+			continue
+		}
+		if tc.first != 0 {
+			if len(chunks) != 3 || chunks[0].GetHeader().GetNextBeforeSequence() != tc.next ||
+				chunks[0].GetHeader().GetSession().GetTurnCount() != 10 {
+				t.Fatalf("unexpected paged transcript header: %v", chunks[0])
+			}
+			turns := chunks[1].GetTurns().GetTurns()
+			if len(turns) != int(tc.last-tc.first+1) || turns[0].Sequence != tc.first || turns[len(turns)-1].Sequence != tc.last {
+				t.Fatalf("unexpected paged transcript turns: %v", turns)
 			}
 			continue
 		}

@@ -118,7 +118,14 @@ func (s *Service) RecentSessions(ctx context.Context, owner string, projectID *s
 }
 
 func (s *Service) Transcript(ctx context.Context, owner, id string) (*Transcript, error) {
-	transcript, err := s.repo.Transcript(ctx, owner, id, 0)
+	return s.withTranscriptProgress(s.repo.Transcript(ctx, owner, id, 0))
+}
+
+func (s *Service) TranscriptPage(ctx context.Context, owner, id string, beforeSequence int) (*Transcript, error) {
+	return s.withTranscriptProgress(s.repo.TranscriptPage(ctx, owner, id, beforeSequence))
+}
+
+func (s *Service) withTranscriptProgress(transcript *Transcript, err error) (*Transcript, error) {
 	if err != nil || transcript == nil {
 		return transcript, err
 	}

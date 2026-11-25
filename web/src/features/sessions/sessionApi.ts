@@ -71,6 +71,7 @@ export interface TurnPart {
 export interface AgentSession extends SessionSummary {
   turns: Turn[]
   lastOptions?: ComposerRunOptions | null
+  nextBeforeSequence?: number
 }
 
 const sessionFields = 'id projectId title defaultTitle turnCount updatedAt pinned active unread'
@@ -133,6 +134,8 @@ export const sessionApi = {
         sandboxSettings { ${settingsFields} }
       }
     `, { id }, signal),
+  olderTurns: (id: string, beforeSequence: number, signal: AbortSignal) =>
+    sessionTransfer.detail(id, signal, beforeSequence),
   create: (projectId: string | null, signal?: AbortSignal) =>
     graphql<{ createSession: SessionSummary }>(`
       mutation CreateSession($projectId: ID) { createSession(projectId: $projectId) { ${sessionFields} } }

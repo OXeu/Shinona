@@ -27,6 +27,7 @@ type LiveSource interface {
 type turnVersion struct{ updatedAt, status string }
 
 type liveConnection struct {
+	paged    bool
 	known    map[string]turnVersion
 	progress run.LiveProgress
 }
@@ -99,7 +100,7 @@ func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func
 			}
 			return conn.WriteMessage(websocket.BinaryMessage, h.zstd.EncodeAll(payload, nil))
 		}
-		state := liveConnection{known: known}
+		state := liveConnection{paged: request.Paged, known: known}
 		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send)
 		switch {
 		case errors.Is(err, errLiveAuth):
@@ -149,7 +150,13 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 	owner, id string, send func(*sessionpb.LiveMessage) error,
 ) error {
 	syncPage := func() (bool, error) {
-		page, err := h.reader.Transcript(ctx, owner, id)
+		var page *run.Transcript
+		var err error
+		if state.paged {
+			page, err = h.reader.TranscriptPage(ctx, owner, id, 0)
+		} else {
+			page, err = h.reader.Transcript(ctx, owner, id)
+		}
 		if err != nil {
 			return false, err
 		}
@@ -206,6 +213,7 @@ func (s *liveConnection) sync(page *run.Transcript, settings run.Settings) *sess
 	}
 	result.Session = summary(page.Session)
 	result.LastOptions = runOptions(page.LastOptions())
+	result.NextBeforeSequence = int32(page.NextBeforeSequence)
 	result.TurnIds = make([]string, 0, len(page.Turns))
 	next := make(map[string]turnVersion, len(page.Turns))
 	s.progress = run.LiveProgress{}

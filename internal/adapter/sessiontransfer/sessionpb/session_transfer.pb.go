@@ -382,8 +382,10 @@ type TranscriptHeader struct {
 	Session         *SessionSummary  `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
 	SandboxSettings *SandboxSettings `protobuf:"bytes,2,opt,name=sandbox_settings,json=sandboxSettings,proto3" json:"sandbox_settings,omitempty"`
 	LastOptions     *RunOptions      `protobuf:"bytes,3,opt,name=last_options,json=lastOptions,proto3" json:"last_options,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Exclusive sequence for the next older page. Zero means there is no older page.
+	NextBeforeSequence int32 `protobuf:"varint,4,opt,name=next_before_sequence,json=nextBeforeSequence,proto3" json:"next_before_sequence,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *TranscriptHeader) Reset() {
@@ -435,6 +437,13 @@ func (x *TranscriptHeader) GetLastOptions() *RunOptions {
 		return x.LastOptions
 	}
 	return nil
+}
+
+func (x *TranscriptHeader) GetNextBeforeSequence() int32 {
+	if x != nil {
+		return x.NextBeforeSequence
+	}
+	return 0
 }
 
 type RunOptions struct {
@@ -1049,6 +1058,7 @@ type LiveRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	KnownTurns    []*TurnVersion         `protobuf:"bytes,2,rep,name=known_turns,json=knownTurns,proto3" json:"known_turns,omitempty"`
+	Paged         bool                   `protobuf:"varint,3,opt,name=paged,proto3" json:"paged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1095,6 +1105,13 @@ func (x *LiveRequest) GetKnownTurns() []*TurnVersion {
 		return x.KnownTurns
 	}
 	return nil
+}
+
+func (x *LiveRequest) GetPaged() bool {
+	if x != nil {
+		return x.Paged
+	}
+	return false
 }
 
 type TurnVersion struct {
@@ -1266,13 +1283,14 @@ func (*LiveMessage_Heartbeat) isLiveMessage_Item() {}
 type LiveSync struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Absent when the session is archived while the viewer is connected.
-	Session         *SessionSummary  `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
-	SandboxSettings *SandboxSettings `protobuf:"bytes,2,opt,name=sandbox_settings,json=sandboxSettings,proto3" json:"sandbox_settings,omitempty"`
-	TurnIds         []string         `protobuf:"bytes,3,rep,name=turn_ids,json=turnIds,proto3" json:"turn_ids,omitempty"`
-	ChangedTurns    []*Turn          `protobuf:"bytes,4,rep,name=changed_turns,json=changedTurns,proto3" json:"changed_turns,omitempty"`
-	LastOptions     *RunOptions      `protobuf:"bytes,5,opt,name=last_options,json=lastOptions,proto3" json:"last_options,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	Session            *SessionSummary  `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	SandboxSettings    *SandboxSettings `protobuf:"bytes,2,opt,name=sandbox_settings,json=sandboxSettings,proto3" json:"sandbox_settings,omitempty"`
+	TurnIds            []string         `protobuf:"bytes,3,rep,name=turn_ids,json=turnIds,proto3" json:"turn_ids,omitempty"`
+	ChangedTurns       []*Turn          `protobuf:"bytes,4,rep,name=changed_turns,json=changedTurns,proto3" json:"changed_turns,omitempty"`
+	LastOptions        *RunOptions      `protobuf:"bytes,5,opt,name=last_options,json=lastOptions,proto3" json:"last_options,omitempty"`
+	NextBeforeSequence int32            `protobuf:"varint,6,opt,name=next_before_sequence,json=nextBeforeSequence,proto3" json:"next_before_sequence,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *LiveSync) Reset() {
@@ -1338,6 +1356,13 @@ func (x *LiveSync) GetLastOptions() *RunOptions {
 		return x.LastOptions
 	}
 	return nil
+}
+
+func (x *LiveSync) GetNextBeforeSequence() int32 {
+	if x != nil {
+		return x.NextBeforeSequence
+	}
+	return 0
 }
 
 type LiveProgress struct {
@@ -1644,11 +1669,12 @@ const file_session_transfer_proto_rawDesc = "" +
 	"\x06header\x18\x01 \x01(\v2%.shinona.sessions.v1.TranscriptHeaderH\x00R\x06header\x12<\n" +
 	"\x05turns\x18\x02 \x01(\v2$.shinona.sessions.v1.TranscriptTurnsH\x00R\x05turns\x12\x14\n" +
 	"\x04done\x18\x03 \x01(\bH\x00R\x04doneB\x06\n" +
-	"\x04item\"\xe6\x01\n" +
+	"\x04item\"\x98\x02\n" +
 	"\x10TranscriptHeader\x12=\n" +
 	"\asession\x18\x01 \x01(\v2#.shinona.sessions.v1.SessionSummaryR\asession\x12O\n" +
 	"\x10sandbox_settings\x18\x02 \x01(\v2$.shinona.sessions.v1.SandboxSettingsR\x0fsandboxSettings\x12B\n" +
-	"\flast_options\x18\x03 \x01(\v2\x1f.shinona.sessions.v1.RunOptionsR\vlastOptions\"\xa0\x01\n" +
+	"\flast_options\x18\x03 \x01(\v2\x1f.shinona.sessions.v1.RunOptionsR\vlastOptions\x120\n" +
+	"\x14next_before_sequence\x18\x04 \x01(\x05R\x12nextBeforeSequence\"\xa0\x01\n" +
 	"\n" +
 	"RunOptions\x12\x14\n" +
 	"\x05model\x18\x01 \x01(\tR\x05model\x12\x1e\n" +
@@ -1709,12 +1735,13 @@ const file_session_transfer_proto_rawDesc = "" +
 	"\x05input\x18\x04 \x01(\tR\x05input\x12\x16\n" +
 	"\x06output\x18\x05 \x01(\tR\x06output\x12\x16\n" +
 	"\x06status\x18\x06 \x01(\tR\x06status\x12)\n" +
-	"\x10estimated_tokens\x18\a \x01(\x05R\x0festimatedTokens\"o\n" +
+	"\x10estimated_tokens\x18\a \x01(\x05R\x0festimatedTokens\"\x85\x01\n" +
 	"\vLiveRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12A\n" +
 	"\vknown_turns\x18\x02 \x03(\v2 .shinona.sessions.v1.TurnVersionR\n" +
-	"knownTurns\"T\n" +
+	"knownTurns\x12\x14\n" +
+	"\x05paged\x18\x03 \x01(\bR\x05paged\"T\n" +
 	"\vTurnVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -1725,13 +1752,14 @@ const file_session_transfer_proto_rawDesc = "" +
 	"\x04sync\x18\x02 \x01(\v2\x1d.shinona.sessions.v1.LiveSyncH\x00R\x04sync\x12?\n" +
 	"\bprogress\x18\x03 \x01(\v2!.shinona.sessions.v1.LiveProgressH\x00R\bprogress\x12\x1e\n" +
 	"\theartbeat\x18\x04 \x01(\bH\x00R\theartbeatB\x06\n" +
-	"\x04item\"\xb9\x02\n" +
+	"\x04item\"\xeb\x02\n" +
 	"\bLiveSync\x12=\n" +
 	"\asession\x18\x01 \x01(\v2#.shinona.sessions.v1.SessionSummaryR\asession\x12O\n" +
 	"\x10sandbox_settings\x18\x02 \x01(\v2$.shinona.sessions.v1.SandboxSettingsR\x0fsandboxSettings\x12\x19\n" +
 	"\bturn_ids\x18\x03 \x03(\tR\aturnIds\x12>\n" +
 	"\rchanged_turns\x18\x04 \x03(\v2\x19.shinona.sessions.v1.TurnR\fchangedTurns\x12B\n" +
-	"\flast_options\x18\x05 \x01(\v2\x1f.shinona.sessions.v1.RunOptionsR\vlastOptions\"\xfd\x01\n" +
+	"\flast_options\x18\x05 \x01(\v2\x1f.shinona.sessions.v1.RunOptionsR\vlastOptions\x120\n" +
+	"\x14next_before_sequence\x18\x06 \x01(\x05R\x12nextBeforeSequence\"\xfd\x01\n" +
 	"\fLiveProgress\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12\x1d\n" +
 	"\n" +

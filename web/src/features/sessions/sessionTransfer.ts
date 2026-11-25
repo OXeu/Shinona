@@ -35,10 +35,10 @@ async function recent(projectId: string | null, signal: AbortSignal): Promise<{ 
   }
 }
 
-async function detail(id: string, signal: AbortSignal): Promise<{ session: AgentSession | null; sandboxSettings: SandboxSettings } | undefined> {
+async function detail(id: string, signal: AbortSignal, beforeSequence?: number): Promise<{ session: AgentSession | null; sandboxSettings: SandboxSettings } | undefined> {
   let response
   try {
-    response = await request(basePath + '/transcript', { id }, signal)
+    response = await request(basePath + '/transcript', { id, paged: true, beforeSequence }, signal)
   } catch (error) {
     signal.throwIfAborted()
     if (error instanceof TypeError || (error instanceof HttpError && [404, 405, 501, 502, 503, 504].includes(error.status))) return
@@ -57,9 +57,9 @@ async function detail(id: string, signal: AbortSignal): Promise<{ session: Agent
     if (complete) throw new Error('Unexpected frame after the transcript ended.')
     switch (item.case) {
       case 'header': {
-        const { session: received, sandboxSettings: settings, lastOptions } = item.value
+        const { session: received, sandboxSettings: settings, lastOptions, nextBeforeSequence } = item.value
         if (sandboxSettings || !settings) throw new Error('Invalid transcript header.')
-        if (received) session = { ...decodeSessionSummary(received), turns: [], lastOptions: decodeRunOptions(lastOptions) }
+        if (received) session = { ...decodeSessionSummary(received), turns: [], lastOptions: decodeRunOptions(lastOptions), nextBeforeSequence }
         sandboxSettings = decodeSandboxSettings(settings)
         break
       }

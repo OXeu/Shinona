@@ -56,9 +56,12 @@ type SessionChanges struct {
 	Pinned *bool
 }
 
+const TranscriptPageSize = 30
+
 type Transcript struct {
-	Session Session
-	Turns   []Run
+	Session            Session
+	Turns              []Run
+	NextBeforeSequence int
 }
 
 func (t Transcript) LastOptions() *Options {
@@ -149,6 +152,7 @@ type Repository interface {
 	RenameProject(ctx context.Context, ownerID, id, name string) (Project, error)
 	RemoveProject(ctx context.Context, ownerID, id string) error
 	Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*Transcript, error)
+	TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*Transcript, error)
 	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Image, error)
 	SessionProject(ctx context.Context, ownerID, sessionID string) (string, error)
 	LatestWorkspaceRun(ctx context.Context, ownerID, sessionID string) (*Run, error)

@@ -35,6 +35,7 @@ type Reader interface {
 	Projects(context.Context, string) ([]run.Project, error)
 	RecentSessions(context.Context, string, *string) ([]run.Session, error)
 	Transcript(context.Context, string, string) (*run.Transcript, error)
+	TranscriptPage(context.Context, string, string, int) (*run.Transcript, error)
 	Settings(context.Context, string) (run.Settings, error)
 }
 
@@ -174,13 +175,29 @@ func (h *Handler) Transcript(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Sign in required.", http.StatusUnauthorized)
 		return
 	}
-	var request struct{ ID string }
+	var request struct {
+		ID             string `json:"id"`
+		Paged          bool   `json:"paged"`
+		BeforeSequence *int32 `json:"beforeSequence"`
+	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
-	if err := decoder.Decode(&request); err != nil || request.ID == "" || !errors.Is(decoder.Decode(new(any)), io.EOF) {
+	valid := decoder.Decode(&request) == nil && request.ID != "" && errors.Is(decoder.Decode(new(any)), io.EOF)
+	valid = valid && (request.BeforeSequence == nil || (request.Paged && *request.BeforeSequence > 0))
+	if !valid {
 		http.Error(w, "Invalid transcript request.", http.StatusBadRequest)
 		return
 	}
-	transcript, err := h.reader.Transcript(ctx, owner, request.ID)
+	var transcript *run.Transcript
+	var err error
+	if request.Paged {
+		before := 0
+		if request.BeforeSequence != nil {
+			before = int(*request.BeforeSequence)
+		}
+		transcript, err = h.reader.TranscriptPage(ctx, owner, request.ID, before)
+	} else {
+		transcript, err = h.reader.Transcript(ctx, owner, request.ID)
+	}
 	if err != nil {
 		h.transcriptError(w, err)
 		return

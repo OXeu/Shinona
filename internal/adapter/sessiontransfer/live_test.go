@@ -2,6 +2,7 @@ package sessiontransfer_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -64,22 +65,28 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	prior, err := repo.Enqueue(ctx, run.Run{
-		ID: "earlier", OwnerID: owner, SessionID: entry.ID, Policy: sandbox.Fresh, Prompt: "Prior turn",
-		Status: run.Queued, CreatedAt: now, UpdatedAt: now,
-	}, "Prior", false)
-	if err != nil {
-		t.Fatal(err)
+	const earlier = 4
+	var known []*sessionpb.TurnVersion
+	for sequence := 1; sequence <= run.TranscriptPageSize+earlier; sequence++ {
+		id := fmt.Sprintf("earlier-%d", sequence)
+		if _, err := repo.Enqueue(ctx, run.Run{
+			ID: id, OwnerID: owner, SessionID: entry.ID, Policy: sandbox.Fresh, Prompt: "Prior turn",
+			Status: run.Queued, CreatedAt: now, UpdatedAt: now,
+		}, "Prior", false); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.ClaimNext(ctx, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.Complete(ctx, id, run.Completion{
+			Result: run.Result{Output: "Prior reply."}, Status: run.Succeeded, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if sequence > earlier {
+			known = append(known, &sessionpb.TurnVersion{Id: id, UpdatedAt: now.Format(time.RFC3339Nano), Status: string(run.Succeeded)})
+		}
 	}
-	if _, err := repo.ClaimNext(ctx, now); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.Complete(ctx, prior.ID, run.Completion{
-		Result: run.Result{Output: "Prior reply."}, Status: run.Succeeded, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	known := []*sessionpb.TurnVersion{{Id: prior.ID, UpdatedAt: now.Format(time.RFC3339Nano), Status: string(run.Succeeded)}}
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
@@ -129,7 +136,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		payload, err := proto.Marshal(&sessionpb.LiveRequest{SessionId: entry.ID, KnownTurns: known})
+		payload, err := proto.Marshal(&sessionpb.LiveRequest{SessionId: entry.ID, KnownTurns: known, Paged: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -170,8 +177,8 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	conn := dial(owner, "")
 	var seq uint32
 	start := waitFor(conn, &seq, func(msg *sessionpb.LiveMessage) bool { return msg.GetSync() != nil }).GetSync()
-	if len(start.TurnIds) != 1 || len(start.ChangedTurns) != 0 {
-		t.Fatalf("initial reconciliation resent the known turn: %v", start)
+	if len(start.TurnIds) != run.TranscriptPageSize || len(start.ChangedTurns) != 0 || start.NextBeforeSequence != earlier+1 {
+		t.Fatalf("unexpected paged initial reconciliation: %v", start)
 	}
 	current, err := service.Submit(ctx, owner, entry.ID, "Now stream.", run.Payload{}, false)
 	if err != nil {
@@ -228,7 +235,8 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	final := waitFor(resumed, &resumedSeq, func(msg *sessionpb.LiveMessage) bool {
 		return msg.GetSync().GetSession() != nil && !msg.GetSync().GetSession().Active
 	}).GetSync()
-	if len(final.ChangedTurns) != 1 || final.ChangedTurns[0].Output != "Final reply." || len(final.TurnIds) != 2 {
+	if len(final.ChangedTurns) != 1 || final.ChangedTurns[0].Output != "Final reply." ||
+		len(final.TurnIds) != run.TranscriptPageSize || final.NextBeforeSequence != earlier+2 {
 		t.Fatalf("unexpected terminal reconciliation: %v", final)
 	}
 }

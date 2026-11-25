@@ -28,6 +28,9 @@ const props = defineProps<{
   reverting: boolean
   catalog: ComposerOptions
   savingDefaults: boolean
+  hasOlder: boolean
+  loadingOlder: boolean
+  historyError: boolean
   errors: Readonly<Partial<Record<string, string>>>
 }>()
 const emit = defineEmits<{
@@ -36,6 +39,7 @@ const emit = defineEmits<{
   revert: [id: string]
   retry: [id: string, options: ComposerRunOptions]
   saveDefaults: [options: ComposerDefaults]
+  loadOlder: []
   error: [source: 'copy' | 'attachment', message: string]
   action: [action: SessionAction, entry: SessionSummary]
 }>()
@@ -154,6 +158,19 @@ const messages = computed(() => {
         :item-key="(item) => item.id"
         :bottom-inset="inset"
       >
+        <template #start>
+          <UiBox :hidden="!hasOlder" class="conversation-history">
+            <UiButton class="secondary-button" :disabled="loadingOlder || reverting" @click="emit('loadOlder')">
+              {{ t(loadingOlder ? 'chat.loadingOlder' : 'chat.loadOlder') }}
+            </UiButton>
+            <ChatSystemMessage
+              v-for="error in historyError ? [t('chat.loadOlderFailed')] : []"
+              :key="error"
+              :text="error"
+              tone="error"
+            />
+          </UiBox>
+        </template>
         <template #default="{ item }">
           <UiBox class="message-row" :data-kind="item.kind">
             <UiBox v-for="user in item.kind === 'user' ? [item] : []" :key="user.id" class="user-message">
@@ -270,6 +287,13 @@ const messages = computed(() => {
 </template>
 
 <style lang="less" scoped>
+.conversation-history {
+  display: grid;
+  justify-items: center;
+  gap: 0.5rem;
+  padding-block-start: 1rem;
+}
+
 .failure-detail {
   max-block-size: 50vh;
   overflow: auto;

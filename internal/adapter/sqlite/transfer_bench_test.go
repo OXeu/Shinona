@@ -169,7 +169,7 @@ func TestTransferBenchmarkServer(t *testing.T) {
 	}
 }
 
-func (f transferFixture) seed(t *testing.T, repo *Repository) {
+func (f transferFixture) seed(t testing.TB, repo *Repository) {
 	t.Helper()
 	db := repo.db.WithContext(t.Context())
 	epoch := time.Date(2026, 1, 5, 8, 0, 0, 0, time.UTC)
@@ -307,7 +307,7 @@ func loadTransferRecords(ctx context.Context, repo *Repository, request transfer
 		}
 		records.projects, records.sessions = projects, sessions
 	case "turns":
-		transcript, err := repo.transcript(ctx, transferOwner, transferSession, turnPageSize+1, request.Offset)
+		transcript, err := repo.transcript(ctx, transferOwner, transferSession, transcriptWindow{limit: turnPageSize + 1, offset: request.Offset})
 		if err != nil {
 			return records, fmt.Errorf("load benchmark transcript: %w", err)
 		}

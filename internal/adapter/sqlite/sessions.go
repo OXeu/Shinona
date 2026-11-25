@@ -125,10 +125,21 @@ func (r *Repository) SessionProject(ctx context.Context, ownerID, sessionID stri
 }
 
 func (r *Repository) Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*run.Transcript, error) {
-	return r.transcript(ctx, ownerID, sessionID, limit, 0)
+	return r.transcript(ctx, ownerID, sessionID, transcriptWindow{limit: limit})
 }
 
-func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, limit, offset int) (*run.Transcript, error) {
+func (r *Repository) TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*run.Transcript, error) {
+	return r.transcript(ctx, ownerID, sessionID, transcriptWindow{limit: run.TranscriptPageSize, before: beforeSequence, paged: true})
+}
+
+type transcriptWindow struct {
+	limit  int
+	offset int
+	before int
+	paged  bool
+}
+
+func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, window transcriptWindow) (*run.Transcript, error) {
 	var result *run.Transcript
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
@@ -144,15 +155,29 @@ func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, 
 			status, output, steering, parts, context_tokens, context_window, token_usage, created_at, started_at, updated_at,
 			json_replace(payload, '$.images', (SELECT json_group_array(json_remove(value, '$.data'))
 				FROM json_each(payload, '$.images'))) AS payload`).
-			Order("sequence DESC").Offset(offset)
-		if limit > 0 {
-			query = query.Limit(limit)
+			Order("sequence DESC").Offset(window.offset)
+		if window.before != 0 {
+			query = query.Where("sequence < ?", window.before)
+		}
+		if window.limit > 0 {
+			query = query.Limit(window.limit)
 		}
 		if err := query.Find(&turns).Error; err != nil {
 			return err
 		}
 		slices.Reverse(turns)
 		result = &run.Transcript{Session: describeSession(session), Turns: make([]run.Run, len(turns))}
+		if window.paged && len(turns) == window.limit {
+			before := turns[0].Sequence
+			var earlier []int
+			if err := conversationTurns(tx, ownerID, sessionID).Where("sequence < ?", before).
+				Limit(1).Pluck("sequence", &earlier).Error; err != nil {
+				return err
+			}
+			if len(earlier) != 0 {
+				result.NextBeforeSequence = before
+			}
+		}
 		for i, turn := range turns {
 			result.Turns[i] = run.Run(turn)
 		}

@@ -34,7 +34,10 @@ class SessionState {
       return turn
     })
     this.turns = new Map(turns.map((turn) => [turn.id, turn]))
-    callbacks.sync({ ...decodeSessionSummary(update.session), turns, lastOptions: decodeRunOptions(update.lastOptions) },
+    callbacks.sync({
+      ...decodeSessionSummary(update.session), turns,
+      lastOptions: decodeRunOptions(update.lastOptions), nextBeforeSequence: update.nextBeforeSequence,
+    },
       decodeSandboxSettings(update.sandboxSettings))
   }
 
@@ -72,6 +75,7 @@ export async function watchLiveSession(initial: AgentSession, callbacks: LiveCal
   signal.throwIfAborted()
   const payload = toBinary(LiveRequestSchema, create(LiveRequestSchema, {
     sessionId: initial.id,
+    paged: true,
     knownTurns: initial.turns.map(({ id, updatedAt, status }) => ({ id, updatedAt, status })),
   }))
   const state = new SessionState(initial.turns)

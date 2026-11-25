@@ -31,6 +31,13 @@ const sessionActions = useTemplateRef('sessionActions')
 const router = useRouter()
 const route = useRoute()
 const session = ref<AgentSession | null>(null)
+const history = ref({ turns: [] as Turn[], nextBeforeSequence: 0 })
+const loadingOlder = ref(false)
+const historyError = ref(false)
+const chatSession = computed(() => {
+  const entry = session.value
+  return entry && { ...entry, turns: [...history.value.turns, ...entry.turns] }
+})
 const policy = ref<Policy | null>(null)
 const prompt = ref('')
 const images = ref<ImageAttachment[]>([])
@@ -119,6 +126,17 @@ async function missingSession() {
 
 function applySession(scope: RequestScope, entry: AgentSession, selectedPolicy: Policy | null) {
   const wasActive = session.value?.active
+  const first = entry.turns[0]
+  const displayed = chatSession.value?.turns ?? []
+  // Reverts truncate the suffix. A matching boundary lets us keep the entire prefix,
+  // including completed turns that have moved out of the live page.
+  const boundary = first ? displayed.findIndex((turn) => turn.id === first.id) : -1
+  const prefix = boundary > 0 ? displayed.slice(0, boundary) : []
+  if (prefix.length && prefix.every((turn) => turn.status !== 'QUEUED' && turn.status !== 'RUNNING')) {
+    history.value.turns = prefix
+  } else {
+    history.value = { turns: [], nextBeforeSequence: entry.nextBeforeSequence ?? 0 }
+  }
   session.value = entry
   policy.value = selectedPolicy
   setChatError('load', '')
@@ -126,6 +144,32 @@ function applySession(scope: RequestScope, entry: AgentSession, selectedPolicy: 
   if (!entry.active) {
     if (wasActive && entry.turns.at(-1)?.status === 'SUCCEEDED') notify.success(t('chat.completed'))
     void markRead(scope)
+  }
+}
+
+async function loadOlder() {
+  const scope = current
+  const before = history.value.nextBeforeSequence
+  const anchor = chatSession.value?.turns[0]?.id
+  if (!scope || !before || !anchor || loadingOlder.value || reverting.value) return
+  loadingOlder.value = true
+  historyError.value = false
+  try {
+    const result = await sessionApi.olderTurns(scope.id, before, scope.controller.signal)
+    if (scope.controller.signal.aborted || chatSession.value?.turns[0]?.id !== anchor) return
+    const page = result?.session
+    const last = page?.turns.at(-1)
+    if (!page || page.id !== scope.id || !last || last.sequence >= before) {
+      throw new Error('Invalid older transcript page.')
+    }
+    history.value = {
+      turns: [...page.turns, ...history.value.turns],
+      nextBeforeSequence: page.nextBeforeSequence ?? 0,
+    }
+  } catch {
+    if (!scope.controller.signal.aborted && chatSession.value?.turns[0]?.id === anchor) historyError.value = true
+  } finally {
+    if (!scope.controller.signal.aborted) loadingOlder.value = false
   }
 }
 
@@ -336,6 +380,7 @@ async function revertMessage() {
     const summary = revertTurn.session
     if (session.value === entry) {
       session.value = { ...summary, turns: entry.turns.filter((turn) => turn.sequence <= summary.turnCount), lastOptions: entry.lastOptions }
+      history.value.turns = history.value.turns.filter((turn) => turn.sequence <= summary.turnCount)
       store.upsert(summary)
     }
     prompt.value = revertTurn.prompt
@@ -396,6 +441,9 @@ watch(() => props.id, (id, _, onCleanup) => {
   draftSession = undefined
   current = undefined
   chatErrors.value = {}
+  history.value = { turns: [], nextBeforeSequence: 0 }
+  loadingOlder.value = false
+  historyError.value = false
   session.value = null
   policy.value = null
   prompt.value = ''
@@ -539,7 +587,10 @@ onUnmounted(() => {
                 <ChattingPanel
                   v-model="prompt"
                   v-model:images="images"
-                  :session="session"
+                  :session="chatSession"
+                  :has-older="history.nextBeforeSequence > 0"
+                  :loading-older="loadingOlder"
+                  :history-error="historyError"
                   :recent-sessions="matchingSessions"
                   :now="now"
                   :has-selection="!!id"
@@ -548,6 +599,7 @@ onUnmounted(() => {
                   :catalog="catalog"
                   :saving-defaults="savingDefaults"
                   :errors="chatErrors"
+                  @load-older="loadOlder"
                   @submit="submit"
                   @stop="stop"
                   @revert="askRevert"
