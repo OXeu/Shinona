@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const (
@@ -194,16 +195,24 @@ func (s *Service) CloseTerminals() {
 }
 
 func (t *TerminalSession) run(provider sandbox.ProjectProvider, spec sandbox.Spec) error {
-	workspace, err := provider.Acquire(t.ctx, spec)
+	ctx, phases := timing.WithRecorder(t.ctx)
+	acquire := timing.Start(ctx, "sandbox_acquire")
+	workspace, err := provider.Acquire(ctx, spec)
+	acquire()
 	if err != nil {
+		slog.Info("terminal startup timing", "phases", phases)
 		return err
 	}
 	defer closeTerminalResource(t.ctx, workspace.Close)
 	terminal, ok := workspace.(sandbox.TerminalWorkspace)
 	if !ok {
+		slog.Info("terminal startup timing", "phases", phases)
 		return ErrTerminalUnavailable
 	}
-	shell, err := terminal.OpenTerminal(t.ctx, sandbox.TerminalSize{Cols: 80, Rows: 24})
+	open := timing.Start(ctx, "pty_open")
+	shell, err := terminal.OpenTerminal(ctx, sandbox.TerminalSize{Cols: 80, Rows: 24})
+	open()
+	slog.Info("terminal startup timing", "phases", phases)
 	if err != nil {
 		return err
 	}

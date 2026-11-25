@@ -9,6 +9,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const AttachmentPath = TranscriptPath + "/{sessionID}/turns/{turnID}/attachments/{index}"
@@ -24,14 +25,18 @@ func Attachment(reader AttachmentReader, logger *slog.Logger) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		load := timing.Start(r.Context(), "attachment_load")
 		image, err := reader.Attachment(r.Context(), auth.CurrentUser(r.Context()).ID,
 			r.PathValue("sessionID"), r.PathValue("turnID"), index)
+		load()
 		if err != nil {
 			logger.Error("read turn attachment", "error", err)
 			http.Error(w, "Attachment is unavailable.", http.StatusInternalServerError)
 			return
 		}
+		decode := timing.Start(r.Context(), "attachment_decode")
 		data := imageBytes(image)
+		decode()
 		if len(data) == 0 {
 			http.NotFound(w, r)
 			return

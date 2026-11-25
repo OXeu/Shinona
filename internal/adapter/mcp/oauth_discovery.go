@@ -17,6 +17,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/httpclient"
 	"github.com/OXeu/shinona/internal/settings"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 func discoverOAuth(ctx context.Context, server settings.MCPServer, redirect, metadataURL string) (oauthGrant, error) {
@@ -25,7 +26,9 @@ func discoverOAuth(ctx context.Context, server settings.MCPServer, redirect, met
 	if err != nil {
 		return oauthGrant{}, err
 	}
+	resourceLookup := timing.Start(ctx, "mcp_oauth_resource")
 	resource, scopes, err := protectedResource(ctx, client, resourceURL)
+	resourceLookup()
 	if err != nil {
 		return oauthGrant{}, err
 	}
@@ -34,7 +37,9 @@ func discoverOAuth(ctx context.Context, server settings.MCPServer, redirect, met
 	if _, err := checkedOAuthURL(issuer, local); err != nil {
 		return oauthGrant{}, err
 	}
+	issuerLookup := timing.Start(ctx, "mcp_oauth_issuer")
 	metadata, err := sdkauth.GetAuthServerMetadata(ctx, issuer, client)
+	issuerLookup()
 	if err != nil {
 		return oauthGrant{}, fmt.Errorf("read authorization server metadata: %w", err)
 	}
@@ -79,10 +84,12 @@ func oauthClient(ctx context.Context, client *http.Client, metadata *oauthex.Aut
 	if isLoopbackURL(redirect) {
 		applicationType = "native"
 	}
+	register := timing.Start(ctx, "mcp_oauth_register")
 	registration, err := oauthex.RegisterClient(ctx, metadata.RegistrationEndpoint, &oauthex.ClientRegistrationMetadata{
 		ClientName: "Shinona", RedirectURIs: []string{redirect}, TokenEndpointAuthMethod: "none",
 		GrantTypes: grantTypes, ResponseTypes: []string{"code"}, ApplicationType: applicationType,
 	}, client)
+	register()
 	if err != nil {
 		return "", "", 0, errors.New("dynamic MCP OAuth client registration failed")
 	}

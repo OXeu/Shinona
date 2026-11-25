@@ -12,9 +12,11 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const Path = "/api/terminal/v1"
@@ -61,7 +63,9 @@ func (h handler) list(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid conversation", http.StatusBadRequest)
 		return
 	}
+	list := timing.Start(r.Context(), "terminal_list")
 	tabs, err := h.source.Terminals(r.Context(), auth.CurrentUser(r.Context()).ID, session)
+	list()
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -76,7 +80,7 @@ type terminalRequest struct {
 
 func readRequest(w http.ResponseWriter, r *http.Request, needsTerminal bool) (terminalRequest, bool) {
 	var request terminalRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 1024))
 	if err := decoder.Decode(&request); err != nil ||
 		!validID(request.Session) || (needsTerminal && !validID(request.Terminal)) ||
 		!errors.Is(decoder.Decode(new(any)), io.EOF) {
@@ -93,7 +97,9 @@ func (h handler) create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	start := timing.Start(r.Context(), "terminal_register")
 	tab, err := h.source.StartTerminal(r.Context(), h.lifetime, auth.CurrentUser(r.Context()).ID, request.Session)
+	start()
 	if err != nil {
 		h.respondError(w, err)
 		return
@@ -106,7 +112,9 @@ func (h handler) close(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	stop := timing.Start(r.Context(), "terminal_close")
 	err := h.source.StopTerminal(r.Context(), auth.CurrentUser(r.Context()).ID, request.Session, request.Terminal)
+	stop()
 	if err != nil && !errors.Is(err, run.ErrTerminalNotFound) {
 		h.respondError(w, err)
 		return
@@ -144,18 +152,27 @@ func (h handler) connect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid terminal request", http.StatusBadRequest)
 		return
 	}
+	lookup := timing.Start(r.Context(), "terminal_lookup")
 	tab, err := h.source.Terminal(r.Context(), owner, session, id)
+	lookup()
 	if err != nil {
 		h.respondError(w, err)
 		return
 	}
-	socket, err := h.upgrader.Upgrade(w, r, nil)
+	socket, err := h.upgrader.Upgrade(w, r, httpserver.WebSocketTimingHeaders(w))
 	if err != nil {
 		return
 	}
 	defer func() { _ = socket.Close() }()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	ctx, phases := timing.WithRecorder(ctx)
+	defer func() {
+		values := phases.LogValue()
+		if len(values.Group()) > 0 {
+			h.logger.Info("terminal WebSocket timing", "phases", values)
+		}
+	}()
 	stop := context.AfterFunc(h.lifetime, func() {
 		cancel()
 		_ = socket.Close()
@@ -187,7 +204,9 @@ func readInput(ctx context.Context, socket *websocket.Conn, tab *run.TerminalSes
 		request, stop := context.WithTimeout(ctx, socketTimeout)
 		switch kind {
 		case websocket.BinaryMessage:
+			input := timing.Start(request, "pty_input")
 			err = tab.Input(request, payload)
+			input()
 		case websocket.TextMessage:
 			var size sandbox.TerminalSize
 			if json.Unmarshal(payload, &size) != nil || !size.Valid() {
@@ -195,7 +214,9 @@ func readInput(ctx context.Context, socket *websocket.Conn, tab *run.TerminalSes
 				sendClose(socket, websocket.CloseUnsupportedData, "Invalid terminal resize")
 				return
 			}
+			resize := timing.Start(request, "pty_resize")
 			err = tab.Resize(request, size)
+			resize()
 		}
 		stop()
 		// An input can cross the final output. Let the relay drain that output.
@@ -220,13 +241,13 @@ func relay(ctx context.Context, socket *websocket.Conn, tab *run.TerminalSession
 			if err != nil {
 				return err
 			}
-			if err := write(socket, websocket.TextMessage, payload); err != nil {
+			if err := write(ctx, socket, websocket.TextMessage, payload); err != nil {
 				return err
 			}
 			reported = state
 		}
 		if n > 0 {
-			if err := write(socket, websocket.BinaryMessage, output[:n]); err != nil {
+			if err := write(ctx, socket, websocket.BinaryMessage, output[:n]); err != nil {
 				return err
 			}
 			continue
@@ -242,7 +263,8 @@ func relay(ctx context.Context, socket *websocket.Conn, tab *run.TerminalSession
 	return ctx.Err()
 }
 
-func write(socket *websocket.Conn, kind int, data []byte) error {
+func write(ctx context.Context, socket *websocket.Conn, kind int, data []byte) error {
+	defer timing.Start(ctx, "websocket_write")()
 	if err := socket.SetWriteDeadline(time.Now().Add(socketTimeout)); err != nil {
 		return err
 	}

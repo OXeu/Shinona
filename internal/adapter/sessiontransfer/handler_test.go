@@ -18,6 +18,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
@@ -249,6 +250,40 @@ func TestTranscriptFramesAndOwnership(t *testing.T) {
 		want := &sessionpb.TokenUsage{Input: 3_100, Cached: 2_122_000, Output: 30_210}
 		if !proto.Equal(first[0].GetTokenUsage(), want) || first[1].GetTokenUsage() != nil {
 			t.Fatalf("expected token usage only for the measured turn: %v, %v", first[0].GetTokenUsage(), first[1].GetTokenUsage())
+		}
+	}
+}
+
+func TestTranscriptPublishesServerTiming(t *testing.T) {
+	handler := fixtureHandler(t)
+	server := httptest.NewServer(httpserver.ServerTiming(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.Transcript(w, r.WithContext(auth.WithUser(r.Context(), auth.User{ID: "owner"})))
+	})))
+	defer server.Close()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+TranscriptPath,
+		strings.NewReader(`{"id":"owner","paged":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected transcript status: %d", response.StatusCode)
+	}
+	for _, phase := range []string{"app", "transcript_decode", "transcript_load", "sandbox_settings", "transcript_first_frame"} {
+		if !strings.Contains(strings.Join(response.Header.Values("Server-Timing"), ","), phase+";dur=") {
+			t.Errorf("transcript response is missing %s", phase)
+		}
+	}
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"transcript_stream", "transcript_build_chunks", "protobuf_encode", "zstd_compress", "stream_write_flush"} {
+		if !strings.Contains(strings.Join(response.Trailer.Values("Server-Timing"), ","), phase+";dur=") {
+			t.Errorf("transcript trailer is missing %s", phase)
 		}
 	}
 }

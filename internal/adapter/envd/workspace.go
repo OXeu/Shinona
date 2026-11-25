@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const maxFileBytes = 64 * 1024
@@ -52,6 +53,7 @@ func New(client *http.Client, config Config) (*Workspace, error) {
 func (w *Workspace) Close(context.Context) error { return nil }
 
 func (w *Workspace) ReadFile(ctx context.Context, name string) ([]byte, error) {
+	defer timing.Start(ctx, "sandbox_read_file")()
 	endpoint, err := w.fileEndpoint(name)
 	if err != nil {
 		return nil, err

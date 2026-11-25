@@ -10,6 +10,8 @@ import (
 	"net/mail"
 	"strings"
 	"time"
+
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const SessionLifetime = 7 * 24 * time.Hour
@@ -87,14 +89,19 @@ func (s *Service) PasswordUser(ctx context.Context, email, password string) (Use
 	if err != nil || len(password) > 128 {
 		return User{}, ErrCredentials
 	}
+	lookup := timing.Start(ctx, "auth_password_lookup")
 	user, hash, err := s.repo.PasswordUser(ctx, email)
+	lookup()
 	if err != nil {
 		return User{}, err
 	}
 	if user.ID == "" {
 		hash = s.decoy
 	}
-	if !s.hash.Match(password, hash) || user.ID == "" {
+	verify := timing.Start(ctx, "auth_password_verify")
+	matches := s.hash.Match(password, hash)
+	verify()
+	if !matches || user.ID == "" {
 		return User{}, ErrCredentials
 	}
 	return user, nil
@@ -104,10 +111,12 @@ func (s *Service) OAuthUser(ctx context.Context, identity Identity) (User, error
 	if identity.Issuer == "" || identity.Subject == "" {
 		return User{}, ErrCredentials
 	}
+	defer timing.Start(ctx, "auth_oauth_account")()
 	return s.repo.OAuthUser(ctx, identity, s.newID())
 }
 
 func (s *Service) StartSession(ctx context.Context, user User) (string, error) {
+	defer timing.Start(ctx, "auth_session_create")()
 	token := rand.Text() + rand.Text()
 	if err := s.repo.SaveSession(ctx, digest(token), user.ID, time.Now().UTC().Add(SessionLifetime)); err != nil {
 		return "", err
@@ -126,10 +135,12 @@ func (s *Service) EndSession(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
+	defer timing.Start(ctx, "auth_session_delete")()
 	return s.repo.DeleteSession(ctx, digest(token))
 }
 
 func (s *Service) BeginFlow(ctx context.Context, version string) (string, Flow, error) {
+	defer timing.Start(ctx, "auth_oauth_begin")()
 	state := rand.Text() + rand.Text()
 	now := time.Now().UTC()
 	flow := Flow{
@@ -140,6 +151,7 @@ func (s *Service) BeginFlow(ctx context.Context, version string) (string, Flow, 
 }
 
 func (s *Service) ConsumeFlow(ctx context.Context, state string) (*Flow, error) {
+	defer timing.Start(ctx, "auth_oauth_consume")()
 	return s.repo.ConsumeFlow(ctx, digest(state), time.Now().UTC())
 }
 

@@ -14,6 +14,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 type Provider struct {
@@ -51,7 +52,9 @@ func (p *Provider) AuthorizationURL(state string, flow auth.Flow) string {
 
 func (p *Provider) Exchange(ctx context.Context, code string, flow auth.Flow) (auth.Identity, error) {
 	ctx = core.ClientContext(ctx, p.client)
+	exchange := timing.Start(ctx, "oidc_token_exchange")
 	token, err := p.oauth.Exchange(ctx, code, oauth2.VerifierOption(flow.Verifier))
+	exchange()
 	if err != nil {
 		return auth.Identity{}, err
 	}
@@ -59,7 +62,9 @@ func (p *Provider) Exchange(ctx context.Context, code string, flow auth.Flow) (a
 	if !ok {
 		return auth.Identity{}, errors.New("OAuth response is missing the ID token")
 	}
+	verify := timing.Start(ctx, "oidc_verify_token")
 	verified, err := p.verifyToken(ctx, raw)
+	verify()
 	if err != nil {
 		return auth.Identity{}, err
 	}
@@ -83,7 +88,9 @@ func (p *Provider) Exchange(ctx context.Context, code string, flow auth.Flow) (a
 	}
 	identity.AvatarURL = pictureURL(verified)
 	if identity.AvatarURL == "" && token.AccessToken != "" {
+		userinfo := timing.Start(ctx, "oidc_userinfo")
 		info, err := p.metadata.UserInfo(ctx, oauth2.StaticTokenSource(token))
+		userinfo()
 		if err == nil && info.Subject == verified.Subject {
 			identity.AvatarURL = pictureURL(info)
 		}

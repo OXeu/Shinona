@@ -18,9 +18,11 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const (
@@ -78,13 +80,15 @@ func (h *Handler) Recent(lifetime context.Context, origin string, sessionUser fu
 func (h *Handler) serveRecent(lifetime context.Context, w http.ResponseWriter, r *http.Request,
 	upgrader websocket.Upgrader, owner string, sessionUser func(*http.Request) (*auth.User, error),
 ) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, httpserver.WebSocketTimingHeaders(w))
 	if err != nil {
 		return
 	}
 	defer func() { _ = conn.Close() }()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	ctx, phases := timing.WithRecorder(ctx)
+	defer h.logSocketTimings("recent", phases)
 	stop := context.AfterFunc(lifetime, func() {
 		cancel()
 		_ = conn.Close()
@@ -101,7 +105,10 @@ func (h *Handler) serveRecent(lifetime context.Context, w http.ResponseWriter, r
 			return
 		}
 		var request sessionpb.RecentRequest
-		if kind != websocket.BinaryMessage || proto.Unmarshal(payload, &request) != nil {
+		decode := timing.Start(ctx, "recent_decode")
+		valid := kind == websocket.BinaryMessage && proto.Unmarshal(payload, &request) == nil
+		decode()
+		if !valid {
 			closeSocket(conn, websocket.CloseUnsupportedData, "Invalid session list request.")
 			return
 		}
@@ -122,9 +129,19 @@ func (h *Handler) serveRecent(lifetime context.Context, w http.ResponseWriter, r
 		if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			return
 		}
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		write := timing.Start(ctx, "websocket_write")
+		err = conn.WriteMessage(websocket.BinaryMessage, data)
+		write()
+		if err != nil {
 			return
 		}
+	}
+}
+
+func (h *Handler) logSocketTimings(operation string, phases *timing.Recorder) {
+	values := phases.LogValue()
+	if len(values.Group()) > 0 {
+		h.logger.Info("session transfer timing", "operation", operation, "phases", values)
 	}
 }
 
@@ -133,14 +150,19 @@ func closeSocket(conn *websocket.Conn, code int, reason string) {
 }
 
 func (h *Handler) recent(ctx context.Context, owner string, projectID *string) ([]byte, error) {
+	loadProjects := timing.Start(ctx, "recent_projects")
 	projects, err := h.reader.Projects(ctx, owner)
+	loadProjects()
 	if err != nil {
 		return nil, err
 	}
+	loadSessions := timing.Start(ctx, "recent_sessions")
 	sessions, err := h.reader.RecentSessions(ctx, owner, projectID)
+	loadSessions()
 	if err != nil {
 		return nil, err
 	}
+	build := timing.Start(ctx, "recent_build_page")
 	page := &sessionpb.RecentPage{
 		Projects: make([]*sessionpb.Project, len(projects)),
 		Sessions: make([]*sessionpb.SessionSummary, len(sessions)),
@@ -151,10 +173,12 @@ func (h *Handler) recent(ctx context.Context, owner string, projectID *string) (
 	for i, session := range sessions {
 		page.Sessions[i] = summary(session)
 	}
-	payload, err := proto.Marshal(page)
+	build()
+	payload, err := encodeProtobuf(ctx, page)
 	if err != nil {
 		return nil, err
 	}
+	defer timing.Start(ctx, "brotli_compress")()
 	var compressed bytes.Buffer
 	writer := h.brotli.Get().(*brotli.Writer)
 	writer.Reset(&compressed)
@@ -180,13 +204,16 @@ func (h *Handler) Transcript(w http.ResponseWriter, r *http.Request) {
 		Paged          bool   `json:"paged"`
 		BeforeSequence *int32 `json:"beforeSequence"`
 	}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 1024))
+	decode := timing.Start(ctx, "transcript_decode")
 	valid := decoder.Decode(&request) == nil && request.ID != "" && errors.Is(decoder.Decode(new(any)), io.EOF)
 	valid = valid && (request.BeforeSequence == nil || (request.Paged && *request.BeforeSequence > 0))
+	decode()
 	if !valid {
 		http.Error(w, "Invalid transcript request.", http.StatusBadRequest)
 		return
 	}
+	load := timing.Start(ctx, "transcript_load")
 	var transcript *run.Transcript
 	var err error
 	if request.Paged {
@@ -198,35 +225,52 @@ func (h *Handler) Transcript(w http.ResponseWriter, r *http.Request) {
 	} else {
 		transcript, err = h.reader.Transcript(ctx, owner, request.ID)
 	}
+	load()
 	if err != nil {
 		h.transcriptError(w, err)
 		return
 	}
+	loadSettings := timing.Start(ctx, "sandbox_settings")
 	settings, err := h.reader.Settings(ctx, owner)
+	loadSettings()
 	if err != nil {
 		h.transcriptError(w, err)
 		return
 	}
 
 	w.Header().Set("Content-Type", transcriptType)
+	streamCtx, finishStream := httpserver.StreamTiming(w, ctx)
+	defer finishStream()
+	defer timing.Start(streamCtx, "transcript_stream")()
 	controller := http.NewResponseController(w)
+	firstFrame := true
 	send := func(chunk *sessionpb.TranscriptChunk) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		frame, err := h.transcriptFrame(chunk)
+		var frame []byte
+		var err error
+		if firstFrame {
+			encode := timing.Start(ctx, "transcript_first_frame")
+			frame, err = h.transcriptFrame(streamCtx, chunk)
+			encode()
+			firstFrame = false
+		} else {
+			frame, err = h.transcriptFrame(streamCtx, chunk)
+		}
 		if err != nil {
 			return err
 		}
 		if err := controller.SetWriteDeadline(time.Now().Add(socketTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			return err
 		}
+		defer timing.Start(streamCtx, "stream_write_flush")()
 		if _, err := w.Write(frame); err != nil {
 			return err
 		}
 		return controller.Flush()
 	}
-	if err := sendTranscript(transcript, settings, send); err != nil && ctx.Err() == nil {
+	if err := sendTranscript(streamCtx, transcript, settings, send); err != nil && ctx.Err() == nil {
 		h.logger.Debug("stream transcript", "error", err)
 	}
 }
@@ -236,13 +280,23 @@ func (h *Handler) transcriptError(w http.ResponseWriter, err error) {
 	http.Error(w, "The run service is unavailable.", http.StatusInternalServerError)
 }
 
-func (h *Handler) transcriptFrame(chunk *sessionpb.TranscriptChunk) ([]byte, error) {
-	payload, err := proto.Marshal(chunk)
+func (h *Handler) transcriptFrame(ctx context.Context, chunk *sessionpb.TranscriptChunk) ([]byte, error) {
+	payload, err := encodeProtobuf(ctx, chunk)
 	if err != nil {
 		return nil, err
 	}
 	// Reserve four bytes for the compressed frame length in network byte order.
-	frame := h.zstd.EncodeAll(payload, make([]byte, 4, 4+len(payload)/8))
+	frame := h.compressZstd(ctx, payload, make([]byte, 4, 4+len(payload)/8))
 	binary.BigEndian.PutUint32(frame, uint32(len(frame)-4))
 	return frame, nil
+}
+
+func encodeProtobuf(ctx context.Context, message proto.Message) ([]byte, error) {
+	defer timing.Start(ctx, "protobuf_encode")()
+	return proto.Marshal(message)
+}
+
+func (h *Handler) compressZstd(ctx context.Context, payload, prefix []byte) []byte {
+	defer timing.Start(ctx, "zstd_compress")()
+	return h.zstd.EncodeAll(payload, prefix)
 }

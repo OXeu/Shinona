@@ -13,7 +13,9 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const sessionCookie = "shinona_session"
@@ -114,7 +116,7 @@ func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct{ Email, Password string }
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 4096))
 	if err := decoder.Decode(&input); err != nil {
 		authError(w, "AUTH_INVALID_REQUEST", "Invalid sign-in request.", http.StatusBadRequest)
 		return
@@ -131,7 +133,9 @@ func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
 		authError(w, "AUTH_BUSY", "Sign-in is busy. Try again shortly.", http.StatusTooManyRequests)
 		return
 	}
-	user, err := h.service.PasswordUser(r.Context(), input.Email, input.Password)
+	// Keep the lookup and verification phases private until sign-in succeeds.
+	ctx, phases := timing.WithRecorder(r.Context())
+	user, err := h.service.PasswordUser(ctx, input.Email, input.Password)
 	if errors.Is(err, auth.ErrCredentials) {
 		authError(w, "AUTH_CREDENTIALS", "Email or password is incorrect.", http.StatusUnauthorized)
 		return
@@ -140,10 +144,11 @@ func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
 		h.failure(w, err)
 		return
 	}
-	if err := h.signIn(w, r, user); err != nil {
+	if err := h.signIn(w, r.WithContext(ctx), user); err != nil {
 		h.failure(w, err)
 		return
 	}
+	phases.Publish(r.Context())
 	h.respond(w, &user)
 }
 
@@ -232,6 +237,7 @@ func (h *Handler) signIn(w http.ResponseWriter, r *http.Request, user auth.User)
 
 // SessionUser resolves the current cookie, including expiry and revocation.
 func (h *Handler) SessionUser(r *http.Request) (*auth.User, error) {
+	defer timing.Start(r.Context(), "auth_session")()
 	return h.service.SessionUser(r.Context(), readCookie(r, sessionCookie))
 }
 

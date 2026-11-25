@@ -30,6 +30,13 @@ type stagedAgent struct {
 	done  chan struct{}
 }
 
+type timingLogs chan string
+
+func (logs timingLogs) Write(data []byte) (int, error) {
+	logs <- string(data)
+	return len(data), nil
+}
+
 func (a stagedAgent) Run(ctx context.Context, input run.Input, _ sandbox.Workspace) (run.Result, error) {
 	input.ReportParts([]run.TurnPart{{Kind: "text", Text: "initial text"}})
 	for {
@@ -97,7 +104,8 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		<-workerDone
 	}()
 
-	handler, err := sessiontransfer.New(service, logger)
+	logs := make(timingLogs, 16)
+	handler, err := sessiontransfer.New(service, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +213,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		t.Fatalf("expected suffix-only progress: %v", progress)
 	}
 	_ = conn.Close()
+	waitForBootstrapAndDeltaTiming(t, ctx, logs)
 
 	resumed := dial(owner, "")
 	var resumedSeq uint32
@@ -238,5 +247,24 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	if len(final.ChangedTurns) != 1 || final.ChangedTurns[0].Output != "Final reply." ||
 		len(final.TurnIds) != run.TranscriptPageSize || final.NextBeforeSequence != earlier+2 {
 		t.Fatalf("unexpected terminal reconciliation: %v", final)
+	}
+}
+
+func waitForBootstrapAndDeltaTiming(t *testing.T, ctx context.Context, logs timingLogs) {
+	t.Helper()
+	for {
+		select {
+		case entry := <-logs:
+			if strings.Contains(entry, "phases.live_send_delta.ms=") {
+				for _, phase := range []string{"live_bootstrap", "live_load_transcript", "live_build_delta", "protobuf_encode", "zstd_compress", "websocket_write"} {
+					if !strings.Contains(entry, "phases."+phase+".ms=") {
+						t.Errorf("live timing report is missing %s", phase)
+					}
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("missing live timing report after a bootstrap and delta")
+		}
 	}
 }

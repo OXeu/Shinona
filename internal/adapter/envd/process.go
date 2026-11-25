@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const maxOutputBytes = 16 * 1024
@@ -61,6 +62,7 @@ func (jsonCodec) Marshal(value any) ([]byte, error)      { return json.Marshal(v
 func (jsonCodec) Unmarshal(data []byte, value any) error { return json.Unmarshal(data, value) }
 
 func (w *Workspace) Exec(ctx context.Context, command sandbox.Command) (sandbox.Result, error) {
+	defer timing.Start(ctx, "sandbox_exec")()
 	if err := ctx.Err(); err != nil {
 		return sandbox.Result{}, err
 	}

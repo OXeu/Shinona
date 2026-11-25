@@ -9,9 +9,11 @@ import (
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const LivePath = "/api/session-transfer/v1/live"
@@ -43,13 +45,15 @@ func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func
 			http.Error(w, "Sign in required.", http.StatusUnauthorized)
 			return
 		}
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := upgrader.Upgrade(w, r, httpserver.WebSocketTimingHeaders(w))
 		if err != nil {
 			return
 		}
 		defer func() { _ = conn.Close() }()
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
+		ctx, phases := timing.WithRecorder(ctx)
+		defer h.logSocketTimings("live", phases)
 		stop := context.AfterFunc(lifetime, func() {
 			cancel()
 			_ = conn.Close()
@@ -60,7 +64,9 @@ func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func
 			closeSocket(conn, websocket.CloseUnsupportedData, "Invalid live subscription.")
 			return
 		}
+		subscribe := timing.Start(ctx, "live_subscribe")
 		watch, err := source.WatchSession(ctx, owner, request.SessionId)
+		subscribe()
 		if err != nil {
 			if errors.Is(err, run.ErrSession) {
 				closeSocket(conn, websocket.ClosePolicyViolation, "Session unavailable.")
@@ -91,14 +97,16 @@ func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func
 			}
 			sequence++
 			message.Sequence = sequence
-			payload, err := proto.Marshal(message)
+			payload, err := encodeProtobuf(ctx, message)
 			if err != nil {
 				return err
 			}
 			if err := conn.SetWriteDeadline(time.Now().Add(socketTimeout)); err != nil {
 				return err
 			}
-			return conn.WriteMessage(websocket.BinaryMessage, h.zstd.EncodeAll(payload, nil))
+			compressed := h.compressZstd(ctx, payload, nil)
+			defer timing.Start(ctx, "websocket_write")()
+			return conn.WriteMessage(websocket.BinaryMessage, compressed)
 		}
 		state := liveConnection{paged: request.Paged, known: known}
 		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send)
@@ -149,7 +157,9 @@ func startLiveReader(conn *websocket.Conn, cancel context.CancelFunc) error {
 func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *run.SessionWatch, state *liveConnection,
 	owner, id string, send func(*sessionpb.LiveMessage) error,
 ) error {
-	syncPage := func() (bool, error) {
+	syncPage := func(phase string) (bool, error) {
+		defer timing.Start(ctx, phase)()
+		load := timing.Start(ctx, "live_load_transcript")
 		var page *run.Transcript
 		var err error
 		if state.paged {
@@ -157,18 +167,23 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 		} else {
 			page, err = h.reader.Transcript(ctx, owner, id)
 		}
+		load()
 		if err != nil {
 			return false, err
 		}
+		loadSettings := timing.Start(ctx, "sandbox_settings")
 		settings, err := h.reader.Settings(ctx, owner)
+		loadSettings()
 		if err != nil {
 			return false, err
 		}
+		build := timing.Start(ctx, "live_build_sync")
 		snapshot := state.sync(page, settings)
+		build()
 		err = send(&sessionpb.LiveMessage{Item: &sessionpb.LiveMessage_Sync{Sync: snapshot}})
 		return page != nil, err
 	}
-	if found, err := syncPage(); err != nil || !found {
+	if found, err := syncPage("live_bootstrap"); err != nil || !found {
 		return err
 	}
 	ticker := time.NewTicker(liveHeartbeat)
@@ -187,7 +202,7 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 		case <-watch.Changes():
 			change := watch.Read()
 			if change.Transcript || change.Progress.TurnID != state.progress.TurnID {
-				if found, err := syncPage(); err != nil || !found {
+				if found, err := syncPage("live_resync"); err != nil || !found {
 					return err
 				}
 				continue
@@ -195,10 +210,15 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 			if change.Progress.TurnID == "" {
 				continue
 			}
+			build := timing.Start(ctx, "live_build_delta")
 			delta := progressDelta(state.progress, change.Progress)
+			build()
 			state.progress = change.Progress
 			if delta != nil {
-				if err := send(&sessionpb.LiveMessage{Item: &sessionpb.LiveMessage_Progress{Progress: delta}}); err != nil {
+				write := timing.Start(ctx, "live_send_delta")
+				err := send(&sessionpb.LiveMessage{Item: &sessionpb.LiveMessage_Progress{Progress: delta}})
+				write()
+				if err != nil {
 					return err
 				}
 			}

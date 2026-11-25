@@ -15,6 +15,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 type row struct {
@@ -49,8 +50,14 @@ type Repository struct {
 	db *gorm.DB
 }
 
+type timingLogger struct{ logger.Interface }
+
+func (timingLogger) Trace(ctx context.Context, begin time.Time, _ func() (string, int64), _ error) {
+	timing.Since(ctx, "sqlite", begin)
+}
+
 func Open(ctx context.Context, filename string) (*Repository, error) {
-	db, err := gorm.Open(sqlite.Open(filename), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	db, err := gorm.Open(sqlite.Open(filename), &gorm.Config{Logger: timingLogger{logger.Default.LogMode(logger.Silent)}})
 	if err != nil {
 		return nil, err
 	}

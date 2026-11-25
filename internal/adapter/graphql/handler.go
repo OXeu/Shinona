@@ -11,8 +11,8 @@ import (
 	"time"
 
 	gql "github.com/graph-gophers/graphql-go"
-	"github.com/graph-gophers/graphql-go/relay"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -44,11 +44,11 @@ type resolver struct {
 
 func NewHandler(service *run.Service, app Application, logger *slog.Logger) (http.Handler, error) {
 	root := &resolver{service: service, app: app, logger: logger}
-	schema, err := gql.ParseSchema(definition, root, gql.MaxDepth(6), gql.MaxParallelism(8), gql.UseFieldResolvers())
+	schema, err := gql.ParseSchema(definition, root, gql.MaxDepth(6), gql.MaxParallelism(8), gql.UseFieldResolvers(), gql.Tracer(timingTracer{}))
 	if err != nil {
 		return nil, err
 	}
-	return http.MaxBytesHandler(&relay.Handler{Schema: schema}, 6<<20), nil
+	return httpserver.MaxBytesHandler(graphqlHTTP{schema: schema}, 6<<20), nil
 }
 
 func (r *resolver) Mode() string { return r.app.Mode() }

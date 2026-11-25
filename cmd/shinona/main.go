@@ -18,6 +18,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/graphql"
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/password"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
@@ -90,7 +91,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	mux.Handle("POST "+sessiontransfer.TranscriptPath, sameOriginJSON(authHandler.RequireUser(http.HandlerFunc(transfer.Transcript))))
 	mux.Handle("GET "+sessiontransfer.AttachmentPath, authHandler.RequireUser(sessiontransfer.Attachment(service, logger)))
 	server := &http.Server{
-		Handler:           allowedHost(mux, config.Host),
+		Handler:           httpserver.ServerTiming(allowedHost(mux, config.Host)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

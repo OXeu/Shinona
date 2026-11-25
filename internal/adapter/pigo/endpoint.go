@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/guanshan/pi-go/packages/ai"
+
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 type ModelInfo struct {
@@ -47,6 +49,7 @@ type catalogFetch struct {
 	done   chan struct{}
 	models []ModelInfo
 	err    error
+	phases *timing.Recorder
 }
 
 func NewEndpoint(base, key string, client *http.Client) (*Endpoint, error) {
@@ -63,10 +66,12 @@ func (e *Endpoint) Catalog(ctx context.Context, force bool) ([]ModelInfo, error)
 	if flight == nil {
 		return models, nil
 	}
+	defer timing.Start(ctx, "model_catalog_wait")()
 	select {
 	case <-ctx.Done():
 		return models, ctx.Err()
 	case <-flight.done:
+		flight.phases.Publish(ctx)
 		return slices.Clone(flight.models), flight.err
 	}
 }
@@ -89,7 +94,8 @@ func (e *Endpoint) catalog(force bool) ([]ModelInfo, *catalogFetch) {
 }
 
 func (e *Endpoint) refreshCatalog(flight *catalogFetch) {
-	models, err := e.fetch(context.Background())
+	ctx, phases := timing.WithRecorder(context.Background())
+	models, err := e.fetch(ctx)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err != nil {
@@ -99,6 +105,7 @@ func (e *Endpoint) refreshCatalog(flight *catalogFetch) {
 	}
 	flight.models = e.models
 	flight.err = err
+	flight.phases = phases
 	e.flight = nil
 	close(flight.done)
 }
@@ -113,7 +120,9 @@ func (e *Endpoint) fetch(ctx context.Context) ([]ModelInfo, error) {
 	if e.key != "" {
 		req.Header.Set("Authorization", "Bearer "+e.key)
 	}
+	request := timing.Start(ctx, "model_catalog_http")
 	resp, err := e.client.Do(req)
+	request()
 	if err != nil {
 		return nil, err
 	}
@@ -132,12 +141,18 @@ func (e *Endpoint) fetch(ctx context.Context) ([]ModelInfo, error) {
 		} `json:"data"`
 	}
 	decoder := json.NewDecoder(body)
-	if err := decoder.Decode(&catalog); err != nil {
+	decode := timing.Start(ctx, "model_catalog_decode")
+	err = decoder.Decode(&catalog)
+	if err != nil {
+		decode()
 		return nil, err
 	}
-	if decoder.Decode(new(any)) != io.EOF || body.N <= 0 || catalog.Data == nil {
+	valid := decoder.Decode(new(any)) == io.EOF && body.N > 0 && catalog.Data != nil
+	decode()
+	if !valid {
 		return nil, errors.New("invalid model catalog")
 	}
+	defer timing.Start(ctx, "model_catalog_build")()
 	result := make([]ModelInfo, 0, min(500, len(catalog.Data)))
 	seen := make(map[string]bool, cap(result))
 	for _, model := range catalog.Data {

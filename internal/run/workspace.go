@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 var (
@@ -83,14 +84,18 @@ func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(
 	if err != nil {
 		return err
 	}
+	open := timing.Start(ctx, "workspace_acquire")
 	ws, err := s.openWorkspace(ctx, owner, id, turn)
+	open()
 	if err != nil {
 		return err
 	}
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer stop()
+		release := timing.Start(ctx, "workspace_release")
 		closeErr := ws.Close(cleanup)
+		release()
 		// Keep an acknowledged operation successful even if lease cleanup fails.
 		if err != nil {
 			err = errors.Join(err, closeErr)

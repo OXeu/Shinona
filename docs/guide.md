@@ -141,6 +141,18 @@ On a reverse proxy, forward `/api/session-transfer/v1/` to Shinona. Preserve the
 
 ## Architecture and limits
 
+API responses include `Server-Timing` metrics in milliseconds. `app` measures elapsed time before the Go server starts the response. Repeated phases are summed. Phases can be nested or run in parallel, so their durations can overlap.
+
+Firefox displays phase durations in the Network Timings panel in a secure context. Use HTTPS for a LAN preview, or loopback HTTP when viewing the preview on the same host. A plain HTTP LAN preview still shows the raw `Server-Timing` value under Response Headers.
+
+| API | Business phases |
+| --- | --- |
+| Sign-in and OAuth | Session lookup, password lookup and verification on successful sign-in, session creation, OIDC token exchange and verification, MCP resource and issuer discovery, registration, and grant persistence. |
+| GraphQL | JSON decoding and encoding, validation, execution, and each executed root field. Model discovery reports upstream HTTP, catalog decoding, normalization, and caller wait time. Workspace operations report sandbox acquisition, command execution, file reads, and release when used. |
+| SQLite-backed APIs | `sqlite` sums GORM statement durations, including row scanning, across the request. |
+| Transcript and attachments | Transcript request decoding, transcript and settings retrieval, and first-frame encoding. Attachments report retrieval and image decoding. The transcript's final `Server-Timing` trailer reports frame assembly, Protobuf encoding, Zstandard compression, and socket writes across the stream. Vite forwards this trailer. Use an HTTP client that reads trailers to inspect the full stream. |
+| Live sessions and terminals | The WebSocket handshake includes completed request phases. When a connection closes, the server logs aggregate phase durations and counts for session-list queries, bootstrap, resync, live deltas, encoding, compression, and socket writes as applicable. Terminal startup logs sandbox acquisition and PTY allocation when they finish, and terminal connections log input, resize, and output writes at close. |
+
 | Layer | Responsibility |
 | --- | --- |
 | [cmd/shinona](../cmd/shinona) | Configuration, account CLI, HTTP server, and adapter wiring. |

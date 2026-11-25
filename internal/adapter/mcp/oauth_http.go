@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/settings"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const oauthCookie = "shinona_mcp_oauth"
@@ -33,11 +35,13 @@ func (o *OAuth) Routes(mux *http.ServeMux, requireUser, sameOrigin func(http.Han
 
 func (h oauthHandler) submittedServer(w http.ResponseWriter, r *http.Request) (settings.MCPServer, bool) {
 	var input struct{ Name string }
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input); err != nil {
+	if err := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 4096)).Decode(&input); err != nil {
 		oauthError(w, "INVALID_MCP_OAUTH", http.StatusBadRequest)
 		return settings.MCPServer{}, false
 	}
+	lookup := timing.Start(r.Context(), "mcp_server_lookup")
 	server, ok := h.lookup(r.Context(), auth.CurrentUser(r.Context()).ID, input.Name)
+	lookup()
 	if !ok || server.OAuth == nil {
 		oauthError(w, "MCP_SERVER_NOT_FOUND", http.StatusNotFound)
 		return settings.MCPServer{}, false
@@ -100,7 +104,9 @@ func (h oauthHandler) disconnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h oauthHandler) metadata(w http.ResponseWriter, r *http.Request) {
+	lookup := timing.Start(r.Context(), "mcp_client_metadata")
 	metadata := h.oauth.ClientMetadata()
+	lookup()
 	if metadata == nil {
 		http.NotFound(w, r)
 		return

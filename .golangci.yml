@@ -24,6 +24,7 @@ linters:
           allow:
             - $gostd
             - github.com/OXeu/shinona/internal/sandbox$
+            - github.com/OXeu/shinona/internal/timing$
         no-host-shell:
           files:
             - $all

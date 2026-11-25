@@ -17,6 +17,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/OXeu/shinona/internal/settings"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const (
@@ -136,8 +137,10 @@ func (o *OAuth) Finish(ctx context.Context, owner, state, code, issuer string, l
 		((grant.RequireIssuer || issuer != "") && issuer != grant.Issuer) {
 		return ErrOAuthFlow
 	}
+	exchange := timing.Start(ctx, "mcp_oauth_token_exchange")
 	token, err := grant.Config.Exchange(grant.tokenContext(ctx, server.URL), code,
 		oauth2.VerifierOption(flow.verifier))
+	exchange()
 	if err != nil {
 		return err
 	}
@@ -154,10 +157,12 @@ func (o *OAuth) Finish(ctx context.Context, owner, state, code, issuer string, l
 	if current, ok := lookup(flow.name); o.flows[state] != flow || !ok || fingerprint(current) != grant.Fingerprint {
 		return ErrOAuthFlow
 	}
+	defer timing.Start(ctx, "mcp_oauth_save_grant")()
 	return o.store.SaveMCPGrant(ctx, owner, flow.name, data)
 }
 
 func (o *OAuth) Disconnect(ctx context.Context, owner, name string) error {
+	defer timing.Start(ctx, "mcp_oauth_disconnect")()
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for state, flow := range o.flows {
