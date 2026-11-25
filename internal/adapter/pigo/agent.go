@@ -46,9 +46,9 @@ func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Work
 	systemPrompt := "You are a coding assistant. Use the provided tools for the sandbox workspace. " +
 		"Tool failures are recoverable. Use any partial results to continue or answer with the evidence you have."
 	toolset := tools(workspace, options.Permission != run.ReadOnly)
-	if options.JSONRender {
-		toolset = append(toolset, jsonRenderTool())
-		systemPrompt += " When a table, metric, progress indicator, or card would make the answer clearer, use render_ui to show it directly."
+	if options.ArrowJS {
+		toolset = append(toolset, arrowRenderTool())
+		systemPrompt += " Use render_ui when a custom visualization or an interactive view would make the answer clearer."
 	}
 	if names := options.SelectedMCPServers(); len(names) > 0 {
 		if a.remote == nil || options.Permission == run.ReadOnly {
@@ -70,24 +70,9 @@ func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Work
 		model.Reasoning = true
 		model.Compat.SupportsReasoningEffort = new(true)
 	}
-	supportsImages := slices.Contains(model.Input, "image")
-	history := make([]agent.AgentMessage, 0, len(input.History)*2)
-	for _, exchange := range input.History {
-		var blocks []ai.ContentBlock
-		if supportsImages {
-			blocks = imageBlocks(exchange.Images)
-		}
-		if exchange.Prompt != "" || len(blocks) > 0 {
-			history = append(history, ai.NewUserMessage(exchange.Prompt, blocks))
-		}
-		for _, steer := range exchange.Steering {
-			if steer.Delivered {
-				history = append(history, ai.NewUserMessage(steer.Text, nil))
-			}
-		}
-		if exchange.Output != "" {
-			history = append(history, ai.NewAssistantMessageForModel(model, ai.TextBlocks(exchange.Output), ai.Usage{}, "stop"))
-		}
+	history, err := conversationHistory(input.History, model)
+	if err != nil {
+		return result, fmt.Errorf("load agent messages: %w", err)
 	}
 	parts := turnParts{report: input.ReportParts, toolIndex: make(map[string]int)}
 	stream := agent.DefaultStreamFn(nil)
@@ -123,6 +108,11 @@ func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Work
 	if usage != (run.TokenUsage{}) {
 		result.TokenUsage = &usage
 	}
+	var encodeErr error
+	result.AgentMessages, encodeErr = encodeTurnMessages(messages)
+	if encodeErr != nil {
+		return result, errors.Join(err, fmt.Errorf("save agent messages: %w", encodeErr))
+	}
 	if err != nil {
 		return result, fmt.Errorf("%w: %w", run.ErrModelResponse, err)
 	}
@@ -145,7 +135,7 @@ func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Work
 	if result.Output == "" {
 		return result, fmt.Errorf("%w: the model returned an empty answer", run.ErrModelResponse)
 	}
-	// The final assistant text already lives in Output for history and older clients.
+	// The transcript displays the final assistant text from Output.
 	result.Parts = append(result.Parts[:parts.finalStart], slices.DeleteFunc(result.Parts[parts.finalStart:], func(part run.TurnPart) bool {
 		return part.Kind == "text"
 	})...)

@@ -3,10 +3,12 @@ package pigo
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/guanshan/pi-go/packages/agent"
@@ -60,7 +62,7 @@ func (e *Endpoint) complete(ctx context.Context, model ai.Model, input ai.Contex
 	compat := ai.GetOpenAICompletionsCompat(model)
 	request := providers.BuildOpenAIChatRequest(e.key, providers.OpenAIChatRequestOptions{
 		ModelID: model.ID, Provider: model.Provider, BaseURL: model.BaseURL,
-		SystemPrompt: input.SystemPrompt, Messages: completionMessages(input.Messages),
+		SystemPrompt: input.SystemPrompt, Messages: completionMessages(input.Messages, model),
 		Tools: ai.ToolDefinitions(ai.ToolsByName(input.Tools)), SupportsImages: ai.SupportsInput(model, "image"),
 		ModelHeaders: model.Headers, RequestHeaders: options.Headers,
 		Temperature: options.Temperature, ToolChoice: options.ToolChoice,
@@ -160,23 +162,60 @@ func readCompletionStream(model ai.Model, body io.Reader, events *ai.AssistantMe
 	return message, nil
 }
 
-func completionMessages(messages []ai.Message) []providers.OpenAIChatMessage {
+func completionMessages(messages []ai.Message, model ai.Model) []providers.OpenAIChatMessage {
 	result := make([]providers.OpenAIChatMessage, 0, len(messages))
+	var pending []ai.ContentBlock
+	finishToolCalls := func() {
+		// A turn can stop after the model requests tools but before the results
+		// are appended. Chat Completions requires a result for every call.
+		for _, call := range pending {
+			result = append(result, providers.OpenAIChatMessage{
+				Role: "toolResult", ToolCallID: call.ID, ToolName: call.Name,
+				Blocks: []providers.OpenAIChatMessageBlock{{Type: "text", Text: "No result provided"}},
+			})
+		}
+		pending = pending[:0]
+	}
 	for _, message := range messages {
+		role := ai.MessageRole(message)
+		if role == "toolResult" {
+			id := ai.MessageToolCallID(message)
+			pending = slices.DeleteFunc(pending, func(call ai.ContentBlock) bool { return call.ID == id })
+		} else {
+			finishToolCalls()
+		}
+		assistant, isAssistant := ai.AsAssistantMessage(message)
+		sameModel := assistant.Provider == model.Provider && assistant.API == model.API && assistant.Model == model.ID
 		content := ai.MessageBlocks(message)
 		blocks := make([]providers.OpenAIChatMessageBlock, 0, len(content))
 		for _, block := range content {
+			// Follow pi-go's provider history rules for model-specific reasoning.
+			if isAssistant && !sameModel {
+				switch block.Type {
+				case "thinking":
+					if block.Redacted || block.Thinking == "" {
+						continue
+					}
+					block = ai.ContentBlock{Type: "text", Text: block.Thinking}
+				case "toolCall":
+					block.ThoughtSignature = ""
+				}
+			}
+			if block.Type == "toolCall" {
+				pending = append(pending, block)
+			}
 			blocks = append(blocks, providers.OpenAIChatMessageBlock{
 				Type: block.Type, Text: block.Text, MimeType: block.MimeType, Data: block.Data, Thinking: block.Thinking,
 				ID: block.ID, Name: block.Name, Arguments: block.Arguments,
-				ThinkingSignature: block.Signature, ThoughtSignature: block.ThoughtSignature,
+				ThinkingSignature: cmp.Or(block.Signature, block.ThinkingSignature), ThoughtSignature: block.ThoughtSignature,
 			})
 		}
 		result = append(result, providers.OpenAIChatMessage{
-			Role: ai.MessageRole(message), Text: ai.MessageText(message), Blocks: blocks,
+			Role: role, Text: ai.MessageText(message), Blocks: blocks,
 			ToolCallID: ai.MessageToolCallID(message), ToolName: ai.MessageToolName(message),
 		})
 	}
+	finishToolCalls()
 	return result
 }
 

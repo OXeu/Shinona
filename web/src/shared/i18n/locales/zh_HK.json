@@ -310,8 +310,6 @@
   "composer.contextTokens": "上下文用量：{used} 個詞元",
   "composer.queue": "加入佇列",
   "composer.steer": "引導目前執行",
-  "composer.steerSent": "已傳送引導訊息。",
-  "composer.steerPending": "正在等候代理接收此指令",
   "composer.steerUndelivered": "此指令未送達",
   "composer.runningDefault": "執行中按 Enter 的操作",
   "composer.otherAction": "其他傳送操作",
@@ -320,9 +318,9 @@
   "composer.stopRequested": "已要求停止。",
   "composer.stopFailed": "未能停止本輪執行。",
   "composer.removeQueued": "移除佇列中的提示",
-  "composer.queuedMessages": "佇列訊息",
-  "composer.showAllQueued": "顯示全部 {count} 條佇列訊息",
-  "composer.showFewerQueued": "收合",
+  "composer.pendingMessages": "待傳送訊息",
+  "composer.showAllPending": "顯示全部 {count} 條待傳送訊息",
+  "composer.showFewerPending": "收合",
   "composer.notRunning": "本輪執行已無法接受此操作。",
   "composer.queueFull": "對話佇列已滿。"
 }

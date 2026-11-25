@@ -10,7 +10,6 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   scroll?: boolean
   floating?: boolean
-  externalTrigger?: boolean
 }>(), { align: 'end', boundary: '', side: 'bottom' })
 
 const emit = defineEmits<{ 'open-change': [open: boolean] }>()
@@ -121,7 +120,7 @@ function openMenu(trigger: HTMLElement, clientX?: number) {
 }
 
 function openFrom(trigger: HTMLElement, clientX?: number) {
-  if (!props.externalTrigger || props.disabled) return
+  if (props.disabled) return
   externalAnchor = trigger
   openMenu(trigger, clientX)
   menu.value?.querySelector<HTMLElement>('button:not(:disabled)')?.focus()
@@ -184,7 +183,6 @@ onUnmounted(() => {
     <summary
       ref="summary"
       class="dropdown-trigger"
-      :hidden="externalTrigger"
       :aria-label="label"
       :aria-disabled="disabled || undefined"
       :title="label"

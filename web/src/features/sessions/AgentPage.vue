@@ -235,7 +235,6 @@ async function submit(action: ComposerAction, payload: ComposerPayload) {
       }
       await sessionApi.steer(scope.id, running.id, message, scope.controller.signal)
       if (scope.controller.signal.aborted) return
-      notify.success(t('composer.steerSent'))
     } else {
       if (!policy.value) {
         setChatError('submit', t('sandbox.none'))

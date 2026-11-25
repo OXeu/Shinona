@@ -115,9 +115,10 @@ const messages = computed(() => {
     if (turn.status === 'QUEUED') continue
     rows.push({ id: turn.id + '/prompt', kind: 'user', turnId: turn.id, text: turn.prompt, attachments: turn.attachments })
     for (const [index, steer] of turn.steering.entries()) {
+      if (!steer.delivered && turn.status === 'RUNNING') continue
       const key = turn.id + '/steer-' + index
       rows.push({ id: key, kind: 'user', text: steer.text })
-      if (!steer.delivered && turn.status !== 'RUNNING') {
+      if (!steer.delivered) {
         rows.push({
           id: key + '/state', kind: 'system',
           text: t('composer.steerUndelivered'),

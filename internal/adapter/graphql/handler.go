@@ -216,13 +216,13 @@ func (r sessionResolver) LastOptions() *lastOptionsResolver {
 	}
 	options := r.lastOptions
 	return &lastOptionsResolver{Model: options.Model, Permission: options.Permission,
-		Thinking: options.Thinking, MCPServers: append([]string{}, options.SelectedMCPServers()...), JSONRender: options.JSONRender}
+		Thinking: options.Thinking, MCPServers: append([]string{}, options.SelectedMCPServers()...), ArrowJS: options.ArrowJS}
 }
 
 type lastOptionsResolver struct {
 	Model, Permission, Thinking string
 	MCPServers                  []string
-	JSONRender                  bool
+	ArrowJS                     bool
 }
 
 func (r sessionResolver) Turns() []runResolver {

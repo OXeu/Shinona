@@ -310,8 +310,6 @@
   "composer.contextTokens": "上下文用量：{used} 个词元",
   "composer.queue": "加入队列",
   "composer.steer": "引导当前运行",
-  "composer.steerSent": "已发送引导消息。",
-  "composer.steerPending": "等待智能体接收此指令",
   "composer.steerUndelivered": "此指令未送达",
   "composer.runningDefault": "运行中按 Enter 的操作",
   "composer.otherAction": "其他发送操作",
@@ -320,9 +318,9 @@
   "composer.stopRequested": "已请求停止。",
   "composer.stopFailed": "无法停止本轮运行。",
   "composer.removeQueued": "移除排队提示",
-  "composer.queuedMessages": "排队消息",
-  "composer.showAllQueued": "显示全部 {count} 条排队消息",
-  "composer.showFewerQueued": "收起",
+  "composer.pendingMessages": "待发送消息",
+  "composer.showAllPending": "显示全部 {count} 条待发送消息",
+  "composer.showFewerPending": "收起",
   "composer.notRunning": "本轮运行已无法接受此操作。",
   "composer.queueFull": "会话队列已满。"
 }

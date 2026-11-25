@@ -88,6 +88,7 @@ type Run struct {
 	Payload       Payload
 	Steering      []SteeringMessage
 	Parts         []TurnPart
+	AgentMessages []byte `json:"-"`
 	ContextTokens int
 	ContextWindow int
 	TokenUsage    *TokenUsage
@@ -108,10 +109,11 @@ type Completion struct {
 }
 
 type Exchange struct {
-	Images   []Image
-	Prompt   string
-	Output   string
-	Steering []SteeringMessage
+	Images        []Image
+	Prompt        string
+	Output        string
+	Steering      []SteeringMessage
+	AgentMessages []byte
 }
 
 type Input struct {

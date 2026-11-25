@@ -62,7 +62,7 @@ func TestConversationLifecycleAndOwnership(t *testing.T) {
 		t.Fatalf("other account settings: %+v", settings)
 	}
 
-	const submit = `mutation AddTurn($id: ID!, $prompt: String!) { submitRun(sessionId:$id, prompt:$prompt, payload:{jsonRender:true}) { id status policy } }`
+	const submit = `mutation AddTurn($id: ID!, $prompt: String!) { submitRun(sessionId:$id, prompt:$prompt, payload:{arrowJs:true}) { id status policy } }`
 	variables := map[string]string{"id": id, "prompt": "first prompt"}
 	unknown := query(t, handler, bob, submit, variables)
 	if len(unknown.Errors) != 1 || unknown.Errors[0].Message != run.ErrSession.Error() ||
@@ -91,8 +91,8 @@ func TestConversationLifecycleAndOwnership(t *testing.T) {
 	}()
 
 	firstTranscript := waitForTurn(t, handler, alice, id, 1)
-	if firstTranscript.LastOptions == nil || !firstTranscript.LastOptions.JSONRender {
-		t.Fatal("json-render selection was not persisted and returned")
+	if firstTranscript.LastOptions == nil || !firstTranscript.LastOptions.ArrowJS {
+		t.Fatal("arrow-js selection was not persisted and returned")
 	}
 	if !strings.Contains(firstTranscript.Turns[0].Output, "0 earlier turns") {
 		t.Fatalf("first turn used history: %+v", firstTranscript)
@@ -293,7 +293,7 @@ func waitForTurn(t *testing.T, handler http.Handler, ctx context.Context, id str
 	defer ticker.Stop()
 	for {
 		response := query(t, handler, ctx, `query Session($id: ID!) {
-			session(id:$id) { title defaultTitle turnCount lastOptions { jsonRender } turns { status output policy startedAt parts { kind text } } }
+			session(id:$id) { title defaultTitle turnCount lastOptions { arrowJs } turns { status output policy startedAt parts { kind text } } }
 		}`, map[string]string{"id": id})
 		if len(response.Errors) != 0 {
 			t.Fatalf("read transcript: %+v", response)
@@ -325,7 +325,7 @@ type sessionResult struct {
 	DefaultTitle bool
 	Title        string
 	TurnCount    int
-	LastOptions  *struct{ JSONRender bool }
+	LastOptions  *struct{ ArrowJS bool }
 	Turns        []turnResult
 }
 

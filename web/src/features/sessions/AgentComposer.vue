@@ -10,7 +10,7 @@ import UiTextarea from '../../shared/ui/UiTextarea.vue'
 import { UiBox, UiButton, UiForm, UiImage, UiInline } from '../../shared/ui/elements'
 import ComposerConfigOptions from './ComposerConfigOptions.vue'
 import ComposerPluginSelector from './ComposerPluginSelector.vue'
-import QueuedMessages from './QueuedMessages.vue'
+import PendingMessages from './PendingMessages.vue'
 import { resolveComposerDefaults, runningAction } from './composerPreferences'
 import type { ComposerSelection } from './composerPreferences'
 import { formatCompactTokens } from './presentation'
@@ -34,9 +34,9 @@ const mcp = computed({
   get: () => selection.value.mcpServers ?? lastOptions.value?.mcpServers ?? [],
   set: (mcpServers: string[]) => choose({ mcpServers }),
 })
-const jsonRender = computed({
-  get: () => selection.value.jsonRender ?? lastOptions.value?.jsonRender ?? false,
-  set: (enabled: boolean) => choose({ jsonRender: enabled }),
+const arrowJs = computed({
+  get: () => selection.value.arrowJs ?? lastOptions.value?.arrowJs ?? false,
+  set: (enabled: boolean) => choose({ arrowJs: enabled }),
 })
 const reading = ref(false)
 const actionMenu = useTemplateRef('actionMenu')
@@ -62,12 +62,20 @@ const runOptions = computed<ComposerRunOptions>(() => ({
   permission: permission.value,
   thinking: thinking.value,
   mcpServers: permission.value === 'READ_ONLY' ? [] : props.catalog.mcpServers.filter(name => mcp.value.includes(name)),
-  jsonRender: jsonRender.value,
+  arrowJs: arrowJs.value,
 }))
 defineExpose({ runOptions })
 
 const active = computed(() => props.session?.turns.find((turn) => turn.status === 'RUNNING'))
 const queued = computed(() => props.session?.turns.filter((turn) => turn.status === 'QUEUED') ?? [])
+const pending = computed(() => {
+  const turn = active.value
+  const steering = turn?.steering.flatMap((message, index) => message.delivered ? [] : [{
+    id: `${turn.id}/steer-${index}`,
+    prompt: message.text,
+  }]) ?? []
+  return [...steering, ...queued.value.map(({ id, prompt, attachments }) => ({ id, prompt, attachments, removable: true }))]
+})
 const stopTarget = computed(() => active.value ?? queued.value[0])
 const hasDraft = computed(() => !!prompt.value.trim() || images.value.length > 0)
 const primaryAction = computed<ComposerAction | 'stop'>(() => {
@@ -215,7 +223,7 @@ onUnmounted(() => { disposed = true })
 </script>
 
 <template>
-  <QueuedMessages :turns="queued" :busy="busy" @remove="emit('stop', $event)" />
+  <PendingMessages :messages="pending" :busy="busy" @remove="emit('stop', $event)" />
   <UiForm
     class="chat-composer"
     @submit.prevent="submit"
@@ -252,7 +260,7 @@ onUnmounted(() => { disposed = true })
         <UiImagePicker :label="t('composer.attach')" :disabled="busy || reading || images.length >= 4" @files="attach" />
         <ComposerPluginSelector
           v-model="mcp"
-          v-model:json-render="jsonRender"
+          v-model:arrow-js="arrowJs"
           :servers="catalog.mcpServers"
           :mcp-disabled="permission === 'READ_ONLY'"
           :disabled="busy"
@@ -296,13 +304,18 @@ onUnmounted(() => { disposed = true })
           <UiDropdown
             ref="actionMenu"
             :label="t('composer.otherAction')"
+            :hidden="!actionMenuAvailable"
             :disabled="!actionMenuAvailable"
             boundary=".composer-toolbar"
             side="top"
-            external-trigger
             floating
             @open-change="actionMenuOpen = $event"
           >
+            <template #trigger>
+              <UiBox class="composer-action-icon">
+                <UiIcon name="arrow-up-s-line" />
+              </UiBox>
+            </template>
             <template #default="{ close }">
               <UiButton class="menu-item" @click="close(true); send('queue')">{{ label('queue') }}</UiButton>
               <UiButton class="menu-item" :disabled="!canSend('steer')" @click="close(true); send('steer')">{{ label('steer') }}</UiButton>
@@ -334,7 +347,17 @@ onUnmounted(() => { disposed = true })
   border-radius: var(--radius-sm);
 }
 .composer-context { font-variant-numeric: tabular-nums; white-space: nowrap; }
-.composer-action { display: flex; align-items: center; }
+.composer-action { display: flex; align-items: center; gap: 2px; }
+.composer-action-icon {
+  display: grid;
+  width: 22px;
+  height: 34px;
+  place-items: center;
+  border-radius: var(--radius-full);
+  color: var(--muted);
+  font-size: 1rem;
+}
+.composer-action-icon:hover { background: var(--sidebar-bg); color: var(--foreground); }
 .composer-send {
   display: grid;
   width: 34px;

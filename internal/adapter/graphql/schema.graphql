@@ -139,7 +139,7 @@ type RunOptions {
   permission: String!
   thinking: String!
   mcpServers: [String!]!
-  jsonRender: Boolean!
+  arrowJs: Boolean!
 }
 
 type Run {
@@ -251,7 +251,7 @@ input RunPayloadInput {
   thinking: String
   mcp: String
   mcpServers: [String!]
-  jsonRender: Boolean
+  arrowJs: Boolean
 }
 
 input RetryOptionsInput {
@@ -259,7 +259,7 @@ input RetryOptionsInput {
   permission: String!
   thinking: String!
   mcpServers: [String!]!
-  jsonRender: Boolean
+  arrowJs: Boolean
 }
 
 type McpSettings {

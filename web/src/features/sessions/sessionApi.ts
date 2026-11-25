@@ -103,7 +103,7 @@ export interface ComposerRunOptions {
   permission: string
   thinking: string
   mcpServers: string[]
-  jsonRender: boolean
+  arrowJs: boolean
 }
 
 export interface ComposerPayload extends ComposerRunOptions {
@@ -129,7 +129,7 @@ export const sessionApi = {
   detail: async (id: string, signal: AbortSignal) =>
     await sessionTransfer.detail(id, signal) ?? graphql<{ session: AgentSession | null; sandboxSettings: SandboxSettings }>(`
       query Session($id: ID!) {
-        session(id: $id) { ${sessionFields} lastOptions { model permission thinking mcpServers jsonRender } turns { ${turnFields} } }
+        session(id: $id) { ${sessionFields} lastOptions { model permission thinking mcpServers arrowJs } turns { ${turnFields} } }
         sandboxSettings { ${settingsFields} }
       }
     `, { id }, signal),

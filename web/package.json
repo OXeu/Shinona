@@ -13,9 +13,8 @@
     "test": "node --experimental-strip-types --test lint/*.test.js"
   },
   "dependencies": {
+    "@arrow-js/sandbox": "1.0.6",
     "@bufbuild/protobuf": "2.17.0",
-    "@json-render/core": "0.23.2",
-    "@json-render/vue": "0.23.2",
     "@tanstack/vue-virtual": "3.13.54",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
@@ -26,12 +25,13 @@
     "pinia": "4.1.0",
     "remixicon": "4.9.1",
     "vue": "3.5.46",
-    "vue-router": "4.6.5",
-    "zod": "4.6.7"
+    "vue-router": "4.6.5"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
     "@vitejs/plugin-vue": "6.0.11",
+    "esbuild": "0.28.2",
     "eslint": "10.15.0",
     "eslint-plugin-vue": "10.12.1",
     "less": "4.9.1",

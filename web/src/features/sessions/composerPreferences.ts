@@ -16,7 +16,7 @@ export interface ComposerSelection {
   permission?: string | null
   thinking?: string | null
   mcpServers?: string[]
-  jsonRender?: boolean
+  arrowJs?: boolean
 }
 
 function sessionKey(owner: string, session: string) {
@@ -36,7 +36,7 @@ export function readComposerSelection(owner: string, session: string): ComposerS
     if ('mcpServers' in saved && Array.isArray(saved.mcpServers)) {
       result.mcpServers = saved.mcpServers.filter((name): name is string => typeof name === 'string')
     }
-    if ('jsonRender' in saved && typeof saved.jsonRender === 'boolean') result.jsonRender = saved.jsonRender
+    if ('arrowJs' in saved && typeof saved.arrowJs === 'boolean') result.arrowJs = saved.arrowJs
     return result
   } catch {
     return {}

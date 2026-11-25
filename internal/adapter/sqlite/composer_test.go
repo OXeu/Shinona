@@ -32,8 +32,14 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	type modelMessage struct {
-		Role    string
-		Content json.RawMessage
+		Role             string
+		Content          json.RawMessage
+		ReasoningContent string `json:"reasoning_content"`
+		ToolCallID       string `json:"tool_call_id"`
+		ToolCalls        []struct {
+			ID       string
+			Function struct{ Name, Arguments string }
+		} `json:"tool_calls"`
 	}
 	requests := make(chan []modelMessage, 8)
 	const modelKey = "fake-model-api-key"
@@ -49,7 +55,8 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 			return
 		}
 		requests <- body.Messages
-		rejected := strings.Contains(string(body.Messages[len(body.Messages)-1].Content), "fixture rejected")
+		last := body.Messages[len(body.Messages)-1]
+		rejected := strings.Contains(string(last.Content), "fixture rejected")
 		if rejected && !rejectedOnce.Swap(true) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -60,6 +67,12 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 			t.Errorf("retry requested model %q", body.Model)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
+		if last.Role == "user" && strings.Contains(string(last.Content), "fixture initial prompt") {
+			_, _ = io.WriteString(w, `data: {"id":"tool","object":"chat.completion.chunk","model":"fixture","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"fixture reasoning","content":"I'll read the fixture.","tool_calls":[{"index":0,"id":"call_fixture","type":"function","function":{"name":"read","arguments":"{\"path\":\"fixture.txt\"}"}}]},"finish_reason":null}]}`+"\n\n"+
+				`data: {"id":"tool","object":"chat.completion.chunk","model":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				"data: [DONE]\n\n")
+			return
+		}
 		_, _ = io.WriteString(w, `data: {"id":"one","object":"chat.completion.chunk","model":"fixture","choices":[{"index":0,"delta":{"role":"assistant","content":"fixture reply"},"finish_reason":null}]}`+"\n\n"+
 			`data: {"id":"one","object":"chat.completion.chunk","model":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n"+
 			"data: [DONE]\n\n")
@@ -98,6 +111,43 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 	reply := expectedMessage{"assistant", "fixture reply"}
 	rejected := expectedMessage{"user", "fixture rejected prompt"}
 	followUp := expectedMessage{"user", "fixture follow-up"}
+	firstSteps := []expectedMessage{first, {"assistant", "I'll read the fixture."}, {"tool", "sandbox operations are disabled in demo mode"}}
+	firstHistory := append(slices.Clone(firstSteps), reply)
+	assertRequest := func(expected []expectedMessage, sameModel bool) {
+		t.Helper()
+		select {
+		case messages := <-requests:
+			conversation := slices.DeleteFunc(messages, func(message modelMessage) bool { return message.Role == "system" || message.Role == "developer" })
+			if len(conversation) != len(expected) {
+				t.Fatalf("model request has %d conversation messages, want %d: %+v", len(conversation), len(expected), conversation)
+			}
+			for i, want := range expected {
+				got := conversation[i]
+				if got.Role != want.role || !strings.Contains(string(got.Content), want.text) {
+					t.Fatalf("wrong model message at index %d: %s %s", i, got.Role, got.Content)
+				}
+				switch want {
+				case firstSteps[1]:
+					if len(got.ToolCalls) != 1 || got.ToolCalls[0].ID != "call_fixture" ||
+						got.ToolCalls[0].Function.Name != "read" || got.ToolCalls[0].Function.Arguments != `{"path":"fixture.txt"}` {
+						t.Fatalf("wrong tool call: %+v", got)
+					}
+					if sameModel && got.ReasoningContent != "fixture reasoning" {
+						t.Fatalf("same-model request lost reasoning content: %+v", got)
+					}
+					if !sameModel && (got.ReasoningContent != "" || !strings.Contains(string(got.Content), "fixture reasoning")) {
+						t.Fatalf("model switch did not convert reasoning content to text: %+v", got)
+					}
+				case firstSteps[2]:
+					if got.ToolCallID != "call_fixture" {
+						t.Fatalf("wrong tool result ID: %s", got.ToolCallID)
+					}
+				}
+			}
+		case <-ctx.Done():
+			t.Fatal("missing model request")
+		}
+	}
 	payload := run.Payload{
 		Images:  []run.Image{{Name: "attached.jpg", MediaType: "image/jpeg", Data: "/9j/4A=="}},
 		Options: run.Options{Model: "fixture", Permission: run.ReadOnly, Thinking: "low"},
@@ -110,9 +160,9 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 		retry    bool
 	}{
 		{first.text, run.Succeeded, []expectedMessage{first}, false},
-		{rejected.text, run.Failed, []expectedMessage{first, reply, rejected}, false},
-		{rejected.text, run.Succeeded, []expectedMessage{first, reply, rejected}, true},
-		{followUp.text, run.Succeeded, []expectedMessage{first, reply, rejected, reply, followUp}, false},
+		{rejected.text, run.Failed, append(slices.Clone(firstHistory), rejected), false},
+		{rejected.text, run.Succeeded, append(slices.Clone(firstHistory), rejected), true},
+		{followUp.text, run.Succeeded, append(slices.Clone(firstHistory), rejected, reply, followUp), false},
 	} {
 		var item run.Run
 		var err error
@@ -148,19 +198,9 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 				t.Fatalf("incorrect failure detail: %+v", detail)
 			}
 		}
-		select {
-		case messages := <-requests:
-			conversation := slices.DeleteFunc(messages, func(message modelMessage) bool { return message.Role == "system" })
-			if len(conversation) != len(turn.expected) {
-				t.Fatalf("model request for %q has %d conversation messages, want %d", turn.prompt, len(conversation), len(turn.expected))
-			}
-			for i, expected := range turn.expected {
-				if conversation[i].Role != expected.role || !strings.Contains(string(conversation[i].Content), expected.text) {
-					t.Fatalf("model request for %q has wrong message at index %d: %s %s", turn.prompt, i, conversation[i].Role, conversation[i].Content)
-				}
-			}
-		case <-ctx.Done():
-			t.Fatalf("missing model request for %q", turn.prompt)
+		assertRequest(turn.expected, !turn.retry)
+		if turn.prompt == first.text {
+			assertRequest(firstSteps, true)
 		}
 	}
 	if _, err := service.RetryTurn(ctx, "owner", session.ID, failedID, run.RetryOptions{}); !errors.Is(err, run.ErrRetryTurn) {

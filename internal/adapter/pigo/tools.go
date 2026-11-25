@@ -18,6 +18,7 @@ type tool struct {
 	name        string
 	description string
 	fields      []string
+	optional    []string
 	execute     func(context.Context, map[string]string) (agent.AgentToolResult, error)
 }
 
@@ -28,6 +29,9 @@ func (t tool) Description() string { return t.description }
 func (t tool) Schema() map[string]any {
 	properties := make(map[string]any, len(t.fields))
 	for _, field := range t.fields {
+		properties[field] = map[string]string{"type": "string"}
+	}
+	for _, field := range t.optional {
 		properties[field] = map[string]string{"type": "string"}
 	}
 	return map[string]any{

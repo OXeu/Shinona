@@ -63,7 +63,7 @@ func (p *turnParts) event(_ context.Context, event agent.AgentEvent) error {
 				state = run.Failed
 			}
 			if display, ok := ev.Result.Details.(renderedUI); ok && !ev.IsError {
-				p.completed[index] = run.TurnPart{Kind: "ui", Text: display.summary, Output: display.spec}
+				p.completed[index] = run.TurnPart{Kind: "ui", Tool: "arrow-js", Text: display.summary, Output: display.source}
 				break
 			}
 			p.completed[index].Status = string(state)

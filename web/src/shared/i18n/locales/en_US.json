@@ -310,8 +310,6 @@
   "composer.contextTokens": "Context used: {used} tokens",
   "composer.queue": "Queue",
   "composer.steer": "Steer",
-  "composer.steerSent": "Steering sent.",
-  "composer.steerPending": "Waiting for the agent to take this instruction",
   "composer.steerUndelivered": "This instruction was not delivered",
   "composer.runningDefault": "Enter key action while a turn is running",
   "composer.otherAction": "Other send action",
@@ -320,9 +318,9 @@
   "composer.stopRequested": "Stop requested.",
   "composer.stopFailed": "Could not stop this turn.",
   "composer.removeQueued": "Remove queued prompt",
-  "composer.queuedMessages": "Queued messages",
-  "composer.showAllQueued": "Show all {count} queued",
-  "composer.showFewerQueued": "Show fewer",
+  "composer.pendingMessages": "Pending messages",
+  "composer.showAllPending": "Show all {count} pending messages",
+  "composer.showFewerPending": "Show fewer",
   "composer.notRunning": "This turn is no longer accepting the action.",
   "composer.queueFull": "The session queue is full."
 }

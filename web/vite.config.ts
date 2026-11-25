@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig, loadEnv } from 'vite'
 import type { Plugin } from 'vite'
+import { arrowFrame } from './arrow-frame-plugin.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 
@@ -25,7 +26,7 @@ export default defineConfig(({ mode }) => {
     changeOrigin: false,
   }
   return {
-    plugins: [vue(), dingStyles()],
+    plugins: [vue(), dingStyles(), arrowFrame()],
     server: {
       host: '127.0.0.1',
       strictPort: true,

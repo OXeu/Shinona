@@ -47,7 +47,7 @@ func runOptions(options *run.Options) *sessionpb.RunOptions {
 		return nil
 	}
 	return &sessionpb.RunOptions{Model: options.Model, Permission: options.Permission,
-		Thinking: options.Thinking, McpServers: options.SelectedMCPServers(), JsonRender: options.JSONRender}
+		Thinking: options.Thinking, McpServers: options.SelectedMCPServers(), ArrowJs: options.ArrowJS}
 }
 
 func turn(item run.Run) *sessionpb.Turn {

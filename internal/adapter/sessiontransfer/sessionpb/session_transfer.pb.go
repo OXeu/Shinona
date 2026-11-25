@@ -443,7 +443,7 @@ type RunOptions struct {
 	Permission    string                 `protobuf:"bytes,2,opt,name=permission,proto3" json:"permission,omitempty"`
 	Thinking      string                 `protobuf:"bytes,3,opt,name=thinking,proto3" json:"thinking,omitempty"`
 	McpServers    []string               `protobuf:"bytes,4,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
-	JsonRender    bool                   `protobuf:"varint,5,opt,name=json_render,json=jsonRender,proto3" json:"json_render,omitempty"`
+	ArrowJs       bool                   `protobuf:"varint,6,opt,name=arrow_js,json=arrowJs,proto3" json:"arrow_js,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -506,9 +506,9 @@ func (x *RunOptions) GetMcpServers() []string {
 	return nil
 }
 
-func (x *RunOptions) GetJsonRender() bool {
+func (x *RunOptions) GetArrowJs() bool {
 	if x != nil {
-		return x.JsonRender
+		return x.ArrowJs
 	}
 	return false
 }
@@ -1657,9 +1657,8 @@ const file_session_transfer_proto_rawDesc = "" +
 	"permission\x12\x1a\n" +
 	"\bthinking\x18\x03 \x01(\tR\bthinking\x12\x1f\n" +
 	"\vmcp_servers\x18\x04 \x03(\tR\n" +
-	"mcpServers\x12\x1f\n" +
-	"\vjson_render\x18\x05 \x01(\bR\n" +
-	"jsonRender\"B\n" +
+	"mcpServers\x12\x19\n" +
+	"\barrow_js\x18\x06 \x01(\bR\aarrowJsJ\x04\b\x05\x10\x06\"B\n" +
 	"\x0fTranscriptTurns\x12/\n" +
 	"\x05turns\x18\x01 \x03(\v2\x19.shinona.sessions.v1.TurnR\x05turns\"]\n" +
 	"\x0fSandboxSettings\x12\x1c\n" +

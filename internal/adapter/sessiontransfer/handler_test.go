@@ -55,7 +55,7 @@ func (fixtureReader) Transcript(_ context.Context, owner, id string) (*run.Trans
 	}
 	turns[0].TokenUsage = &run.TokenUsage{Input: 3_100, Cached: 2_122_000, Output: 30_210}
 	turns[0].Parts = []run.TurnPart{{Kind: "ui", Text: "Total: 42", Output: fixtureUISpec}}
-	turns[len(turns)-1].Payload.Options = run.Options{Model: "chosen-model", Permission: run.Workspace, Thinking: "high", MCP: "saved-mcp", JSONRender: true}
+	turns[len(turns)-1].Payload.Options = run.Options{Model: "chosen-model", Permission: run.Workspace, Thinking: "high", MCP: "saved-mcp", ArrowJS: true}
 	return &run.Transcript{Session: run.Session{ID: id, TurnCount: len(turns)}, Turns: turns}, nil
 }
 
@@ -191,7 +191,7 @@ func TestTranscriptFramesAndOwnership(t *testing.T) {
 		if len(chunks) != 4 || chunks[0].GetHeader().GetSession().GetTurnCount() != 10 {
 			t.Fatalf("expected header and two turn batches, got %v", chunks)
 		}
-		wantOptions := &sessionpb.RunOptions{Model: "chosen-model", Permission: run.Workspace, Thinking: "high", McpServers: []string{"saved-mcp"}, JsonRender: true}
+		wantOptions := &sessionpb.RunOptions{Model: "chosen-model", Permission: run.Workspace, Thinking: "high", McpServers: []string{"saved-mcp"}, ArrowJs: true}
 		if options := chunks[0].GetHeader().GetLastOptions(); !proto.Equal(options, wantOptions) {
 			t.Fatalf("unexpected composer options: %v", options)
 		}

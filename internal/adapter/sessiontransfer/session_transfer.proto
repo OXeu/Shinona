@@ -51,7 +51,8 @@ message RunOptions {
   string permission = 2;
   string thinking = 3;
   repeated string mcp_servers = 4;
-  bool json_render = 5;
+  reserved 5;
+  bool arrow_js = 6;
 }
 
 message TranscriptTurns {

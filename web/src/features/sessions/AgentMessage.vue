@@ -102,7 +102,8 @@ async function copy() {
         <AgentRichContent
           v-for="part in chunk.kind === 'ui' ? [chunk.part] : []"
           :key="part.index"
-          :spec="part.output"
+          :format="part.tool"
+          :payload="part.output"
           :summary="part.text"
         />
         <UiBox v-for="group in chunk.kind === 'process' ? [chunk] : []" :key="group.index">

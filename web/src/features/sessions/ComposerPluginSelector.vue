@@ -8,11 +8,11 @@ import { UiBox, UiButton, UiInline } from '../../shared/ui/elements'
 
 const props = defineProps<{ servers: string[]; disabled: boolean; mcpDisabled: boolean }>()
 const selected = defineModel<string[]>({ required: true })
-const jsonRender = defineModel<boolean>('jsonRender', { required: true })
+const arrowJs = defineModel<boolean>('arrowJs', { required: true })
 const groups = computed(() => [
   {
     label: t('composer.pluginGroup'),
-    options: [{ label: 'json-render', enabled: jsonRender.value, disabled: false, toggle: () => { jsonRender.value = !jsonRender.value } }],
+    options: [{ label: 'ArrowJS', enabled: arrowJs.value, disabled: false, toggle: () => { arrowJs.value = !arrowJs.value } }],
   },
   {
     label: 'MCP',

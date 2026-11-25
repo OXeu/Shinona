@@ -92,7 +92,7 @@ type payloadInput struct {
 	Thinking   *string
 	MCP        *string
 	MCPServers *[]string
-	JSONRender *bool
+	ArrowJS    *bool
 }
 
 func (p *payloadInput) payload() run.Payload {
@@ -101,7 +101,7 @@ func (p *payloadInput) payload() run.Payload {
 	}
 	payload := run.Payload{Options: run.Options{
 		Model: value(p.Model), Permission: value(p.Permission), Thinking: value(p.Thinking), MCP: value(p.MCP),
-		JSONRender: p.JSONRender != nil && *p.JSONRender,
+		ArrowJS: p.ArrowJS != nil && *p.ArrowJS,
 	}}
 	if p.MCPServers != nil {
 		payload.Options.MCPServers = *p.MCPServers
@@ -147,7 +147,7 @@ func (r *resolver) StopRun(ctx context.Context, args struct{ SessionID, RunID gq
 type retryOptionsInput struct {
 	Model, Permission, Thinking string
 	MCPServers                  []string
-	JSONRender                  *bool
+	ArrowJS                     *bool
 }
 
 func (r *resolver) RetryTurn(ctx context.Context, args struct {
@@ -158,7 +158,7 @@ func (r *resolver) RetryTurn(ctx context.Context, args struct {
 	retry := run.RetryOptions{Model: value(args.Model)}
 	if input := args.Options; input != nil {
 		retry.Selection = &run.Options{Model: input.Model, Permission: input.Permission, Thinking: input.Thinking,
-			MCPServers: input.MCPServers, JSONRender: input.JSONRender != nil && *input.JSONRender}
+			MCPServers: input.MCPServers, ArrowJS: input.ArrowJS != nil && *input.ArrowJS}
 	}
 	item, err := r.service.RetryTurn(ctx, auth.CurrentUser(ctx).ID, string(args.SessionID), string(args.TurnID), retry)
 	if err != nil {

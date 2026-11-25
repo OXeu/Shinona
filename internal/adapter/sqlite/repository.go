@@ -30,6 +30,7 @@ type row struct {
 	Payload       run.Payload           `gorm:"serializer:json"`
 	Steering      []run.SteeringMessage `gorm:"serializer:json"`
 	Parts         []run.TurnPart        `gorm:"serializer:json"`
+	AgentMessages []byte
 	ContextTokens int
 	ContextWindow int
 	TokenUsage    *run.TokenUsage  `gorm:"serializer:json"`
@@ -117,12 +118,12 @@ func (r *Repository) Complete(ctx context.Context, id string, completion run.Com
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var item row
-		result := tx.Model(&item).Clauses(clause.Returning{}).
+		result := tx.Model(&item).Clauses(clause.Returning{Columns: []clause.Column{{Name: "session_id"}}}).
 			Where("id = ? AND status = ?", id, run.Running).
 			Updates(map[string]any{
 				"status": completion.Status, "output": completion.Output, "updated_at": completion.UpdatedAt,
 				"steering": string(steering), "parts": string(parts), "context_tokens": completion.ContextTokens,
-				"context_window": completion.ContextWindow, "token_usage": usage,
+				"context_window": completion.ContextWindow, "token_usage": usage, "agent_messages": completion.AgentMessages,
 			})
 		if result.Error != nil {
 			return result.Error

@@ -36,7 +36,7 @@ type Options struct {
 	Thinking   string
 	MCP        string   `json:",omitempty"` // Read selections saved by older versions.
 	MCPServers []string `json:",omitempty"`
-	JSONRender bool     `json:",omitempty"`
+	ArrowJS    bool     `json:",omitempty"`
 }
 
 func (o Options) SelectedMCPServers() []string {
@@ -65,6 +65,7 @@ type RetryOptions struct {
 type Result struct {
 	Output        string
 	Parts         []TurnPart
+	AgentMessages []byte // Adapter-encoded messages added after the turn's initial prompt.
 	ContextTokens int
 	ContextWindow int
 	TokenUsage    *TokenUsage

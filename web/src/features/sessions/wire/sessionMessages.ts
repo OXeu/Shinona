@@ -3,8 +3,8 @@ import type { RunOptions, SandboxSettings as SettingsMessage, SessionSummary as 
 
 export function decodeRunOptions(options: RunOptions | undefined): ComposerRunOptions | null {
   if (!options) return null
-  const { model, permission, thinking, mcpServers, jsonRender } = options
-  return { model, permission, thinking, mcpServers, jsonRender }
+  const { model, permission, thinking, mcpServers, arrowJs } = options
+  return { model, permission, thinking, mcpServers, arrowJs }
 }
 
 export function decodeSessionSummary(message: SessionMessage): SessionSummary {
