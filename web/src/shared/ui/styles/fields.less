@@ -3,7 +3,7 @@
   width: 100%;
   height: var(--input-height);
   padding: 12px;
-  border: 1px solid lightgrey;
+  border: 1px solid var(--border);
   border-radius: 12px;
   outline: 1px solid transparent;
   color: inherit;
@@ -16,13 +16,13 @@
 }
 
 .input:hover:where(:not(:disabled)) {
-  outline-color: lightgrey;
+  outline-color: var(--border-hover);
   box-shadow: 0 0 20px -17px;
 }
 
 .input:focus-within {
-  border-color: grey;
-  outline-color: grey;
+  border-color: var(--accent);
+  outline-color: var(--accent);
 }
 
 .search-field {

@@ -84,11 +84,14 @@ defineExpose({ connect, reconnectable })
 
 onMounted(() => {
   if (!surface.value) return
+  const styles = getComputedStyle(surface.value.$el)
+  const background = styles.getPropertyValue('--terminal-background').trim()
+  const foreground = styles.getPropertyValue('--terminal-foreground').trim()
   terminal = new Terminal({
     cursorBlink: true,
     fontSize: 13,
     fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
-    theme: { background: '#151719', foreground: '#e5e7eb', cursor: '#e5e7eb' },
+    theme: { background, foreground, cursor: foreground },
   })
   terminal.loadAddon(fit)
   terminal.open(surface.value.$el)
@@ -122,7 +125,7 @@ onUnmounted(() => {
   min-height: 0;
   overflow: hidden;
   padding: 6px 10px;
-  background: #151719;
+  background: var(--terminal-background);
 }
 .terminal-surface :deep(.xterm) { height: 100%; }
 </style>

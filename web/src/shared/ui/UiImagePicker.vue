@@ -23,7 +23,7 @@ function selected(event: Event) {
     @change="selected"
   >
   <UiIconButton
-    icon="image-line"
+    icon="image-circle-line"
     :label="label"
     :disabled="disabled"
     @click="input?.click()"

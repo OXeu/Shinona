@@ -123,5 +123,5 @@ function toggleMcp(name: string) {
   border-color: var(--primary);
   background: var(--primary);
 }
-.plugin-option[aria-checked='true'] .plugin-switch-thumb { color: var(--primary); }
+.plugin-option[aria-checked='true'] .plugin-switch-thumb { color: var(--accent); }
 </style>

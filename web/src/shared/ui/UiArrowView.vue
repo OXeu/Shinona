@@ -17,7 +17,7 @@ const documentSource = `<!doctype html>
   arrow-sandbox { display: flow-root }
 </style>
 </head><body><script nonce="${nonce}" type="module">${runtime}</${'script'}></body></html>`
-const tokens = ['--background', '--surface', '--sidebar-bg', '--foreground', '--muted', '--primary', '--on-primary',
+const tokens = ['--background', '--surface', '--sidebar-bg', '--foreground', '--muted', '--primary', '--on-primary', '--accent',
   '--border', '--success', '--warning', '--danger', '--radius-sm', '--radius-md', '--radius-lg']
 let port: MessagePort | undefined
 const timeout = window.setTimeout(fail, 10_000)
