@@ -16,7 +16,7 @@ import (
 	"github.com/OXeu/shinona/internal/timing"
 )
 
-const LivePath = "/api/session-transfer/v1/live"
+const LivePath = "/api/v1/live"
 
 const liveHeartbeat = 15 * time.Second
 
@@ -36,8 +36,9 @@ type liveConnection struct {
 
 func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func(*http.Request) (*auth.User, error), source LiveSource) http.Handler {
 	upgrader := websocket.Upgrader{
-		HandshakeTimeout: socketTimeout,
-		CheckOrigin:      func(r *http.Request) bool { return r.Header.Get("Origin") == origin },
+		HandshakeTimeout:  socketTimeout,
+		EnableCompression: true,
+		CheckOrigin:       func(r *http.Request) bool { return r.Header.Get("Origin") == origin },
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		owner := auth.CurrentUser(r.Context()).ID
@@ -104,9 +105,8 @@ func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func
 			if err := conn.SetWriteDeadline(time.Now().Add(socketTimeout)); err != nil {
 				return err
 			}
-			compressed := h.compressZstd(ctx, payload, nil)
 			defer timing.Start(ctx, "websocket_write")()
-			return conn.WriteMessage(websocket.BinaryMessage, compressed)
+			return conn.WriteMessage(websocket.BinaryMessage, payload)
 		}
 		state := liveConnection{paged: request.Paged == nil || *request.Paged, known: known}
 		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send)

@@ -8,10 +8,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/OXeu/shinona/internal/adapter/graphql"
 	"github.com/OXeu/shinona/internal/adapter/httpclient"
 	"github.com/OXeu/shinona/internal/adapter/mcp"
 	"github.com/OXeu/shinona/internal/adapter/pigo"
+	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
@@ -136,18 +136,18 @@ func (r *runtime) resolveAgent(ctx context.Context, owner string) (run.Agent, er
 	return pigo.New(endpoint, id, mcp.NewServers(servers, r.accountHTTP, r.mcpOAuth)), nil
 }
 
-func (r *runtime) ComposerOptions(ctx context.Context) (graphql.ComposerOptions, error) {
+func (r *runtime) ComposerOptions(ctx context.Context) (rest.ComposerOptions, error) {
 	owner := auth.CurrentUser(ctx).ID
 	values, endpoint, err := r.models.load(ctx, owner)
 	if err != nil {
-		return graphql.ComposerOptions{}, err
+		return rest.ComposerOptions{}, err
 	}
 	servers, err := r.accountMCP(ctx, owner)
 	if err != nil {
-		return graphql.ComposerOptions{}, err
+		return rest.ComposerOptions{}, err
 	}
-	options := graphql.ComposerOptions{
-		Models: []graphql.ModelInfo{}, MCPServers: mcp.NewServers(servers, r.accountHTTP, r.mcpOAuth).Names(ctx, owner),
+	options := rest.ComposerOptions{
+		Models: []rest.ModelInfo{}, MCPServers: mcp.NewServers(servers, r.accountHTTP, r.mcpOAuth).Names(ctx, owner),
 	}
 	if endpoint == nil {
 		return options, nil
@@ -165,12 +165,12 @@ func (r *runtime) ComposerOptions(ctx context.Context) (graphql.ComposerOptions,
 				return options, nil
 			}
 		}
-		options.Models = append([]graphql.ModelInfo{{ID: id, ContextWindow: window}}, options.Models...)
+		options.Models = append([]rest.ModelInfo{{ID: id, ContextWindow: window}}, options.Models...)
 	}
 	return options, nil
 }
 
-func (r *runtime) FetchModels(ctx context.Context, base, key *string) ([]graphql.ModelInfo, error) {
+func (r *runtime) FetchModels(ctx context.Context, base, key *string) ([]rest.ModelInfo, error) {
 	values, endpoint, err := r.models.load(ctx, auth.CurrentUser(ctx).ID)
 	if err != nil {
 		return nil, err
@@ -203,10 +203,10 @@ func sameModelBase(a, b string) bool {
 	return strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
 }
 
-func modelInfos(models []pigo.ModelInfo) []graphql.ModelInfo {
-	result := make([]graphql.ModelInfo, len(models))
+func modelInfos(models []pigo.ModelInfo) []rest.ModelInfo {
+	result := make([]rest.ModelInfo, len(models))
 	for i, model := range models {
-		result[i] = graphql.ModelInfo{ID: model.ID, ContextWindow: model.ContextWindow}
+		result[i] = rest.ModelInfo{ID: model.ID, ContextWindow: model.ContextWindow}
 	}
 	return result
 }

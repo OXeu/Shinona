@@ -10,6 +10,8 @@ import (
 	"io"
 	"maps"
 	"net"
+	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -26,22 +28,20 @@ import (
 func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 	app, repo, query := settingsTestApp(t, nil)
 	hostKey, key := sshTestKey(t)
-	const save = `mutation ($input: SSHServerInput!) {
-		saveSshServer(input: $input) { id name address user template hostFingerprint }
-	}`
+	const serversPath = "/settings/ssh/servers"
 	input := map[string]any{"id": "", "name": "East", "address": "east.example.test:22", "user": "worker",
 		"template": "alpine:3", "hostFingerprint": ssh.FingerprintSHA256(hostKey.PublicKey()), "privateKey": key}
 	add := func() string {
 		t.Helper()
-		response := query("alice", save, map[string]any{"input": input})
+		response := query("alice", http.MethodPut, serversPath, input)
 		var decoded struct {
-			Data struct{ SaveSshServer struct{ ID string } }
+			ID string
 		}
-		if err := json.Unmarshal([]byte(response), &decoded); err != nil || decoded.Data.SaveSshServer.ID == "" ||
+		if err := json.Unmarshal([]byte(response), &decoded); err != nil || decoded.ID == "" ||
 			strings.Contains(response, "PRIVATE KEY") {
 			t.Fatalf("save SSH server or redact key: %s", response)
 		}
-		return decoded.Data.SaveSshServer.ID
+		return decoded.ID
 	}
 	first := add()
 	input["name"], input["address"] = "West", "west.example.test:2222"
@@ -49,22 +49,21 @@ func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 	if first == second {
 		t.Fatal("SSH servers reused an ID")
 	}
-	const list = `{ sshServers { id name } projectSandbox(projectId: "") { providers { provider label } } }`
-	alice := query("alice", list, nil)
+	list := func(owner string) string {
+		return query(owner, http.MethodGet, "/settings/ssh", nil) + query(owner, http.MethodGet, "/projects/default/sandbox", nil)
+	}
+	alice := list("alice")
 	if !strings.Contains(alice, "East") || !strings.Contains(alice, "West") || strings.Contains(alice, "PRIVATE KEY") {
 		t.Fatalf("account SSH servers: %s", alice)
 	}
-	if bob := query("bob", list, nil); strings.Contains(bob, "East") || strings.Contains(bob, "West") || strings.Contains(bob, "errors") {
+	if bob := list("bob"); strings.Contains(bob, "East") || strings.Contains(bob, "West") || strings.Contains(bob, "errors") {
 		t.Fatalf("cross-account SSH servers: %s", bob)
 	}
-	const choose = `mutation ($provider: String!) {
-		saveProjectSandbox(projectId:"", input:{provider:$provider, template:"", timeoutSeconds:0, onTimeout:""})
-	}`
 	provider := settings.SSHProviderPrefix + second
-	if response := query("bob", choose, map[string]any{"provider": provider}); !strings.Contains(response, "SANDBOX_PROVIDER_UNAVAILABLE") {
+	if response := query("bob", http.MethodPut, "/projects/default/sandbox/config", sandboxInput(provider, "")); !strings.Contains(response, "SANDBOX_PROVIDER_UNAVAILABLE") {
 		t.Fatalf("selected another account's SSH server: %s", response)
 	}
-	if response := query("alice", choose, map[string]any{"provider": provider}); !strings.Contains(response, `"saveProjectSandbox":true`) {
+	if response := query("alice", http.MethodPut, "/projects/default/sandbox/config", sandboxInput(provider, "")); response != "" {
 		t.Fatalf("select SSH server: %s", response)
 	}
 	config, err := repo.ProjectSandboxConfig(t.Context(), "alice", "")
@@ -75,15 +74,14 @@ func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 	if err != nil || target.Provider == nil || target.Label != "West" {
 		t.Fatalf("resolve selected account provider: %+v, %v", target, err)
 	}
-	const remove = `mutation ($id: ID!) { removeSshServer(id:$id) }`
-	if response := query("alice", remove, map[string]any{"id": second}); !strings.Contains(response, "SSH_SERVER_IN_USE") {
+	if response := query("alice", http.MethodDelete, serversPath+"/"+url.PathEscape(second), nil); !strings.Contains(response, "SSH_SERVER_IN_USE") {
 		t.Fatalf("removed a configured project's SSH server: %s", response)
 	}
 	input["id"], input["name"], input["privateKey"] = second, "West renamed", ""
 	newHostKey, _ := sshTestKey(t)
 	input["address"], input["user"] = "new-west.example.test:22", "new-user"
 	input["hostFingerprint"] = ssh.FingerprintSHA256(newHostKey.PublicKey())
-	if response := query("alice", save, map[string]any{"input": input}); !strings.Contains(response, "West renamed") {
+	if response := query("alice", http.MethodPut, serversPath, input); !strings.Contains(response, "West renamed") {
 		t.Fatalf("edit server without replacing its key: %s", response)
 	}
 	stored, err := repo.SSHServer(t.Context(), "alice", second)
@@ -91,7 +89,7 @@ func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 		stored.User != input["user"] || stored.HostFingerprint != input["hostFingerprint"] {
 		t.Fatal("editing an in-use SSH server did not update its connection settings and preserve its key")
 	}
-	if response := query("alice", remove, map[string]any{"id": first}); !strings.Contains(response, `"removeSshServer":true`) {
+	if response := query("alice", http.MethodDelete, serversPath+"/"+url.PathEscape(first), nil); response != "" {
 		t.Fatalf("remove unused SSH server: %s", response)
 	}
 }
@@ -109,15 +107,14 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	t.Setenv("E2B_API_KEY", "test-e2b-key")
 	_, repo, query := settingsTestApp(t, nil)
 
-	const testConnection = `mutation ($input: SSHServerInput!) { testSshServer(input: $input) }`
+	const testConnection = "/settings/ssh/connection-test"
 	input := map[string]any{"id": "", "name": "", "address": listener.Addr().String(), "user": "worker",
 		"template": "", "hostFingerprint": ssh.FingerprintSHA256(hostKey.PublicKey()), "privateKey": key}
-	vars := map[string]any{"input": input}
-	if response := query("alice", testConnection, vars); !strings.Contains(response, "SSH_DOCKER_UNAVAILABLE") {
+	if response := query("alice", http.MethodPost, testConnection, input); !strings.Contains(response, "SSH_DOCKER_UNAVAILABLE") {
 		t.Fatalf("check inaccessible Docker: %s", response)
 	}
 	dockerAvailable.Store(true)
-	if response := query("alice", testConnection, vars); !strings.Contains(response, `"testSshServer":true`) {
+	if response := query("alice", http.MethodPost, testConnection, input); response != "" {
 		t.Fatalf("test draft with reachability, authentication and Docker: %s", response)
 	}
 	if servers, err := repo.SSHServers(t.Context(), "alice"); err != nil || len(servers) != 0 {
@@ -125,19 +122,19 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	}
 
 	input["name"] = "Test host"
-	response := query("alice", `mutation ($input: SSHServerInput!) { saveSshServer(input: $input) { id } }`, vars)
+	response := query("alice", http.MethodPut, "/settings/ssh/servers", input)
 	var decoded struct {
-		Data struct{ SaveSshServer struct{ ID string } }
+		ID string
 	}
-	if err := json.Unmarshal([]byte(response), &decoded); err != nil || decoded.Data.SaveSshServer.ID == "" {
+	if err := json.Unmarshal([]byte(response), &decoded); err != nil || decoded.ID == "" {
 		t.Fatalf("save SSH server: %s", response)
 	}
-	id := decoded.Data.SaveSshServer.ID
+	id := decoded.ID
 	input["id"], input["privateKey"] = id, ""
-	if response := query("alice", testConnection, vars); !strings.Contains(response, `"testSshServer":true`) {
+	if response := query("alice", http.MethodPost, testConnection, input); response != "" {
 		t.Fatalf("test SSH server with its saved key: %s", response)
 	}
-	if response := query("bob", testConnection, vars); !strings.Contains(response, "SSH_SERVER_NOT_FOUND") {
+	if response := query("bob", http.MethodPost, testConnection, input); !strings.Contains(response, "SSH_SERVER_NOT_FOUND") {
 		t.Fatalf("test another account's SSH server: %s", response)
 	}
 	wrongHostKey, wrongKey := sshTestKey(t)
@@ -162,39 +159,43 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	} {
 		draft := maps.Clone(input)
 		draft[tc.field] = tc.value
-		response := query("alice", testConnection, map[string]any{"input": draft})
+		response := query("alice", http.MethodPost, testConnection, draft)
 		if !strings.Contains(response, tc.code) || strings.Contains(response, "PRIVATE KEY-----") {
 			t.Fatalf("SSH test with invalid %s should report %s: %s", tc.field, tc.code, response)
 		}
 	}
 
-	const saveSandbox = `mutation ($provider: String!, $skip: String) {
-		saveProjectSandbox(projectId:"", input:{provider:$provider, template:"", timeoutSeconds:0, onTimeout:""}, skipCleanupFor:$skip)
-	}`
+	const saveSandbox = "/projects/default/sandbox/config"
 	provider := settings.SSHProviderPrefix + id
-	if response := query("alice", saveSandbox, map[string]any{"provider": provider}); !strings.Contains(response, `"saveProjectSandbox":true`) {
+	if response := query("alice", http.MethodPut, saveSandbox, sandboxInput(provider, "")); response != "" {
 		t.Fatalf("assign SSH provider: %s", response)
 	}
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if response := query("alice", testConnection, vars); !strings.Contains(response, "SSH_CONNECTION_REFUSED") {
+	if response := query("alice", http.MethodPost, testConnection, input); !strings.Contains(response, "SSH_CONNECTION_REFUSED") {
 		t.Fatalf("test a closed SSH port: %s", response)
 	}
-	if response := query("alice", saveSandbox, map[string]any{"provider": "e2b"}); !strings.Contains(response, "PROJECT_SANDBOX_CLEANUP_FAILED") {
+	if response := query("alice", http.MethodPut, saveSandbox, sandboxInput("e2b", "")); !strings.Contains(response, "PROJECT_SANDBOX_CLEANUP_FAILED") {
 		t.Fatalf("switch requires confirmation when previous sandbox cannot be reached: %s", response)
 	}
-	if response := query("alice", saveSandbox, map[string]any{"provider": "e2b", "skip": "ssh"}); !strings.Contains(response, "INVALID_PROJECT_SANDBOX") {
+	if response := query("alice", http.MethodPut, saveSandbox, sandboxInput("e2b", "ssh")); !strings.Contains(response, "INVALID_PROJECT_SANDBOX") {
 		t.Fatalf("skip cleanup for a different provider: %s", response)
 	}
 	if config, err := repo.ProjectSandboxConfig(t.Context(), "alice", ""); err != nil || config == nil || config.Provider != provider {
 		t.Fatalf("project should still use the previous provider: %+v, %v", config, err)
 	}
-	if response := query("alice", saveSandbox, map[string]any{"provider": "e2b", "skip": provider}); !strings.Contains(response, `"saveProjectSandbox":true`) {
+	if response := query("alice", http.MethodPut, saveSandbox, sandboxInput("e2b", provider)); response != "" {
 		t.Fatalf("switch to E2B after confirming cleanup can be skipped: %s", response)
 	}
 	if config, err := repo.ProjectSandboxConfig(t.Context(), "alice", ""); err != nil || config == nil || config.Provider != "e2b" {
 		t.Fatalf("project should now use E2B: %+v, %v", config, err)
+	}
+}
+
+func sandboxInput(provider, skip string) map[string]any {
+	return map[string]any{
+		"input": map[string]string{"provider": provider}, "skipCleanupFor": skip,
 	}
 }
 

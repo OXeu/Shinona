@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,36 +17,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/klauspost/compress/zstd"
-	"google.golang.org/protobuf/proto"
+	fastjson "github.com/segmentio/encoding/json"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
-	"github.com/OXeu/shinona/internal/adapter/graphql"
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/password"
-	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
-	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
+	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
-const (
-	benchmarkPrompt        = "Review the workspace changes and summarize the test results."
-	benchmarkSessionFields = "id projectId title defaultTitle turnCount updatedAt pinned active unread"
-	benchmarkSubmit        = `mutation SubmitTurn($sessionId: ID!, $prompt: String!, $payload: RunPayloadInput!, $queue: Boolean!) {
-		submitRun(sessionId: $sessionId, prompt: $prompt, payload: $payload, queue: $queue) {
-			id sequence prompt status policy output createdAt startedAt updatedAt model attachments
-			steering { text delivered } parts { kind text tool input output status estimatedTokens }
-			contextTokens contextWindow liveContext { tokens window estimated } tokenUsage { input cached output }
-		}
-	}`
-)
+const benchmarkPrompt = "Review the workspace changes and summarize the test results."
 
 func BenchmarkCoreAPI(b *testing.B) {
 	b.Run("SessionsList", benchmarkSessionsList)
@@ -95,15 +80,6 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Repository, target run.Target) *
 	}
 	service := run.NewService(repo, resolve, uuid.NewString, controls, nil)
 	b.Cleanup(service.CloseTerminals)
-	api, err := graphql.NewHandler(service, nil, logger)
-	if err != nil {
-		b.Fatal(err)
-	}
-	transfer, err := sessiontransfer.New(service, logger)
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { _ = transfer.Close() })
 	accounts := auth.New(repo, password.Argon2id{}, uuid.NewString)
 	const email, secret = "benchmark@example.invalid", "local benchmark password"
 	owner, err := accounts.CreatePasswordUser(ctx, email, secret)
@@ -111,10 +87,9 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Repository, target run.Target) *
 		b.Fatal(err)
 	}
 	authHandler := httpauth.New(accounts, nil, false, logger)
-	mux := http.NewServeMux()
-	server := httptest.NewUnstartedServer(httpserver.ServerTiming(allowedHost(mux, func() string { return "" })))
-	authHandler.Routes(mux, sameOriginJSON)
-	registerRunRoutes(mux, ctx, "http://"+server.Listener.Addr().String(), service, api, transfer, authHandler, logger)
+	server := httptest.NewUnstartedServer(nil)
+	router := newAPIRouter(ctx, "http://"+server.Listener.Addr().String(), service, nil, authHandler, logger)
+	server.Config.Handler = httpserver.ServerTiming(allowedHost(router, func() string { return "" }))
 	server.Start()
 	b.Cleanup(server.Close)
 	server.Client().Jar, err = cookiejar.New(nil)
@@ -151,19 +126,21 @@ func (a *benchmarkAPI) post(b testing.TB, path string, body []byte, status int) 
 	b.Helper()
 	ctx, cancel := context.WithTimeout(b.Context(), run.ProjectSandboxTimeout+5*time.Second)
 	defer cancel()
-	data, headers, err := a.postRequest(ctx, a.Client(), path, body, status)
+	data, headers, err := a.request(ctx, a.Client(), http.MethodPost, path, body, status)
 	if err != nil {
 		b.Fatal(err)
 	}
 	return data, headers
 }
 
-func (a *benchmarkAPI) postRequest(ctx context.Context, client *http.Client, path string, body []byte, status int) ([]byte, http.Header, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.URL+path, bytes.NewReader(body))
+func (a *benchmarkAPI) request(ctx context.Context, client *http.Client, method, path string, body []byte, status int) ([]byte, http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, method, a.URL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if len(body) != 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Origin", a.URL)
 	response, err := client.Do(req)
 	if err != nil {
@@ -180,32 +157,24 @@ func (a *benchmarkAPI) postRequest(ctx context.Context, client *http.Client, pat
 	return data, response.Header, nil
 }
 
-func (a *benchmarkAPI) operation(b *testing.B, query string, variables any) []byte {
+func (a *benchmarkAPI) rest(b *testing.B, method, path string, body []byte, status int, result any) http.Header {
 	b.Helper()
-	return a.requestBody(b, struct {
-		Query     string `json:"query"`
-		Variables any    `json:"variables"`
-	}{query, variables})
-}
-
-func (a *benchmarkAPI) graphql(b *testing.B, body []byte, field string, result any) http.Header {
-	b.Helper()
-	data, headers := a.post(b, "/graphql", body, http.StatusOK)
-	var envelope struct {
-		Data   map[string]json.RawMessage
-		Errors []json.RawMessage
+	ctx, cancel := context.WithTimeout(b.Context(), run.ProjectSandboxTimeout+5*time.Second)
+	defer cancel()
+	data, headers, err := a.request(ctx, a.Client(), method, path, body, status)
+	if err != nil {
+		b.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope.Errors) > 0 {
-		b.Fatalf("GraphQL %s failed: %s (%v)", field, data, err)
-	}
-	value := envelope.Data[field]
-	if len(value) == 0 || bytes.Equal(value, []byte("null")) {
-		b.Fatalf("GraphQL %s returned no result: %s", field, data)
-	}
-	if err := json.Unmarshal(value, result); err != nil {
-		b.Fatalf("decode GraphQL %s: %v", field, err)
+	if result != nil {
+		if err := json.Unmarshal(data, result); err != nil {
+			b.Fatalf("decode %s: %v", path, err)
+		}
 	}
 	return headers
+}
+
+func benchmarkSessionPath(session string) string {
+	return rest.Prefix + "/sessions/" + url.PathEscape(session)
 }
 
 func (a *benchmarkAPI) websocket(b testing.TB, path string) *websocket.Conn {
@@ -301,35 +270,21 @@ type benchmarkRead func(context.Context) error
 
 func (a *benchmarkAPI) recentBenchmarkClient(b testing.TB, projectCount int) benchmarkRead {
 	b.Helper()
-	conn := a.websocket(b, sessiontransfer.RecentPath)
-	payload, err := proto.Marshal(&sessionpb.RecentRequest{})
-	if err != nil {
-		b.Fatal(err)
-	}
-	var page sessionpb.RecentPage
-	return func(context.Context) error {
-		deadline := time.Now().Add(15 * time.Second)
-		if err := conn.SetWriteDeadline(deadline); err != nil {
-			return err
-		}
-		if err := conn.SetReadDeadline(deadline); err != nil {
-			return err
-		}
-		if err := conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
-			return err
-		}
-		kind, data, err := conn.ReadMessage()
-		if err != nil {
-			return fmt.Errorf("receive recent sessions: %w", err)
-		}
-		if kind != websocket.BinaryMessage {
-			return fmt.Errorf("unexpected recent sessions message type: %d", kind)
-		}
-		decoded, err := io.ReadAll(brotli.NewReader(bytes.NewReader(data)))
+	return func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		data, _, err := a.request(ctx, a.Client(), http.MethodGet, rest.Prefix+"/sessions", nil, http.StatusOK)
 		if err != nil {
 			return err
 		}
-		if err := proto.Unmarshal(decoded, &page); err != nil {
+		var page struct {
+			Projects []run.Project
+			Sessions []struct {
+				ID, Title string
+				TurnCount int
+			}
+		}
+		if err := fastjson.Unmarshal(data, &page); err != nil {
 			return err
 		}
 		if len(page.Projects) != projectCount || len(page.Sessions) != 30 || page.Sessions[0].TurnCount != 1 {
@@ -376,59 +331,36 @@ func (a *benchmarkAPI) seedBenchmarkTranscript(b testing.TB, turnCount, logLines
 
 func (a *benchmarkAPI) transcriptBenchmarkClient(b testing.TB, client *http.Client, session string, turnCount int, paged bool) benchmarkRead {
 	b.Helper()
-	decoder, err := zstd.NewReader(nil)
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(decoder.Close)
-	request := struct {
-		ID    string `json:"id"`
-		Paged *bool  `json:"paged,omitempty"`
-	}{ID: session}
+	path := benchmarkSessionPath(session) + "/transcript"
 	wantCount, wantCursor := turnCount, 0
 	if !paged {
-		request.Paged = new(false)
+		path += "?paged=false"
 	} else if turnCount > run.TranscriptPageSize {
 		wantCount, wantCursor = run.TranscriptPageSize, turnCount-run.TranscriptPageSize+1
 	}
-	body := a.requestBody(b, request)
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		data, headers, err := a.postRequest(ctx, client, sessiontransfer.TranscriptPath, body, http.StatusOK)
+		data, headers, err := a.request(ctx, client, http.MethodGet, path, nil, http.StatusOK)
 		if err != nil {
 			return err
 		}
-		if headers.Get("Content-Type") != "application/vnd.shinona.transcript.v1+protobuf" {
+		if !strings.HasPrefix(headers.Get("Content-Type"), "application/json") {
 			return fmt.Errorf("unexpected transcript content type: %s", headers.Get("Content-Type"))
 		}
-		var count int
-		var header *sessionpb.TranscriptHeader
-		var done bool
-		for len(data) >= 4 && !done {
-			frameSize := int(binary.BigEndian.Uint32(data))
-			data = data[4:]
-			if frameSize <= 0 || frameSize > len(data) {
-				return fmt.Errorf("invalid transcript frame size: %d", frameSize)
+		var page struct {
+			Session struct {
+				ID                            string
+				TurnCount, NextBeforeSequence int
+				Turns                         []run.Run
 			}
-			frame, err := decoder.DecodeAll(data[:frameSize], nil)
-			if err != nil {
-				return err
-			}
-			var chunk sessionpb.TranscriptChunk
-			if err := proto.Unmarshal(frame, &chunk); err != nil {
-				return err
-			}
-			if chunk.GetHeader() != nil {
-				header = chunk.GetHeader()
-			}
-			count += len(chunk.GetTurns().GetTurns())
-			done = chunk.GetDone()
-			data = data[frameSize:]
 		}
-		if !done || len(data) != 0 || count != wantCount || header.GetSession().GetId() != session ||
-			header.GetSession().GetTurnCount() != int32(turnCount) || header.GetNextBeforeSequence() != int32(wantCursor) {
-			return fmt.Errorf("unexpected transcript page: turns=%d, cursor=%d, complete=%t", count, header.GetNextBeforeSequence(), done)
+		if err := fastjson.Unmarshal(data, &page); err != nil {
+			return err
+		}
+		if page.Session.ID != session || page.Session.TurnCount != turnCount ||
+			len(page.Session.Turns) != wantCount || page.Session.NextBeforeSequence != wantCursor {
+			return fmt.Errorf("unexpected transcript page: turns=%d, cursor=%d", len(page.Session.Turns), page.Session.NextBeforeSequence)
 		}
 		return nil
 	}
@@ -440,9 +372,8 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 	if queue {
 		a.claimTurn(b, session)
 	}
-	body := a.operation(b, benchmarkSubmit, map[string]any{
-		"sessionId": session, "prompt": benchmarkPrompt, "payload": struct{}{}, "queue": queue,
-	})
+	path := benchmarkSessionPath(session) + "/turns"
+	body := a.requestBody(b, map[string]any{"prompt": benchmarkPrompt, "payload": struct{}{}, "queue": queue})
 	var latencies []time.Duration
 	var slowest time.Duration
 	var slowestServerTiming []string
@@ -456,7 +387,7 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 		if queue {
 			started = time.Now()
 		}
-		headers := a.graphql(b, body, "submitRun", &result)
+		headers := a.rest(b, http.MethodPost, path, body, http.StatusAccepted, &result)
 		if queue {
 			elapsed = time.Since(started)
 		}
@@ -517,18 +448,16 @@ func (a benchmarkSteeringAgent) Run(ctx context.Context, input run.Input, _ sand
 func benchmarkSteering(b *testing.B) {
 	agent := benchmarkSteeringAgent{input: make(chan run.Input, 1), release: make(chan struct{})}
 	a := newCoreBenchmarkAPI(b, agent)
-	const query = `mutation Steer($sessionId: ID!, $runId: ID!, $prompt: String!) {
-		steerRun(sessionId: $sessionId, runId: $runId, prompt: $prompt)
-	}`
-	prepare := func() []byte {
+	body := a.requestBody(b, map[string]string{"prompt": benchmarkPrompt})
+	prepare := func() string {
 		session := a.session(b, "")
 		active, err := a.service.Submit(b.Context(), a.owner, session, benchmarkPrompt, run.Payload{}, false)
 		if err != nil {
 			b.Fatal(err)
 		}
-		return a.operation(b, query, map[string]string{"sessionId": session, "runId": active.ID, "prompt": benchmarkPrompt})
+		return benchmarkSessionPath(session) + "/turns/" + url.PathEscape(active.ID) + "/steering"
 	}
-	body := prepare()
+	path := prepare()
 	ctx, cancel := context.WithCancel(b.Context())
 	done := make(chan struct{})
 	go func() {
@@ -551,11 +480,7 @@ func benchmarkSteering(b *testing.B) {
 	input := waitForTurn()
 	var messages int
 	for b.Loop() {
-		var accepted bool
-		a.graphql(b, body, "steerRun", &accepted)
-		if !accepted {
-			b.Fatal("steerRun rejected the steering message")
-		}
+		a.rest(b, http.MethodPost, path, body, http.StatusNoContent, nil)
 		b.StopTimer()
 		if delivered := input.Steering.Drain(); len(delivered) != 1 || delivered[0] != benchmarkPrompt {
 			b.Fatalf("agent received unexpected steering: %v", delivered)
@@ -563,7 +488,7 @@ func benchmarkSteering(b *testing.B) {
 		messages++
 		// Delivered messages still count toward the per-turn limit.
 		if messages == 8 {
-			body = prepare()
+			path = prepare()
 			select {
 			case agent.release <- struct{}{}:
 			case <-time.After(5 * time.Second):
@@ -582,21 +507,13 @@ func benchmarkRevert(b *testing.B) {
 	for range 27 {
 		a.completedTurn(b, session, benchmarkPrompt, run.Result{Output: "Tests passed."})
 	}
-	const mutation = `mutation RevertTurn($sessionId: ID!, $turnId: ID!, $expectedHeadId: ID!) {
-		revertTurn(sessionId: $sessionId, turnId: $turnId, expectedHeadId: $expectedHeadId) {
-			session { ` + benchmarkSessionFields + ` }
-			prompt
-			images { name mediaType data }
-		}
-	}`
 	for b.Loop() {
 		b.StopTimer()
 		selected := a.completedTurn(b, session, benchmarkPrompt, run.Result{Output: "Tests passed."})
 		a.completedTurn(b, session, "Check the diagnostics", run.Result{Output: "No errors."})
 		head := a.completedTurn(b, session, "Show the summary", run.Result{Output: "Ready for review."})
-		body := a.operation(b, mutation, map[string]string{
-			"sessionId": session, "turnId": selected.ID, "expectedHeadId": head.ID,
-		})
+		path := benchmarkSessionPath(session) + "/turns/" + url.PathEscape(selected.ID) + "/revert"
+		body := a.requestBody(b, map[string]string{"expectedHeadId": head.ID})
 		b.StartTimer()
 
 		var restored struct {
@@ -606,7 +523,7 @@ func benchmarkRevert(b *testing.B) {
 			}
 			Prompt string
 		}
-		a.graphql(b, body, "revertTurn", &restored)
+		a.rest(b, http.MethodPost, path, body, http.StatusOK, &restored)
 		if restored.Session.ID != session || restored.Session.TurnCount != 27 || restored.Prompt != benchmarkPrompt {
 			b.Fatalf("unexpected revert draft: %+v", restored)
 		}

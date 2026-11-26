@@ -134,9 +134,9 @@ type Input struct {
 
 // ContextUsage is a transient reading for the current model request.
 type ContextUsage struct {
-	Tokens    int32
-	Window    int32
-	Estimated bool
+	Tokens    int32 `json:"tokens"`
+	Window    int32 `json:"window"`
+	Estimated bool  `json:"estimated"`
 }
 
 // TokenUsage totals the provider-reported counts for one turn. Input includes

@@ -42,7 +42,7 @@ type handler struct {
 	upgrader    websocket.Upgrader
 }
 
-func Routes(mux *http.ServeMux, lifetime context.Context, origin string, source Source,
+func Routes(mux httpserver.Routes, lifetime context.Context, origin string, source Source,
 	requireUser, sameOriginJSON func(http.Handler) http.Handler,
 	sessionUser func(*http.Request) (*auth.User, error), logger *slog.Logger,
 ) {

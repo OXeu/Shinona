@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 
 import { messageFor } from '../../shared/errors'
-import { GraphQLError } from '../../shared/graphql'
+import { HttpError } from '../../shared/http'
 import { languageTag, t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
 import { formatTime } from '../../shared/time'
@@ -83,29 +83,29 @@ async function load() {
     if (rootSession.value !== session) {
       const savedRoot = await workspaceApi.root(session, signal)
       if (signal.aborted) return
-      root.value = savedRoot.workspaceRoot
+      root.value = savedRoot
       rootSession.value = session
     }
     switch (tab.value) {
       case 'changes': {
         const result = await workspaceApi.changes(session, signal)
-        if (!signal.aborted) changes.value = result.workspaceChanges
+        if (!signal.aborted) changes.value = result
         break
       }
       case 'history': {
         const result = await workspaceApi.history(session, signal)
-        if (!signal.aborted) history.value = result.workspaceHistory
+        if (!signal.aborted) history.value = result
         break
       }
       case 'files': {
         const result = await workspaceApi.directory(session, folder.value, signal)
-        if (!signal.aborted) files.value = result.workspaceDirectory
+        if (!signal.aborted) files.value = result
         break
       }
     }
   } catch (error) {
     if (signal.aborted) return
-    if (props.active && error instanceof GraphQLError &&
+    if (props.active && error instanceof HttpError &&
       (error.code === 'WORKSPACE_BUSY' || error.code === 'WORKSPACE_UNAVAILABLE')) {
       loadMessage.value = t('repository.starting')
       retry = setTimeout(load, 1_000)
@@ -131,7 +131,7 @@ async function openPreview(title: string, path: string, diff: boolean, revision?
   previewOpen.value = true
   try {
     const result = await workspaceApi.preview(session, path, diff, revision, signal)
-    if (!signal.aborted) preview.value = result.workspacePreview
+    if (!signal.aborted) preview.value = result
   } catch (error) {
     if (!signal.aborted) previewError.value = messageFor(error, 'repository.previewFailed')
   } finally {
@@ -155,7 +155,7 @@ async function setAsWorkspace() {
   try {
     const result = await workspaceApi.setRoot(session, target, signal)
     if (signal.aborted) return
-    root.value = result.setWorkspaceRoot
+    root.value = result
     rootSession.value = session
     notify.success(t('repository.rootSet', { path: rootLabel.value }))
     await load()

@@ -56,7 +56,7 @@ async function save() {
   const { signal } = request
   submitting.value = true
   try {
-    const { saveSshServer } = await settingsApi.saveSSHServer(draft.value, signal)
+    const saveSshServer = await settingsApi.saveSSHServer(draft.value, signal)
     if (signal.aborted) return
     servers.value = [...servers.value.filter((server) => server.id !== saveSshServer.id), saveSshServer]
       .sort((a, b) => a.name.localeCompare(b.name))

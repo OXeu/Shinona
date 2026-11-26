@@ -23,7 +23,7 @@ type oauthHandler struct {
 	logger *slog.Logger
 }
 
-func (o *OAuth) Routes(mux *http.ServeMux, requireUser, sameOrigin func(http.Handler) http.Handler,
+func (o *OAuth) Routes(mux httpserver.Routes, requireUser, sameOrigin func(http.Handler) http.Handler,
 	lookup func(context.Context, string, string) (settings.MCPServer, bool), secure bool, logger *slog.Logger,
 ) {
 	h := oauthHandler{oauth: o, lookup: lookup, secure: secure, logger: logger}

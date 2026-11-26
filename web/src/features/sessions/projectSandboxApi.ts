@@ -1,4 +1,4 @@
-import { graphql } from '../../shared/graphql'
+import { apiJSON } from '../../shared/http'
 import type { Project } from './sessionApi'
 
 export interface ProjectSandboxConfig {
@@ -18,32 +18,20 @@ export interface ProjectSandbox {
   state: 'NONE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'MISSING' | 'UNAVAILABLE'
 }
 
-const configFields = 'provider template timeoutSeconds onTimeout'
+
+function sandboxPath(projectId: string) {
+  return '/projects/' + encodeURIComponent(projectId || 'default') + '/sandbox'
+}
 
 export const projectSandboxApi = {
-  load: (projectId: string, signal: AbortSignal) => graphql<{ projectSandbox: ProjectSandbox }>(`
-    query ProjectSandbox($projectId: ID!) {
-      projectSandbox(projectId: $projectId) {
-        project { id name }
-        config { ${configFields} }
-        effective { ${configFields} }
-        providers { ${configFields} label }
-        providerLabel sandboxId state
-      }
-    }
-  `, { projectId }, signal),
-  save: (projectId: string, input: ProjectSandboxConfig, signal: AbortSignal, skipCleanupFor?: string) => graphql<{ saveProjectSandbox: boolean }>(`
-    mutation SaveProjectSandbox($projectId: ID!, $input: ProjectSandboxInput!, $skipCleanupFor: String) {
-      saveProjectSandbox(projectId: $projectId, input: $input, skipCleanupFor: $skipCleanupFor)
-    }
-  `, { projectId, input, skipCleanupFor }, signal),
-  create: (projectId: string, signal: AbortSignal) => graphql<{ createProjectSandbox: boolean }>(`
-    mutation CreateProjectSandbox($projectId: ID!) { createProjectSandbox(projectId: $projectId) }
-  `, { projectId }, signal),
-  destroy: (projectId: string, signal: AbortSignal) => graphql<{ destroyProjectSandbox: boolean }>(`
-    mutation DestroyProjectSandbox($projectId: ID!) { destroyProjectSandbox(projectId: $projectId) }
-  `, { projectId }, signal),
-  recreate: (projectId: string, signal: AbortSignal) => graphql<{ recreateProjectSandbox: boolean }>(`
-    mutation RecreateProjectSandbox($projectId: ID!) { recreateProjectSandbox(projectId: $projectId) }
-  `, { projectId }, signal),
+  load: (projectId: string, signal: AbortSignal) =>
+    apiJSON<ProjectSandbox>(sandboxPath(projectId), 'GET', signal),
+  save: (projectId: string, input: ProjectSandboxConfig, signal: AbortSignal, skipCleanupFor?: string) =>
+    apiJSON<void>(sandboxPath(projectId) + '/config', 'PUT', signal, { input, skipCleanupFor }),
+  create: (projectId: string, signal: AbortSignal) =>
+    apiJSON<void>(sandboxPath(projectId), 'POST', signal),
+  destroy: (projectId: string, signal: AbortSignal) =>
+    apiJSON<void>(sandboxPath(projectId), 'DELETE', signal),
+  recreate: (projectId: string, signal: AbortSignal) =>
+    apiJSON<void>(sandboxPath(projectId) + '/recreate', 'POST', signal),
 }

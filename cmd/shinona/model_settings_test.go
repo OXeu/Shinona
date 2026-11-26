@@ -13,17 +13,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
-	"github.com/OXeu/shinona/internal/adapter/graphql"
+	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
-func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Repository, func(string, string, map[string]any) string) {
+func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Repository, func(string, string, string, any) string) {
 	t.Helper()
 	repo, err := sqlite.Open(t.Context(), ":memory:")
 	if err != nil {
@@ -44,23 +45,33 @@ func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Re
 		t.Fatal(err)
 	}
 	service := run.NewService(repo, app.ResolveForAccount, uuid.NewString, &run.Controls{}, app.ProjectTargets)
-	api, err := graphql.NewHandler(service, app, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := func(owner, document string, vars map[string]any) string {
+	api := gin.New()
+	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler))
+	query := func(owner, method, path string, body any) string {
 		t.Helper()
-		body, err := json.Marshal(map[string]any{"query": document, "variables": vars})
+		ctx := auth.WithUser(t.Context(), auth.User{ID: owner})
+		return performREST(t, api, ctx, method, path, body).Body.String()
+	}
+	return app, repo, query
+}
+
+func performREST(t *testing.T, api http.Handler, ctx context.Context, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var encoded []byte
+	if body != nil {
+		data, err := json.Marshal(body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		request := httptest.NewRequestWithContext(auth.WithUser(t.Context(), auth.User{ID: owner}),
-			http.MethodPost, "/graphql", bytes.NewReader(body))
-		response := httptest.NewRecorder()
-		api.ServeHTTP(response, request)
-		return response.Body.String()
+		encoded = data
 	}
-	return app, repo, query
+	request := httptest.NewRequestWithContext(ctx, method, rest.Prefix+path, bytes.NewReader(encoded))
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, request)
+	return response
 }
 
 type modelTransport func(*http.Request) (*http.Response, error)
@@ -100,11 +111,10 @@ func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 	})}
-	const fields = "{ key value configured }"
-	const read = "{ modelSettings " + fields + " composerOptions { defaultModel models { id contextWindow } } }"
-	const update = "mutation ($changes:[SettingChange!]!) { updateModelSettings(changes:$changes) " + fields + " }"
+	const modelPath = "/settings/model"
+	const catalogPath = "/settings/model/catalog"
 	for _, owner := range []string{"alice", "bob"} {
-		before := query(owner, read, nil)
+		before := query(owner, http.MethodGet, "/composer/options", nil) + query(owner, http.MethodGet, modelPath, nil)
 		if !strings.Contains(before, `"defaultModel":""`) || strings.Contains(before, "legacy") {
 			t.Fatalf("global settings leaked into private config: %s", before)
 		}
@@ -113,21 +123,20 @@ func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 			{"key": "modelApiKey", "value": owner + "-key"},
 			{"key": "modelId", "value": owner + "-key-model"},
 		}}
-		if result := query(owner, update, changes); strings.Contains(result, "errors") ||
-			!strings.Contains(result, `"key":"modelApiKey","value":null,"configured":true`) {
+		if result := query(owner, http.MethodPatch, modelPath, changes); !strings.Contains(result, `"key":"modelApiKey","value":null,"configured":true`) {
 			t.Fatalf("account settings did not save or leaked the key: %s", result)
 		}
-		if result := query(owner, "mutation { fetchModels { id } }", nil); !strings.Contains(result, owner+"-key-model") {
+		if result := query(owner, http.MethodPost, catalogPath, map[string]any{}); !strings.Contains(result, owner+"-key-model") {
 			t.Fatalf("catalog did not use caller's key: %s", result)
 		}
 	}
-	if result := query("alice", read, nil); !strings.Contains(result, `"contextWindow":10000`) || strings.Contains(result, "bob") {
+	if result := query("alice", http.MethodGet, "/composer/options", nil); !strings.Contains(result, `"contextWindow":10000`) || strings.Contains(result, "bob") {
 		t.Fatalf("composer catalog is not isolated: %s", result)
 	}
-	if result := query("alice", `mutation { fetchModels(baseUrl:"https://new.example.test/v1") { id } }`, nil); strings.Contains(result, "errors") {
+	if result := query("alice", http.MethodPost, catalogPath, map[string]string{"baseUrl": "https://new.example.test/v1"}); result != "[]" {
 		t.Fatalf("model discovery at a new endpoint failed: %s", result)
 	}
-	if result := query("alice", `mutation { updateModelSettings(changes:[{key:"e2bApiKey",value:"invalid"}]) { key } }`, nil); !strings.Contains(result, "INVALID_SETTING_CHANGES") {
+	if result := query("alice", http.MethodPatch, modelPath, map[string]any{"changes": []map[string]string{{"key": "e2bApiKey", "value": "invalid"}}}); !strings.Contains(result, "INVALID_SETTING_CHANGES") {
 		t.Fatalf("account settings accepted an instance field: %s", result)
 	}
 
@@ -165,10 +174,10 @@ func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 	if !executed["alice-key"] || !executed["bob-key"] {
 		t.Fatalf("queued runs used the same account's model key: %v", executed)
 	}
-	if result := query("alice", `mutation { updateModelSettings(changes:[{key:"modelBaseUrl",value:"https://new.example.test/v1"}]) { key configured } }`, nil); !strings.Contains(result, `"key":"modelApiKey","configured":false`) {
+	if result := query("alice", http.MethodPatch, modelPath, map[string]any{"changes": []map[string]string{{"key": "modelBaseUrl", "value": "https://new.example.test/v1"}}}); !strings.Contains(result, `"key":"modelApiKey","value":null,"configured":false`) {
 		t.Fatalf("changing the base URL retained its previous key: %s", result)
 	}
-	if result := query("bob", read, nil); !strings.Contains(result, `"key":"modelApiKey","value":null,"configured":true`) {
+	if result := query("bob", http.MethodGet, modelPath, nil); !strings.Contains(result, `"key":"modelApiKey","value":null,"configured":true`) {
 		t.Fatalf("editing alice's settings changed bob's: %s", result)
 	}
 }

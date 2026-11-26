@@ -17,7 +17,7 @@ import SessionList from './SessionList.vue'
 import SessionProjectPicker from './SessionProjectPicker.vue'
 import type { SessionAction } from './presentation'
 import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment, SessionSummary, Turn } from './sessionApi'
-import { attachmentURL } from './sessionTransfer'
+import { attachmentURL } from './sessionApi'
 
 const props = defineProps<{
   session: AgentSession | null

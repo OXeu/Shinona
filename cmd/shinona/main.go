@@ -14,18 +14,25 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/OXeu/shinona/internal/adapter/graphql"
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/password"
+	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/adapter/terminal"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 )
+
+func init() {
+	if _, configured := os.LookupEnv(gin.EnvGinMode); !configured {
+		gin.SetMode(gin.ReleaseMode)
+	}
+}
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -74,16 +81,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	controls := &run.Controls{}
 	service := run.NewService(repository, config.ResolveForAccount, uuid.NewString, controls, config.ProjectTargets)
 	defer service.CloseTerminals()
-	api, err := graphql.NewHandler(service, config, logger)
-	if err != nil {
-		return err
-	}
-	transfer, err := sessiontransfer.New(service, logger)
-	if err != nil {
-		return fmt.Errorf("create session transfer handler: %w", err)
-	}
-	defer func() { _ = transfer.Close() }()
-	mux := http.NewServeMux()
+
 	authConfig := func() httpauth.Config {
 		current := config.Auth()
 		current.AccountDeleted = service.AccountDeleted
@@ -91,12 +89,11 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		return current
 	}
 	authHandler := httpauth.NewWithConfig(auth.New(repository, password.Argon2id{}, uuid.NewString), authConfig, logger)
-	authHandler.Routes(mux, sameOriginJSON)
-	config.mcpOAuth.Routes(mux, authHandler.RequireUser, sameOriginJSON,
+	router := newAPIRouter(ctx, config.origin.String(), service, config, authHandler, logger)
+	config.mcpOAuth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)
-	registerRunRoutes(mux, ctx, config.origin.String(), service, api, transfer, authHandler, logger)
 	server := &http.Server{
-		Handler:           httpserver.ServerTiming(allowedHost(mux, config.Host)),
+		Handler:           httpserver.ServerTiming(allowedHost(router, config.Host)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -129,15 +126,27 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	}
 }
 
-func registerRunRoutes(mux *http.ServeMux, ctx context.Context, origin string, service *run.Service,
-	api http.Handler, transfer *sessiontransfer.Handler, authHandler *httpauth.Handler, logger *slog.Logger,
-) {
-	mux.Handle("POST /graphql", sameOriginJSON(authHandler.RequireUser(api)))
-	terminal.Routes(mux, ctx, origin, service, authHandler.RequireUser, sameOriginJSON, authHandler.SessionUser, logger)
-	mux.Handle("GET "+sessiontransfer.RecentPath, authHandler.RequireUser(transfer.Recent(ctx, origin, authHandler.SessionUser)))
-	mux.Handle("GET "+sessiontransfer.LivePath, authHandler.RequireUser(transfer.Live(ctx, origin, authHandler.SessionUser, service)))
-	mux.Handle("POST "+sessiontransfer.TranscriptPath, sameOriginJSON(authHandler.RequireUser(http.HandlerFunc(transfer.Transcript))))
-	mux.Handle("GET "+sessiontransfer.AttachmentPath, authHandler.RequireUser(sessiontransfer.Attachment(service, logger)))
+func newAPIRouter(ctx context.Context, origin string, service *run.Service, app rest.Application,
+	authHandler *httpauth.Handler, logger *slog.Logger,
+) *gin.Engine {
+	router := gin.New()
+	router.RedirectTrailingSlash = false
+	router.HandleMethodNotAllowed = true
+	router.Use(gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered any) {
+		logger.Error("HTTP handler panicked", "error", recovered)
+		c.AbortWithStatus(http.StatusInternalServerError)
+	}))
+	routes := httpserver.GinRoutes{IRoutes: router}
+
+	authHandler.Routes(routes, sameOriginJSON)
+	terminal.Routes(routes, ctx, origin, service, authHandler.RequireUser, sameOriginJSON, authHandler.SessionUser, logger)
+	transfer := sessiontransfer.New(service, logger)
+	routes.Handle("GET "+sessiontransfer.LivePath, authHandler.RequireUser(transfer.Live(ctx, origin, authHandler.SessionUser, service)))
+	routes.Handle("GET "+sessiontransfer.AttachmentPath, authHandler.RequireUser(sessiontransfer.Attachment(service, logger)))
+
+	api := router.Group(rest.Prefix, httpserver.CompressJSON, authHandler.RequireGinUser)
+	rest.Register(api, service, app, logger)
+	return router
 }
 
 func allowedHost(next http.Handler, configuredHost func() string) http.Handler {

@@ -1,13 +1,10 @@
 package sessiontransfer
 
 import (
-	"context"
-	"slices"
 	"time"
 
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/run"
-	"github.com/OXeu/shinona/internal/timing"
 )
 
 func summary(session run.Session) *sessionpb.SessionSummary {
@@ -17,36 +14,6 @@ func summary(session run.Session) *sessionpb.SessionSummary {
 		TurnCount:    int32(session.TurnCount), UpdatedAt: session.UpdatedAt.Format(time.RFC3339Nano),
 		Pinned: session.Pinned, Active: session.Active, Unread: session.Unread,
 	}
-}
-
-func sendTranscript(ctx context.Context, transcript *run.Transcript, settings run.Settings, send func(*sessionpb.TranscriptChunk) error) error {
-	buildHeader := timing.Start(ctx, "transcript_build_chunks")
-	header := &sessionpb.TranscriptHeader{SandboxSettings: sandboxSettings(settings)}
-	if transcript != nil {
-		header.Session = summary(transcript.Session)
-		header.LastOptions = runOptions(transcript.LastOptions())
-		header.NextBeforeSequence = int32(transcript.NextBeforeSequence)
-	}
-	buildHeader()
-	if err := send(&sessionpb.TranscriptChunk{Item: &sessionpb.TranscriptChunk_Header{Header: header}}); err != nil {
-		return err
-	}
-	if transcript != nil {
-		for batch := range slices.Chunk(transcript.Turns, turnBatchSize) {
-			buildChunk := timing.Start(ctx, "transcript_build_chunks")
-			turns := make([]*sessionpb.Turn, len(batch))
-			for i, item := range batch {
-				turns[i] = turn(item)
-			}
-			buildChunk()
-			if err := send(&sessionpb.TranscriptChunk{
-				Item: &sessionpb.TranscriptChunk_Turns{Turns: &sessionpb.TranscriptTurns{Turns: turns}},
-			}); err != nil {
-				return err
-			}
-		}
-	}
-	return send(&sessionpb.TranscriptChunk{Item: &sessionpb.TranscriptChunk_Done{Done: true}})
 }
 
 func runOptions(options *run.Options) *sessionpb.RunOptions {

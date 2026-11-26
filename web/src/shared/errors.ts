@@ -1,4 +1,3 @@
-import { GraphQLError } from './graphql'
 import { HttpError } from './http'
 import { t } from './i18n'
 import type { MessageKey } from './i18n'
@@ -101,7 +100,7 @@ const errorKeys: Readonly<Partial<Record<string, MessageKey>>> = {
 }
 
 export function messageFor(error: unknown, fallback: MessageKey): string {
-  if ((error instanceof HttpError || error instanceof GraphQLError) && error.code && Object.hasOwn(errorKeys, error.code)) {
+  if (error instanceof HttpError && error.code && Object.hasOwn(errorKeys, error.code)) {
     return t(errorKeys[error.code] ?? fallback)
   }
   return t(fallback)

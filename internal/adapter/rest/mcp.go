@@ -1,4 +1,4 @@
-package graphql
+package rest
 
 import (
 	"context"
@@ -7,27 +7,29 @@ import (
 	"github.com/OXeu/shinona/internal/settings"
 )
 
-func (r *resolver) MCPSettings(ctx context.Context) (settings.MCPSettings, error) {
+func (r *handler) MCPSettings(ctx context.Context) (settings.MCPSettings, error) {
 	result, err := r.app.MCPSettings(ctx)
 	return result, r.mcpError(err)
 }
 
-func (r *resolver) SaveMCPServer(ctx context.Context, args struct{ Input settings.MCPServerInput }) (settings.MCPSettings, error) {
-	result, err := r.app.SaveMCPServer(ctx, args.Input)
+func (r *handler) SaveMCPServer(ctx context.Context, input settings.MCPServerInput) (settings.MCPSettings, error) {
+	result, err := r.app.SaveMCPServer(ctx, input)
 	return result, r.mcpError(err)
 }
 
-func (r *resolver) RemoveMCPServer(ctx context.Context, args struct{ Name string }) (settings.MCPSettings, error) {
+func (r *handler) RemoveMCPServer(ctx context.Context, args struct {
+	Name string `form:"name"`
+}) (settings.MCPSettings, error) {
 	result, err := r.app.RemoveMCPServer(ctx, args.Name)
 	return result, r.mcpError(err)
 }
 
-func (r *resolver) ResetMCPSettings(ctx context.Context) (settings.MCPSettings, error) {
+func (r *handler) ResetMCPSettings(ctx context.Context) (settings.MCPSettings, error) {
 	result, err := r.app.ResetMCPSettings(ctx)
 	return result, r.mcpError(err)
 }
 
-func (r *resolver) mcpError(err error) error {
+func (r *handler) mcpError(err error) error {
 	if err == nil {
 		return nil
 	}

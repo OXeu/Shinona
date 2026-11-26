@@ -47,9 +47,9 @@ func (o Options) SelectedMCPServers() []string {
 }
 
 type ComposerDefaults struct {
-	Model      string
-	Permission string
-	Thinking   string
+	Model      string `json:"model"`
+	Permission string `json:"permission"`
+	Thinking   string `json:"thinking"`
 }
 
 type Payload struct {
@@ -84,8 +84,8 @@ type TurnPart struct {
 }
 
 type SteeringMessage struct {
-	Text      string
-	Delivered bool
+	Text      string `json:"text"`
+	Delivered bool   `json:"delivered"`
 }
 
 // Steering is the active run's mailbox. Seal rejects new messages at the final

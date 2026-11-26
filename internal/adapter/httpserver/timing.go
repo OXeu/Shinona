@@ -88,16 +88,30 @@ func (w *timedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 // WebSocketTimingHeaders supplies the timing for a handshake written directly to the connection.
 func WebSocketTimingHeaders(w http.ResponseWriter) http.Header {
-	if timed, ok := w.(*timedWriter); ok {
+	if timed := findTimedWriter(w); timed != nil {
 		return http.Header{timingHeader: timed.metrics()}
+	}
+	return nil
+}
+
+func findTimedWriter(w http.ResponseWriter) *timedWriter {
+	for w != nil {
+		if timed, ok := w.(*timedWriter); ok {
+			return timed
+		}
+		wrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil
+		}
+		w = wrapper.Unwrap()
 	}
 	return nil
 }
 
 // StreamTiming collects phases that finish after the initial HTTP headers.
 func StreamTiming(w http.ResponseWriter, ctx context.Context) (context.Context, func()) {
-	timed, ok := w.(*timedWriter)
-	if !ok {
+	timed := findTimedWriter(w)
+	if timed == nil {
 		return ctx, func() {}
 	}
 	ctx, phases := timing.WithRecorder(ctx)
@@ -111,7 +125,7 @@ func StreamTiming(w http.ResponseWriter, ctx context.Context) (context.Context, 
 
 // MaxBytesReader preserves net/http's handling of oversized requests through the timing writer.
 func MaxBytesReader(w http.ResponseWriter, body io.ReadCloser, limit int64) io.ReadCloser {
-	if timed, ok := w.(*timedWriter); ok {
+	if timed := findTimedWriter(w); timed != nil {
 		w = timed.Unwrap()
 	}
 	return http.MaxBytesReader(w, body, limit)

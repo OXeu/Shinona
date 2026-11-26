@@ -1,5 +1,4 @@
-import { graphql } from '../../shared/graphql'
-import { mcpSettingsFields } from './mcpSettingsApi'
+import { apiJSON } from '../../shared/http'
 import type { McpSettings } from './mcpSettingsApi'
 
 export interface SettingField {
@@ -22,49 +21,20 @@ export interface SSHServerInput extends SSHServer {
   privateKey: string
 }
 
-const settingFields = 'key value configured overridden'
-const sshServerFields = 'id name address user hostFingerprint template'
-
 export const settingsApi = {
   fetchModels: (baseUrl: string | undefined, apiKey: string | undefined, signal: AbortSignal) =>
-    graphql<{ fetchModels: { id: string }[] }>(`
-      mutation FetchModels($baseUrl: String, $apiKey: String) {
-        fetchModels(baseUrl: $baseUrl, apiKey: $apiKey) { id }
-      }
-    `, { baseUrl, apiKey }, signal),
+    apiJSON<{ id: string; contextWindow: number }[]>('/settings/model/catalog', 'POST', signal, { baseUrl, apiKey }),
   load: (signal: AbortSignal) =>
-    graphql<{ applicationSettings: SettingField[]; modelSettings: SettingField[]; mcpSettings: McpSettings; sshServers: SSHServer[] }>(`
-      query Settings {
-        applicationSettings { ${settingFields} }
-        modelSettings { ${settingFields} }
-        mcpSettings { ${mcpSettingsFields} }
-        sshServers { ${sshServerFields} }
-      }
-    `, {}, signal),
+    apiJSON<{ applicationSettings: SettingField[]; modelSettings: SettingField[]; mcpSettings: McpSettings; sshServers: SSHServer[] }>(
+      '/settings', 'GET', signal),
   save: (changes: { key: string; value: string | null }[], signal: AbortSignal) =>
-    graphql<{ updateApplicationSettings: SettingField[] }>(`
-      mutation UpdateApplicationSettings($changes: [SettingChange!]!) {
-        updateApplicationSettings(changes: $changes) { ${settingFields} }
-      }
-    `, { changes }, signal),
+    apiJSON<SettingField[]>('/settings/application', 'PATCH', signal, { changes }),
   saveModel: (changes: { key: string; value: string | null }[], signal: AbortSignal) =>
-    graphql<{ updateModelSettings: SettingField[] }>(`
-      mutation UpdateModelSettings($changes: [SettingChange!]!) {
-        updateModelSettings(changes: $changes) { ${settingFields} }
-      }
-    `, { changes }, signal),
+    apiJSON<SettingField[]>('/settings/model', 'PATCH', signal, { changes }),
   saveSSHServer: (input: SSHServerInput, signal: AbortSignal) =>
-    graphql<{ saveSshServer: SSHServer }>(`
-      mutation SaveSSHServer($input: SSHServerInput!) {
-        saveSshServer(input: $input) { ${sshServerFields} }
-      }
-    `, { input }, signal),
+    apiJSON<SSHServer>('/settings/ssh/servers', 'PUT', signal, input),
   testSSHServer: (input: SSHServerInput, signal: AbortSignal) =>
-    graphql<{ testSshServer: boolean }>(`
-      mutation TestSSHServer($input: SSHServerInput!) { testSshServer(input: $input) }
-    `, { input }, signal),
+    apiJSON<void>('/settings/ssh/connection-test', 'POST', signal, input),
   removeSSHServer: (id: string, signal: AbortSignal) =>
-    graphql<{ removeSshServer: boolean }>(`
-      mutation RemoveSSHServer($id: ID!) { removeSshServer(id: $id) }
-    `, { id }, signal),
+    apiJSON<void>('/settings/ssh/servers/' + encodeURIComponent(id), 'DELETE', signal),
 }

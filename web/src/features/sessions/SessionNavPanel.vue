@@ -10,7 +10,6 @@ import { UiBox, UiButton, UiHeader, UiNav } from '../../shared/ui/elements'
 import SessionList from './SessionList.vue'
 import SessionProjectPicker from './SessionProjectPicker.vue'
 import type { SessionAction } from './presentation'
-import { sessionApi } from './sessionApi'
 import type { SessionSummary } from './sessionApi'
 import { useSessionStore } from './sessionStore'
 
@@ -77,7 +76,6 @@ onMounted(refresh)
 onUnmounted(() => {
   listing?.abort()
   clearTimeout(timer)
-  sessionApi.closeRecent()
 })
 </script>
 

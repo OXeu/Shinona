@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig, loadEnv } from 'vite'
-import type { Plugin, ProxyOptions } from 'vite'
+import type { Plugin } from 'vite'
 import { arrowFrame } from './arrow-frame-plugin.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -25,17 +25,6 @@ export default defineConfig(({ mode }) => {
     target: env.SHINONA_API_ORIGIN || `http://${env.SHINONA_ADDR || '127.0.0.1:8780'}`,
     changeOrigin: false,
   }
-  const transcript: ProxyOptions = {
-    ...api,
-    configure(proxy) {
-      proxy.on('proxyRes', (upstream, _request, downstream) => {
-        upstream.once('end', () => {
-          const timing = upstream.trailers['server-timing']
-          if (timing) downstream.addTrailers({ 'Server-Timing': timing })
-        })
-      })
-    },
-  }
   return {
     plugins: [vue(), dingStyles(), arrowFrame()],
     server: {
@@ -43,10 +32,7 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       proxy: {
         '/auth': api,
-        '/graphql': api,
-        '/api/session-transfer/v1/recent': { ...api, ws: true },
-        '/api/session-transfer/v1/live': { ...api, ws: true },
-        '/api/session-transfer/v1/transcript': transcript,
+        '/api/v1': { ...api, ws: true },
         '/api/terminal/v1': { ...api, ws: true },
       },
     },

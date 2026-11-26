@@ -3,7 +3,7 @@ import { computed, onUnmounted, ref, useId, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { messageFor } from '../../shared/errors'
-import { GraphQLError } from '../../shared/graphql'
+import { HttpError } from '../../shared/http'
 import { t } from '../../shared/i18n'
 import type { MessageKey } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
@@ -109,7 +109,7 @@ async function refresh(reset = false) {
   const { signal } = request
   loading.value = true
   try {
-    const { projectSandbox } = await projectSandboxApi.load(props.projectId ?? '', signal)
+    const projectSandbox = await projectSandboxApi.load(props.projectId ?? '', signal)
     if (!signal.aborted) {
       if (reset || !dirty.value) restoreEditor(projectSandbox)
       snapshot.value = projectSandbox
@@ -159,7 +159,7 @@ async function perform() {
     if (!signal.aborted) {
       const previous = snapshot.value?.config.provider
       if (operation === 'save' && previous && previous !== next.value.provider &&
-        error instanceof GraphQLError && error.code === 'PROJECT_SANDBOX_CLEANUP_FAILED') {
+        error instanceof HttpError && error.code === 'PROJECT_SANDBOX_CLEANUP_FAILED') {
         skipCleanupFor.value = previous
         confirmOpen.value = true
       } else {

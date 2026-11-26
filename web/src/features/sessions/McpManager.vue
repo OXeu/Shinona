@@ -95,16 +95,16 @@ function save() {
     token: draftAuth.value === 'bearer' ? token || null : '',
     oauth: draftAuth.value === 'oauth',
   }
-  return change(async () => (await mcpSettingsApi.save(input, request.signal)).saveMcpServer, 'mcp.saved')
+  return change(() => mcpSettingsApi.save(input, request.signal), 'mcp.saved')
 }
 
 function removeOrReset() {
   if (action.value === 'reset') {
-    return change(async () => (await mcpSettingsApi.reset(request.signal)).resetMcpSettings, 'mcp.reset')
+    return change(() => mcpSettingsApi.reset(request.signal), 'mcp.reset')
   }
   const name = target.value?.name
   if (action.value === 'remove' && name) {
-    return change(async () => (await mcpSettingsApi.remove(name, request.signal)).removeMcpServer, 'mcp.removed')
+    return change(() => mcpSettingsApi.remove(name, request.signal), 'mcp.removed')
   }
 }
 

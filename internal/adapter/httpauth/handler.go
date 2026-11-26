@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
@@ -60,7 +61,7 @@ func NewWithConfig(service *auth.Service, config func() Config, logger *slog.Log
 	}
 }
 
-func (h *Handler) Routes(mux *http.ServeMux, post func(http.Handler) http.Handler) {
+func (h *Handler) Routes(mux httpserver.Routes, post func(http.Handler) http.Handler) {
 	mux.HandleFunc("GET /auth/session", h.session)
 	mux.Handle("POST /auth/password", post(http.HandlerFunc(h.password)))
 	mux.Handle("POST /auth/logout", post(http.HandlerFunc(h.logout)))
@@ -71,18 +72,34 @@ func (h *Handler) Routes(mux *http.ServeMux, post func(http.Handler) http.Handle
 
 func (h *Handler) RequireUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		user, err := h.SessionUser(r)
-		if err != nil {
-			h.failure(w, err)
-			return
+		if request := h.authenticated(w, r); request != nil {
+			next.ServeHTTP(w, request)
 		}
-		if user == nil {
-			http.Error(w, "Sign in required.", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), *user)))
 	})
+}
+
+func (h *Handler) RequireGinUser(c *gin.Context) {
+	request := h.authenticated(c.Writer, c.Request)
+	if request == nil {
+		c.Abort()
+		return
+	}
+	c.Request = request
+	c.Next()
+}
+
+func (h *Handler) authenticated(w http.ResponseWriter, r *http.Request) *http.Request {
+	w.Header().Set("Cache-Control", "no-store")
+	user, err := h.SessionUser(r)
+	if err != nil {
+		h.failure(w, err)
+		return nil
+	}
+	if user == nil {
+		http.Error(w, "Sign in required.", http.StatusUnauthorized)
+		return nil
+	}
+	return r.WithContext(auth.WithUser(r.Context(), *user))
 }
 
 type sessionResponse struct {

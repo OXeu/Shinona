@@ -56,12 +56,12 @@ func TestPasswordAndOAuthSignIn(t *testing.T) {
 	mux := http.NewServeMux()
 	handler := httpauth.New(service, provider, true, slog.New(slog.DiscardHandler))
 	handler.Routes(mux, http.NewCrossOriginProtection().Handler)
-	mux.Handle("POST /graphql", handler.RequireUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("POST /test/protected", handler.RequireUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, auth.CurrentUser(r.Context()).ID)
 	})))
 
 	passwordBody := `{"email":"reviewer@example.test","password":"example-password-42"}`
-	assertStatus(t, perform(t, mux, "POST", "/graphql", "{}"), http.StatusUnauthorized)
+	assertStatus(t, perform(t, mux, "POST", "/test/protected", "{}"), http.StatusUnauthorized)
 	wrongPassword := perform(t, mux, "POST", "/auth/password", `{"email":"reviewer@example.test","password":"wrong"}`)
 	assertStatus(t, wrongPassword, http.StatusUnauthorized)
 	if wrongPassword.Header().Get("X-Shinona-Error-Code") != "AUTH_CREDENTIALS" {
@@ -73,13 +73,13 @@ func TestPasswordAndOAuthSignIn(t *testing.T) {
 	if !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("unexpected session cookie: %v", cookie)
 	}
-	protected := perform(t, mux, "POST", "/graphql", "{}", cookie)
+	protected := perform(t, mux, "POST", "/test/protected", "{}", cookie)
 	assertStatus(t, protected, http.StatusOK)
 	if protected.Body.String() != user.ID {
 		t.Fatal("password session resolved to a different account")
 	}
 	assertStatus(t, perform(t, mux, "POST", "/auth/logout", "{}", cookie), http.StatusNoContent)
-	assertStatus(t, perform(t, mux, "POST", "/graphql", "{}", cookie), http.StatusUnauthorized)
+	assertStatus(t, perform(t, mux, "POST", "/test/protected", "{}", cookie), http.StatusUnauthorized)
 
 	oauthStart := startOAuth(t, mux, authorization)
 	callback := "/auth/oauth/callback?state=" + url.QueryEscape(oauthStart.Value)
@@ -112,7 +112,7 @@ func TestPasswordAndOAuthSignIn(t *testing.T) {
 	if oauthSession == nil {
 		t.Fatal("OAuth login did not create a session")
 	}
-	protected = perform(t, mux, "POST", "/graphql", "{}", oauthSession)
+	protected = perform(t, mux, "POST", "/test/protected", "{}", oauthSession)
 	assertStatus(t, protected, http.StatusOK)
 	if protected.Body.String() == user.ID {
 		t.Fatal("OAuth must not attach to an existing password account by email")

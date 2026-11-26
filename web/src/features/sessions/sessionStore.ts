@@ -19,7 +19,6 @@ export const useSessionStore = defineStore('sessions', () => {
 
   function useAccount(owner: string | undefined) {
     if (owner === account) return
-    sessionApi.closeRecent()
     account = owner
     version++
     projectVersion++
@@ -54,7 +53,7 @@ export const useSessionStore = defineStore('sessions', () => {
 
   async function createProject(name: string, signal: AbortSignal) {
     const requestedFor = account
-    const { createProject: project } = await sessionApi.createProject(name, signal)
+    const project = await sessionApi.createProject(name, signal)
     if (signal.aborted || requestedFor !== account) return false
     projectVersion++
     projects.value = [...projects.value.filter(({ id }) => id !== project.id), project]
@@ -64,7 +63,7 @@ export const useSessionStore = defineStore('sessions', () => {
 
   async function renameProject(id: string, name: string, signal: AbortSignal) {
     const requestedFor = account
-    const { renameProject: project } = await sessionApi.renameProject(id, name, signal)
+    const project = await sessionApi.renameProject(id, name, signal)
     if (signal.aborted || requestedFor !== account) return false
     projectVersion++
     projects.value = projects.value.map((entry) => entry.id === id ? project : entry)

@@ -4,21 +4,6 @@ package shinona.sessions.v1;
 
 option go_package = "github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb";
 
-message RecentRequest {
-  // Absent includes all projects. An empty value selects the default project.
-  optional string project_id = 1;
-}
-
-message RecentPage {
-  repeated Project projects = 1;
-  repeated SessionSummary sessions = 2;
-}
-
-message Project {
-  string id = 1;
-  string name = 2;
-}
-
 message SessionSummary {
   string id = 1;
   optional string project_id = 2;
@@ -31,23 +16,6 @@ message SessionSummary {
   bool unread = 9;
 }
 
-message TranscriptChunk {
-  oneof item {
-    TranscriptHeader header = 1;
-    TranscriptTurns turns = 2;
-    bool done = 3;
-  }
-}
-
-message TranscriptHeader {
-  // Absent for missing, archived, or inaccessible sessions.
-  SessionSummary session = 1;
-  SandboxSettings sandbox_settings = 2;
-  RunOptions last_options = 3;
-  // Exclusive sequence for the next older page. Zero means there is no older page.
-  int32 next_before_sequence = 4;
-}
-
 message RunOptions {
   string model = 1;
   string permission = 2;
@@ -55,10 +23,6 @@ message RunOptions {
   repeated string mcp_servers = 4;
   reserved 5;
   bool arrow_js = 6;
-}
-
-message TranscriptTurns {
-  repeated Turn turns = 1;
 }
 
 message SandboxSettings {

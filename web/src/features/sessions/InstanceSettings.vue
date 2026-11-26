@@ -81,7 +81,7 @@ async function fetchModels() {
   if (fetching.value || props.saving) return
   fetching.value = true
   try {
-    const { fetchModels } = await settingsApi.fetchModels(
+    const fetchModels = await settingsApi.fetchModels(
       drafts.modelBaseUrl === null ? '' : drafts.modelBaseUrl,
       drafts.modelApiKey === null ? '' : drafts.modelApiKey,
       fetchRequest.signal,

@@ -14,7 +14,7 @@ import (
 
 const adminPageSize = 25
 
-func (h *Handler) accountRoutes(mux *http.ServeMux, post func(http.Handler) http.Handler) {
+func (h *Handler) accountRoutes(mux httpserver.Routes, post func(http.Handler) http.Handler) {
 	accountPost := func(handler http.HandlerFunc) http.Handler { return post(h.RequireUser(handler)) }
 	mux.Handle("POST /auth/account/profile", accountPost(h.profile))
 	mux.Handle("GET /auth/account/avatar/{owner}/{version}", h.RequireUser(http.HandlerFunc(h.avatar)))

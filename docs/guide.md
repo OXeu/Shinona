@@ -20,7 +20,7 @@ npm --prefix web ci
 npm --prefix web run dev
 ```
 
-Open `http://127.0.0.1:5173`. Vite proxies `/auth`, `/graphql`, `/api/session-transfer/v1/`, and the `/api/terminal/v1` terminal API and WebSocket to the Go API on `127.0.0.1:8780`. Shinona loads the project-root `.env` with godotenv. Exported variables take precedence over the file. Vite also reads `SHINONA_ADDR` and can use `SHINONA_API_ORIGIN` as an explicit development proxy target. [.env.example](../.env.example) lists the startup values.
+Open `http://127.0.0.1:5173`. Vite proxies `/auth`, `/api/v1/`, and the `/api/terminal/v1` terminal API and WebSocket to the Go API on `127.0.0.1:8780`. Shinona loads the project-root `.env` with godotenv. Exported variables take precedence over the file. Vite also reads `SHINONA_ADDR` and can use `SHINONA_API_ORIGIN` as an explicit development proxy target. [.env.example](../.env.example) lists the startup values.
 
 ### Preview on a trusted LAN
 
@@ -73,7 +73,7 @@ Use **Revert message** under a user prompt once the session is idle. Confirm to 
 
 ## Authentication
 
-Password login uses Argon2id and requires a password of 12–128 bytes. Login uses revocable, seven-day, HTTP-only cookies with SameSite Lax. An HTTPS `SHINONA_WEB_ORIGIN` enables secure cookies. HTTP origins are accepted on loopback or an explicitly configured private IP address. The API requires sign-in for GraphQL, scopes sessions and preferences by account ID, and requires same-origin browser requests for JSON mutations.
+Password login uses Argon2id and requires a password of 12–128 bytes. Login uses revocable, seven-day, HTTP-only cookies with SameSite Lax. An HTTPS `SHINONA_WEB_ORIGIN` enables secure cookies. HTTP origins are accepted on loopback or an explicitly configured private IP address. The REST API requires sign-in, scopes sessions and preferences by account ID, and checks the browser origin on writes.
 
 Configure OpenID Connect in **Settings → Shinona SSO** and register the callback with the issuer. The corresponding startup variables are listed below. Clear the issuer, client ID, and secret together to disable OAuth.
 
@@ -159,13 +159,11 @@ The SSH provider creates one container per account and project and starts comman
 
 ## Session transfer
 
-Shinona reads the session list as a Brotli-compressed Protobuf page over a reusable WebSocket. It reads transcripts over HTTP as length-prefixed, Zstandard-compressed Protobuf frames with up to eight turns each. The browser applies a transcript after its completion frame arrives. Transcript reads default to the latest 30 turns and return a cursor that the browser uses to load older turns. GraphQL handles writes and provides the same pagination when the binary route is unavailable.
+The session list uses `GET /api/v1/sessions`. The transcript uses `GET /api/v1/sessions/{id}/transcript`. It returns the latest 30 turns and a cursor for fetching earlier turns with `beforeSequence`. Use `paged=false` to read the full transcript. The HTTP middleware compresses JSON responses of at least 1 KiB when the client accepts gzip.
 
-An open conversation receives Zstandard-compressed Protobuf updates over a WebSocket. Growing text and tool output are sent as appended text. Changes to the turn list or status include changed turn records. The browser reconciles with the current transcript on reconnect and polls about once per second while an active session's live socket is unavailable. Intermediate progress can coalesce for slow viewers. The server sends a heartbeat every 15 seconds and checks the login cookie when it sends an update.
+An open conversation receives Protobuf updates over `/api/v1/live`. Client and server negotiate WebSocket compression when they connect. Growing text and tool output are sent as appended text. Changes to the turn list or status include changed turn records. The browser reconciles with the current transcript on reconnect and polls about once per second while an active session's live socket is unavailable. Intermediate progress can coalesce for slow viewers. The server sends a heartbeat every 15 seconds and checks the login cookie when it sends an update.
 
-The browser loads the decoders on first use. The session-list socket closes after 45 seconds of server-side idle time. A failed binary poll falls back to GraphQL and waits 30 seconds before trying the socket again. The transcript reader rejects incomplete frames and individual compressed frames over 64 MiB.
-
-On a reverse proxy, forward `/api/session-transfer/v1/` to Shinona. Preserve the WebSocket upgrade and browser `Origin` for `/api/session-transfer/v1/recent` and `/api/session-transfer/v1/live`. Stream `/api/session-transfer/v1/transcript` with response buffering disabled if the proxy buffers HTTP responses by default.
+On a reverse proxy, forward `/api/v1/` to Shinona and preserve the WebSocket upgrade and browser `Origin` for `/api/v1/live`.
 
 ## Architecture and limits
 
@@ -176,10 +174,10 @@ Firefox displays phase durations in the Network Timings panel in a secure contex
 | API | Business phases |
 | --- | --- |
 | Sign-in and OAuth | Session lookup, password lookup and verification on successful sign-in, session creation, OIDC token exchange and verification, MCP resource and issuer discovery, registration, and grant persistence. |
-| GraphQL | JSON decoding and encoding, validation, execution, and each executed root field. Model discovery reports upstream HTTP, catalog decoding, normalization, and caller wait time. Workspace operations report sandbox acquisition, command execution, file reads, and release when used. |
+| REST | Model discovery reports upstream HTTP, catalog decoding, normalization, and caller wait time. Workspace operations report sandbox acquisition, command execution, file reads, and release when used. |
 | SQLite-backed APIs | `sqlite` sums GORM statement durations, including row scanning, across the request. |
-| Transcript and attachments | Transcript request decoding, transcript and settings retrieval, stored turn JSON decoding (`transcript_json`), and first-frame encoding. Attachments report retrieval and image decoding. The transcript's final `Server-Timing` trailer reports frame assembly, Protobuf encoding, Zstandard compression, and socket writes across the stream. Vite forwards this trailer. Use an HTTP client that reads trailers to inspect the full stream. |
-| Live sessions and terminals | The WebSocket handshake includes completed request phases. When a connection closes, the server logs aggregate phase durations and counts for session-list queries, bootstrap, resync, live deltas, encoding, compression, and socket writes as applicable. Terminal startup logs sandbox acquisition and PTY allocation when they finish, and terminal connections log input, resize, and output writes at close. |
+| Transcript and attachments | Transcript admission wait, retrieval, stored turn JSON decoding (`transcript_json`), cache hits, and JSON encoding. Attachments report retrieval and image decoding. |
+| Live sessions and terminals | The WebSocket handshake includes completed request phases. When a connection closes, the server logs aggregate phase durations and counts for bootstrap, resync, live deltas, encoding, and socket writes as applicable. Terminal startup logs sandbox acquisition and PTY allocation when they finish, and terminal connections log input, resize, and output writes at close. |
 
 | Layer | Responsibility |
 | --- | --- |
@@ -188,8 +186,8 @@ Firefox displays phase durations in the Network Timings panel in a secure contex
 | [internal/run](../internal/run) | Conversations, stored turns, per-account settings, and worker lifecycle. |
 | [internal/settings](../internal/settings) | Editable instance settings, environment fallbacks, partial overrides, and credential redaction. |
 | [internal/sandbox](../internal/sandbox) | Provider capabilities, workspace acquisition, file operations, process execution, optional interactive terminals, and release. |
-| [internal/adapter](../internal/adapter) | GraphQL, HTTP auth, OIDC, GORM/SQLite, sky-valley/pi, E2B, and the E2B data-plane client. |
-| [web/src](../web/src) | Vue Router, Pinia, GraphQL operations, UI components, and Ding notifications. |
+| [internal/adapter](../internal/adapter) | Gin REST, HTTP auth, OIDC, GORM/SQLite, sky-valley/pi, E2B, and the E2B data-plane client. |
+| [web/src](../web/src) | Vue Router, Pinia, REST clients, UI components, and Ding notifications. |
 
 The API uses one Go process and one worker. A turn begins with one user submission and can include multiple model requests and tool calls. Each conversation can have up to eight pending turns, including one running turn. A running turn can receive up to 16 steering messages. The queue survives restart and interrupted runs become failed.
 
@@ -201,7 +199,7 @@ The worker runs until the agent finishes or errors, the user stops it, or the se
 
 Tools accept an optional integer `timeout` in seconds from the tool call. Without one, the tool inherits turn cancellation. MCP tools with a native timeout parameter use their own schema. Tool errors are sent to the assistant with any captured output. Workspace cleanup and result persistence keep separate deadlines.
 
-SQLite stores conversations, thinking previews, and tool previews. Prompts are limited to 8,000 Unicode code points, image attachments to four images totaling 4 MiB per submission, and GraphQL request bodies to 6 MiB. The initial workspace tools are text read, text write, and Bash. File tool operations are capped at 64 KiB and Bash output at 16 KiB per stream.
+SQLite stores conversations, thinking previews, and tool previews. Prompts are limited to 8,000 Unicode code points, image attachments to four images totaling 4 MiB per submission, and REST request bodies to 6 MiB. The initial workspace tools are text read, text write, and Bash. File tool operations are capped at 64 KiB and Bash output at 16 KiB per stream.
 
 The API listens on loopback. The skeleton uses Vite for frontend development and has process-level sign-in throttling. Production serving, distributed rate limiting, provider quotas, and multi-worker coordination are outside this pass.
 

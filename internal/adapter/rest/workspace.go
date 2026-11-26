@@ -1,10 +1,8 @@
-package graphql
+package rest
 
 import (
 	"context"
 	"errors"
-
-	gql "github.com/graph-gophers/graphql-go"
 
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
@@ -12,25 +10,27 @@ import (
 	"github.com/OXeu/shinona/internal/workspace"
 )
 
-type workspaceArgs struct{ SessionID gql.ID }
+type workspaceArgs struct {
+	SessionID string `uri:"id" json:"-"`
+}
 
-func (r *resolver) WorkspaceRoot(ctx context.Context, args workspaceArgs) (string, error) {
-	root, err := r.service.WorkspaceRoot(ctx, auth.CurrentUser(ctx).ID, string(args.SessionID))
+func (r *handler) WorkspaceRoot(ctx context.Context, args workspaceArgs) (string, error) {
+	root, err := r.service.WorkspaceRoot(ctx, auth.CurrentUser(ctx).ID, args.SessionID)
 	if err != nil {
 		return "", r.apiError(err)
 	}
 	return root, nil
 }
 
-func (r *resolver) SetWorkspaceRoot(ctx context.Context, args struct {
-	SessionID gql.ID
+func (r *handler) SetWorkspaceRoot(ctx context.Context, args struct {
+	SessionID string `uri:"id" json:"-"`
 	Root      string
 }) (string, error) {
 	owner := auth.CurrentUser(ctx).ID
 	root := args.Root
 	// Validate the directory inside the live lease before saving the choice.
 	if root != "" && root != "." {
-		err := r.service.InspectWorkspace(ctx, owner, string(args.SessionID), func(ctx context.Context, ws sandbox.Workspace) error {
+		err := r.service.InspectWorkspace(ctx, owner, args.SessionID, func(ctx context.Context, ws sandbox.Workspace) error {
 			return workspace.New(ws).ResolveRoot(ctx, root)
 		})
 		if err != nil {
@@ -40,24 +40,24 @@ func (r *resolver) SetWorkspaceRoot(ctx context.Context, args struct {
 			return "", r.workspaceError(err)
 		}
 	}
-	root, err := r.service.SetWorkspaceRoot(ctx, owner, string(args.SessionID), root)
+	root, err := r.service.SetWorkspaceRoot(ctx, owner, args.SessionID, root)
 	if err != nil {
 		return "", r.apiError(err)
 	}
 	return root, nil
 }
 
-func (r *resolver) WorkspaceChanges(ctx context.Context, args workspaceArgs) (workspace.Changes, error) {
+func (r *handler) WorkspaceChanges(ctx context.Context, args workspaceArgs) (workspace.Changes, error) {
 	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, workspace.Repository.Changes)
 }
 
-func (r *resolver) WorkspaceHistory(ctx context.Context, args workspaceArgs) (workspace.History, error) {
+func (r *handler) WorkspaceHistory(ctx context.Context, args workspaceArgs) (workspace.History, error) {
 	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, workspace.Repository.History)
 }
 
-func (r *resolver) WorkspaceDirectory(ctx context.Context, args struct {
-	SessionID gql.ID
-	Path      string
+func (r *handler) WorkspaceDirectory(ctx context.Context, args struct {
+	SessionID string `uri:"id" json:"-"`
+	Path      string `form:"path"`
 }) (workspace.Directory, error) {
 	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, func(repo workspace.Repository, ctx context.Context) (workspace.Directory, error) {
 		// The files panel browses the whole workspace so it can select any folder.
@@ -65,11 +65,11 @@ func (r *resolver) WorkspaceDirectory(ctx context.Context, args struct {
 	})
 }
 
-func (r *resolver) WorkspacePreview(ctx context.Context, args struct {
-	SessionID gql.ID
-	Path      string
-	Diff      bool
-	Revision  *string
+func (r *handler) WorkspacePreview(ctx context.Context, args struct {
+	SessionID string  `uri:"id" json:"-"`
+	Path      string  `form:"path"`
+	Diff      bool    `form:"diff"`
+	Revision  *string `form:"revision"`
 }) (workspace.Preview, error) {
 	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, func(repo workspace.Repository, ctx context.Context) (workspace.Preview, error) {
 		if args.Diff {
@@ -84,8 +84,8 @@ func (r *resolver) WorkspacePreview(ctx context.Context, args struct {
 	})
 }
 
-func (r *resolver) CommitWorkspace(ctx context.Context, args struct {
-	SessionID gql.ID
+func (r *handler) CommitWorkspace(ctx context.Context, args struct {
+	SessionID string `uri:"id" json:"-"`
 	Message   string
 	Paths     []string
 }) (string, error) {
@@ -99,13 +99,13 @@ type openWorkspace func(context.Context, string, string, func(context.Context, s
 
 // inWorkspace opens the session workspace scoped to the account's selected
 // directory, so changes, history, files, and commits stay within it.
-func inWorkspace[T any](ctx context.Context, r *resolver, open openWorkspace, id gql.ID, use func(workspace.Repository, context.Context) (T, error)) (result T, err error) {
+func inWorkspace[T any](ctx context.Context, r *handler, open openWorkspace, id string, use func(workspace.Repository, context.Context) (T, error)) (result T, err error) {
 	owner := auth.CurrentUser(ctx).ID
-	root, err := r.service.WorkspaceRoot(ctx, owner, string(id))
+	root, err := r.service.WorkspaceRoot(ctx, owner, id)
 	if err != nil {
 		return result, r.apiError(err)
 	}
-	err = open(ctx, owner, string(id), func(ctx context.Context, ws sandbox.Workspace) error {
+	err = open(ctx, owner, id, func(ctx context.Context, ws sandbox.Workspace) error {
 		var operationErr error
 		result, operationErr = use(workspace.New(ws).At(root), ctx)
 		return operationErr
@@ -117,7 +117,7 @@ func inWorkspace[T any](ctx context.Context, r *resolver, open openWorkspace, id
 }
 
 // workspaceError maps a workspace failure to its stable API error code.
-func (r *resolver) workspaceError(err error) error {
+func (r *handler) workspaceError(err error) error {
 	switch {
 	case err == nil:
 		return nil

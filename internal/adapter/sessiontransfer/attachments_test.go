@@ -51,7 +51,7 @@ func TestAttachmentServesOnlyTheOwnersVisibleTurn(t *testing.T) {
 	mux.Handle("GET "+sessiontransfer.AttachmentPath, sessiontransfer.Attachment(service, slog.New(slog.DiscardHandler)))
 	requestImage := func(owner, session, index string) *httptest.ResponseRecorder {
 		request := httptest.NewRequestWithContext(auth.WithUser(ctx, auth.User{ID: owner}), http.MethodGet,
-			sessiontransfer.TranscriptPath+"/"+session+"/turns/turn/attachments/"+index, nil)
+			"/api/v1/sessions/"+session+"/turns/turn/attachments/"+index, nil)
 		result := httptest.NewRecorder()
 		mux.ServeHTTP(result, request)
 		return result

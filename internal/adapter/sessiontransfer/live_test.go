@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/klauspost/compress/zstd"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
@@ -105,11 +104,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	}()
 
 	logs := make(timingLogs, 16)
-	handler, err := sessiontransfer.New(service, slog.New(slog.NewTextHandler(logs, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = handler.Close() })
+	handler := sessiontransfer.New(service, slog.New(slog.NewTextHandler(logs, nil)))
 	var revoked atomic.Bool
 	const origin = "https://shinona.example"
 	live := handler.Live(ctx, origin, func(r *http.Request) (*auth.User, error) {
@@ -123,17 +118,12 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		live.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), user)))
 	}))
 	defer server.Close()
-	decoder, err := zstd.NewReader(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer decoder.Close()
 
 	dial := func(account, token string) *websocket.Conn {
 		t.Helper()
 		header := http.Header{"Origin": {origin}, "X-Test-Owner": {account}, "X-Test-Cookie": {token}}
 		url := "ws" + strings.TrimPrefix(server.URL, "http")
-		conn, response, err := websocket.DefaultDialer.Dial(url, header)
+		conn, response, err := (&websocket.Dialer{EnableCompression: true}).Dial(url, header)
 		if response != nil {
 			defer func() { _ = response.Body.Close() }()
 		}
@@ -160,12 +150,8 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 			if err != nil || kind != websocket.BinaryMessage {
 				t.Fatalf("read live protobuf: %v (kind %d)", err, kind)
 			}
-			data, err := decoder.DecodeAll(raw, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
 			var message sessionpb.LiveMessage
-			if err := proto.Unmarshal(data, &message); err != nil {
+			if err := proto.Unmarshal(raw, &message); err != nil {
 				t.Fatal(err)
 			}
 			*seq++
@@ -275,7 +261,7 @@ func waitForBootstrapAndDeltaTiming(t *testing.T, ctx context.Context, logs timi
 		select {
 		case entry := <-logs:
 			if strings.Contains(entry, "phases.live_send_delta.ms=") {
-				for _, phase := range []string{"live_bootstrap", "live_load_transcript", "live_build_delta", "protobuf_encode", "zstd_compress", "websocket_write"} {
+				for _, phase := range []string{"live_bootstrap", "live_load_transcript", "live_build_delta", "protobuf_encode", "websocket_write"} {
 					if !strings.Contains(entry, "phases."+phase+".ms=") {
 						t.Errorf("live timing report is missing %s", phase)
 					}

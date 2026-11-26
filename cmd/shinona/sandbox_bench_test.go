@@ -14,6 +14,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
 	"github.com/OXeu/shinona/internal/adapter/e2b"
+	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
 	"github.com/OXeu/shinona/internal/adapter/terminal"
@@ -123,23 +124,12 @@ func newBenchmarkSandbox(b *testing.B, repo *sqlite.Repository, name string, pro
 	return &benchmarkSandbox{api, provider, spec}
 }
 
-const (
-	createSandbox   = "createProjectSandbox"
-	recreateSandbox = "recreateProjectSandbox"
-	destroySandbox  = "destroyProjectSandbox"
-)
-
-func (s *benchmarkSandbox) lifecycle(b *testing.B, field string) func() {
+func (s *benchmarkSandbox) lifecycle(b *testing.B, method, suffix string) func() {
 	b.Helper()
-	body := s.operation(b, "mutation Lifecycle($projectId: ID!) { "+field+"(projectId: $projectId) }",
-		map[string]string{"projectId": s.spec.ProjectID})
+	path := rest.Prefix + "/projects/" + url.PathEscape(s.spec.ProjectID) + "/sandbox" + suffix
 	return func() {
 		b.Helper()
-		var success bool
-		s.graphql(b, body, field, &success)
-		if !success {
-			b.Fatalf("%s did not succeed", field)
-		}
+		s.rest(b, method, path, nil, http.StatusNoContent, nil)
 	}
 }
 
@@ -155,7 +145,7 @@ func (s *benchmarkSandbox) requireState(b *testing.B, want sandbox.ProjectState)
 }
 
 func benchmarkSandboxInitialize(b *testing.B, s *benchmarkSandbox) {
-	create, destroy := s.lifecycle(b, createSandbox), s.lifecycle(b, destroySandbox)
+	create, destroy := s.lifecycle(b, http.MethodPost, ""), s.lifecycle(b, http.MethodDelete, "")
 	s.requireState(b, sandbox.ProjectNone)
 	for b.Loop() {
 		create()
@@ -168,9 +158,9 @@ func benchmarkSandboxInitialize(b *testing.B, s *benchmarkSandbox) {
 }
 
 func benchmarkSandboxRecreate(b *testing.B, s *benchmarkSandbox) {
-	s.lifecycle(b, createSandbox)()
+	s.lifecycle(b, http.MethodPost, "")()
 	previous := s.requireState(b, sandbox.ProjectRunning)
-	recreate := s.lifecycle(b, recreateSandbox)
+	recreate := s.lifecycle(b, http.MethodPost, "/recreate")
 	for b.Loop() {
 		recreate()
 		b.StopTimer()
@@ -184,7 +174,7 @@ func benchmarkSandboxRecreate(b *testing.B, s *benchmarkSandbox) {
 }
 
 func benchmarkSandboxDestroy(b *testing.B, s *benchmarkSandbox) {
-	create, destroy := s.lifecycle(b, createSandbox), s.lifecycle(b, destroySandbox)
+	create, destroy := s.lifecycle(b, http.MethodPost, ""), s.lifecycle(b, http.MethodDelete, "")
 	for b.Loop() {
 		b.StopTimer()
 		create()
@@ -200,7 +190,7 @@ func benchmarkSandboxDestroy(b *testing.B, s *benchmarkSandbox) {
 
 func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
 	b.Helper()
-	s.lifecycle(b, createSandbox)()
+	s.lifecycle(b, http.MethodPost, "")()
 	session := s.session(b, s.spec.ProjectID)
 	ctx, cancel := context.WithTimeout(b.Context(), 45*time.Second)
 	defer cancel()
@@ -241,9 +231,7 @@ func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
 
 func benchmarkGitChanges(b *testing.B, s *benchmarkSandbox) {
 	session := s.gitFixture(b)
-	body := s.operation(b, `query Changes($sessionId: ID!) {
-		workspaceChanges(sessionId: $sessionId) { branch truncated entries { path status untracked } }
-	}`, map[string]string{"sessionId": session})
+	path := benchmarkSessionPath(session) + "/workspace/changes"
 	var result struct {
 		Branch    string
 		Truncated bool
@@ -253,7 +241,7 @@ func benchmarkGitChanges(b *testing.B, s *benchmarkSandbox) {
 		}
 	}
 	for b.Loop() {
-		s.graphql(b, body, "workspaceChanges", &result)
+		s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result)
 		if result.Branch != "main" || result.Truncated || len(result.Entries) != 2 ||
 			result.Entries[0].Path != "src/file-1.txt" || result.Entries[1].Path != "src/local.txt" || !result.Entries[1].Untracked {
 			b.Fatalf("unexpected git changes: %+v", result)
@@ -263,9 +251,7 @@ func benchmarkGitChanges(b *testing.B, s *benchmarkSandbox) {
 
 func benchmarkFileList(b *testing.B, s *benchmarkSandbox) {
 	session := s.gitFixture(b)
-	body := s.operation(b, `query Files($sessionId: ID!, $path: String!) {
-		workspaceDirectory(sessionId: $sessionId, path: $path) { truncated entries { path name directory } }
-	}`, map[string]string{"sessionId": session, "path": "benchmark-repo/src"})
+	path := benchmarkSessionPath(session) + "/workspace/files?path=benchmark-repo%2Fsrc"
 	var result struct {
 		Truncated bool
 		Entries   []struct {
@@ -274,7 +260,7 @@ func benchmarkFileList(b *testing.B, s *benchmarkSandbox) {
 		}
 	}
 	for b.Loop() {
-		s.graphql(b, body, "workspaceDirectory", &result)
+		s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result)
 		if result.Truncated || len(result.Entries) != 41 {
 			b.Fatalf("unexpected directory listing: %+v", result)
 		}
@@ -283,9 +269,7 @@ func benchmarkFileList(b *testing.B, s *benchmarkSandbox) {
 
 func benchmarkGitHistory(b *testing.B, s *benchmarkSandbox) {
 	session := s.gitFixture(b)
-	body := s.operation(b, `query GitHistory($sessionId: ID!) {
-		workspaceHistory(sessionId: $sessionId) { truncated entries { hash short author date subject } }
-	}`, map[string]string{"sessionId": session})
+	path := benchmarkSessionPath(session) + "/workspace/history"
 	var result struct {
 		Truncated bool
 		Entries   []struct {
@@ -293,7 +277,7 @@ func benchmarkGitHistory(b *testing.B, s *benchmarkSandbox) {
 		}
 	}
 	for b.Loop() {
-		s.graphql(b, body, "workspaceHistory", &result)
+		s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result)
 		if result.Truncated || len(result.Entries) != 12 || result.Entries[0].Subject != "Fixture version 11" {
 			b.Fatalf("unexpected git history: %+v", result)
 		}
@@ -301,7 +285,7 @@ func benchmarkGitHistory(b *testing.B, s *benchmarkSandbox) {
 }
 
 func benchmarkPTY(b *testing.B, s *benchmarkSandbox) {
-	s.lifecycle(b, createSandbox)()
+	s.lifecycle(b, http.MethodPost, "")()
 	session := s.session(b, s.spec.ProjectID)
 	body, _ := s.post(b, terminal.Path+"/create", s.requestBody(b, map[string]string{"session": session}), http.StatusCreated)
 	var tab run.TerminalTab

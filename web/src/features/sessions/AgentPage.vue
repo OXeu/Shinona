@@ -284,7 +284,7 @@ async function submit(action: ComposerAction, payload: ComposerPayload) {
         setChatError('submit', t('sandbox.none'))
         return
       }
-      const { submitRun } = await sessionApi.submit(scope.id, message, payload, action === 'queue', scope.controller.signal)
+      const submitRun = await sessionApi.submit(scope.id, message, payload, action === 'queue', scope.controller.signal)
       if (scope.controller.signal.aborted || !session.value) return
       rememberQueued(scope, submitRun)
     }
@@ -306,13 +306,13 @@ async function submitDraft(message: string, payload: ComposerPayload) {
   submitting.value = true
   try {
     if (!draftSession || draftSession.projectId !== (projectId || null)) {
-      const { createSession } = await sessionApi.create(projectId, signal)
+      const createSession = await sessionApi.create(projectId, signal)
       if (signal.aborted || route.fullPath !== from) return
       draftSession = createSession
       store.upsert(createSession)
     }
     const entry = draftSession
-    const { submitRun } = await sessionApi.submit(entry.id, message, payload, false, signal)
+    const submitRun = await sessionApi.submit(entry.id, message, payload, false, signal)
     if (signal.aborted || route.fullPath !== from) return
     store.moveDraftComposerOptions(entry.id)
     store.upsert({ ...entry, turnCount: submitRun.sequence, active: true })
@@ -332,7 +332,7 @@ async function retryTurn(id: string, options: ComposerRunOptions) {
   try {
     const result = await sessionApi.retry(scope.id, id, options, scope.controller.signal)
     if (scope.controller.signal.aborted) return
-    rememberQueued(scope, result.retryTurn)
+    rememberQueued(scope, result)
     schedule(scope)
   } catch (error) {
     if (!scope.controller.signal.aborted) setChatError('retry', messageFor(error, 'chat.retryFailed'))
@@ -374,7 +374,7 @@ async function revertMessage() {
   setChatError('revert', '')
   reverting.value = true
   try {
-    const { revertTurn } = await sessionApi.revert(scope.id, target.turnId, target.headId, scope.controller.signal)
+    const revertTurn = await sessionApi.revert(scope.id, target.turnId, target.headId, scope.controller.signal)
     if (scope.controller.signal.aborted) return
     scope.revision++
     const summary = revertTurn.session
@@ -407,7 +407,7 @@ async function create() {
   setChatError('create', '')
   creating.value = true
   try {
-    const { createSession } = await sessionApi.create(store.selectedProjectId)
+    const createSession = await sessionApi.create(store.selectedProjectId)
     if (route.fullPath !== from) return
     store.upsert(createSession)
     await router.push({ name: 'session', params: { id: createSession.id } })
@@ -482,7 +482,7 @@ async function saveComposerDefaults(input: ComposerDefaults) {
   savingDefaults.value = true
   const signal = catalogRequest.signal
   try {
-    const { setComposerDefaults } = await sessionApi.saveComposerDefaults(input, signal)
+    const setComposerDefaults = await sessionApi.saveComposerDefaults(input, signal)
     if (signal.aborted) return
     defaultsVersion++
     catalog.value.defaults = setComposerDefaults
@@ -498,7 +498,7 @@ async function loadComposerOptions(attempt = 0) {
   const { signal } = catalogRequest
   const version = defaultsVersion
   try {
-    const { composerOptions } = await sessionApi.composerOptions(signal)
+    const composerOptions = await sessionApi.composerOptions(signal)
     if (signal.aborted) return
     if (defaultsVersion !== version) composerOptions.defaults = catalog.value.defaults
     catalog.value = composerOptions

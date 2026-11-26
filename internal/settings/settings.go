@@ -176,10 +176,10 @@ func definitionFor(key Key) (definition, bool) {
 }
 
 type Field struct {
-	Key        string
-	Value      *string
-	Configured bool
-	Overridden bool
+	Key        string  `json:"key"`
+	Value      *string `json:"value"`
+	Configured bool    `json:"configured"`
+	Overridden bool    `json:"overridden"`
 }
 
 func Fields(values, overrides Values) []Field {

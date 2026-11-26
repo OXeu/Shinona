@@ -5,7 +5,7 @@ import { decodeRunOptions, decodeSandboxSettings, decodeSessionSummary, decodeTu
 import { LiveMessageSchema, LiveRequestSchema } from './session_transfer_pb'
 import type { LiveProgress, LiveSync } from './session_transfer_pb'
 
-const endpoint = '/api/session-transfer/v1/live'
+const endpoint = '/api/v1/live'
 const maxPayload = 64 * 1024 * 1024
 
 interface LiveCallbacks {
@@ -71,7 +71,6 @@ class SessionState {
 }
 
 export async function watchLiveSession(initial: AgentSession, callbacks: LiveCallbacks, signal: AbortSignal): Promise<void> {
-  const { decompress } = await import('fzstd')
   signal.throwIfAborted()
   const payload = toBinary(LiveRequestSchema, create(LiveRequestSchema, {
     sessionId: initial.id,
@@ -111,7 +110,7 @@ export async function watchLiveSession(initial: AgentSession, callbacks: LiveCal
     socket.addEventListener('message', ({ data }) => {
       try {
         if (!(data instanceof ArrayBuffer) || data.byteLength > maxPayload) throw new Error('Invalid live session packet.')
-        const message = fromBinary(LiveMessageSchema, decompress(new Uint8Array(data)))
+        const message = fromBinary(LiveMessageSchema, new Uint8Array(data))
         if (message.sequence !== sequence + 1 || (!sequence && message.item.case !== 'sync')) {
           throw new Error('Live session updates arrived out of order.')
         }

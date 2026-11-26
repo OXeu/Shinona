@@ -1,19 +1,17 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/OXeu/shinona/internal/adapter/graphql"
+	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
@@ -103,28 +101,18 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 		t.Fatalf("obsolete instance overrides survived startup: %v", err)
 	}
 	service := run.NewService(repository, app.ResolveForAccount, uuid.NewString, &run.Controls{}, nil)
-	api, err := graphql.NewHandler(service, app, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	as := func(admin bool, query string, variables any) string {
+	api := gin.New()
+	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler))
+	const path = "/settings/application"
+	as := func(admin bool, method string, body any) string {
 		t.Helper()
-		body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
-		if err != nil {
-			t.Fatal(err)
-		}
-		request := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body)).
-			WithContext(auth.WithUser(ctx, auth.User{ID: "owner", Admin: admin}))
-		response := httptest.NewRecorder()
-		api.ServeHTTP(response, request)
-		return response.Body.String()
+		user := auth.WithUser(ctx, auth.User{ID: "owner", Admin: admin})
+		return performREST(t, api, user, method, path, body).Body.String()
 	}
-	const read = `{ applicationSettings { key configured value } }`
-	if response := as(false, read, nil); !strings.Contains(response, `"applicationSettings":[]`) {
+	if response := as(false, http.MethodGet, nil); response != "[]" {
 		t.Fatalf("settings exposed to a regular user: %s", response)
 	}
-	adminFields := as(true, read, nil)
+	adminFields := as(true, http.MethodGet, nil)
 	for key := range obsolete {
 		if strings.Contains(adminFields, `"key":"`+string(key)+`"`) {
 			t.Fatalf("obsolete setting is still listed: %s", key)
@@ -133,19 +121,16 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 			t.Fatalf("obsolete setting still accepts updates: %s", key)
 		}
 	}
-	const update = `mutation Update($changes: [SettingChange!]!) {
-		updateApplicationSettings(changes: $changes) { key configured value }
-	}`
 	changes := map[string]any{"changes": []map[string]string{
 		{"key": "e2bBaseUrl", "value": "http://127.0.0.1:3000"},
 		{"key": "e2bApiKey", "value": "private-e2b-key"},
 	}}
-	if response := as(false, update, changes); !strings.Contains(response, "administrator access is required") || app.Resolve("").Provider != nil {
+	if response := as(false, http.MethodPatch, changes); !strings.Contains(response, "administrator access is required") || app.Resolve("").Provider != nil {
 		t.Fatalf("regular user was allowed to save settings: %s", response)
 	}
-	saved := as(true, update, changes)
-	if strings.Contains(saved, "errors") || strings.Contains(saved, "private-") ||
-		!strings.Contains(saved, `"key":"e2bApiKey","configured":true,"value":null`) {
+	saved := as(true, http.MethodPatch, changes)
+	if strings.Contains(saved, "private-") ||
+		!strings.Contains(saved, `"key":"e2bApiKey","value":null,"configured":true`) {
 		t.Fatalf("unexpected settings mutation result: %s", saved)
 	}
 	owner := auth.WithUser(ctx, auth.User{ID: "owner"})

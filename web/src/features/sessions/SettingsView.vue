@@ -72,10 +72,10 @@ async function saveInstance(changes: { key: string; value: string | null }[]) {
   savingInstance.value = true
   try {
     if (active.value === 'model') {
-      const { updateModelSettings } = await settingsApi.saveModel(changes, request.signal)
+      const updateModelSettings = await settingsApi.saveModel(changes, request.signal)
       modelFields.value = updateModelSettings
     } else {
-      const { updateApplicationSettings } = await settingsApi.save(changes, request.signal)
+      const updateApplicationSettings = await settingsApi.save(changes, request.signal)
       fields.value = updateApplicationSettings
     }
     if (!request.signal.aborted) notify.success(t('settings.saved'))

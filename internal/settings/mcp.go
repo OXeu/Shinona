@@ -30,16 +30,16 @@ type MCPRepository interface {
 }
 
 type MCPServerInfo struct {
-	Name      string
-	URL       string
-	HasToken  bool
-	OAuth     bool
-	Connected bool
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	HasToken  bool   `json:"hasToken"`
+	OAuth     bool   `json:"oauth"`
+	Connected bool   `json:"connected"`
 }
 
 type MCPSettings struct {
-	Servers    []MCPServerInfo
-	Overridden bool
+	Servers    []MCPServerInfo `json:"servers"`
+	Overridden bool            `json:"overridden"`
 }
 
 type MCPServerInput struct {

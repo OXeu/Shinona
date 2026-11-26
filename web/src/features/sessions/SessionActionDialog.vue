@@ -41,7 +41,7 @@ async function perform(action: SessionAction, item: SessionSummary) {
 
   saving.value = true
   try {
-    const { updateSession } = await sessionApi.update(item.id, { pinned: !item.pinned })
+    const updateSession = await sessionApi.update(item.id, { pinned: !item.pinned })
     if (request.signal.aborted) return
     handleUpdate(updateSession)
     notify.success(t(updateSession.pinned ? 'sessions.pinnedToast' : 'sessions.unpinnedToast'))
@@ -68,7 +68,7 @@ async function save() {
       emit('archived', item.id)
       notify.success(t('sessions.removed'))
     } else {
-      const { updateSession } = await sessionApi.update(item.id, { title: title.value })
+      const updateSession = await sessionApi.update(item.id, { title: title.value })
       if (request.signal.aborted) return
       handleUpdate(updateSession)
       notify.success(t('sessions.renamed'))

@@ -1,4 +1,4 @@
-import { graphql } from '../../shared/graphql'
+import { apiJSON } from '../../shared/http'
 
 export interface ChangedFile {
   path: string
@@ -34,47 +34,26 @@ export interface WorkspacePreview {
   truncated: boolean
 }
 
+function workspacePath(sessionId: string) {
+  return '/sessions/' + encodeURIComponent(sessionId) + '/workspace'
+}
+
 export const workspaceApi = {
   root: (sessionId: string, signal: AbortSignal) =>
-    graphql<{ workspaceRoot: string }>(`
-      query WorkspaceRoot($sessionId: ID!) {
-        workspaceRoot(sessionId: $sessionId)
-      }
-    `, { sessionId }, signal),
+    apiJSON<string>(workspacePath(sessionId) + '/root', 'GET', signal),
   setRoot: (sessionId: string, root: string, signal: AbortSignal) =>
-    graphql<{ setWorkspaceRoot: string }>(`
-      mutation SetWorkspaceRoot($sessionId: ID!, $root: String!) {
-        setWorkspaceRoot(sessionId: $sessionId, root: $root)
-      }
-    `, { sessionId, root }, signal),
+    apiJSON<string>(workspacePath(sessionId) + '/root', 'PUT', signal, { root }),
   changes: (sessionId: string, signal: AbortSignal) =>
-    graphql<{ workspaceChanges: WorkspaceChanges }>(`
-      query Changes($sessionId: ID!) {
-        workspaceChanges(sessionId: $sessionId) { branch truncated entries { path status untracked } }
-      }
-    `, { sessionId }, signal),
+    apiJSON<WorkspaceChanges>(workspacePath(sessionId) + '/changes', 'GET', signal),
   history: (sessionId: string, signal: AbortSignal) =>
-    graphql<{ workspaceHistory: WorkspaceList<GitCommit> }>(`
-      query GitHistory($sessionId: ID!) {
-        workspaceHistory(sessionId: $sessionId) { truncated entries { hash short author date subject } }
-      }
-    `, { sessionId }, signal),
+    apiJSON<WorkspaceList<GitCommit>>(workspacePath(sessionId) + '/history', 'GET', signal),
   directory: (sessionId: string, path: string, signal: AbortSignal) =>
-    graphql<{ workspaceDirectory: WorkspaceList<WorkspaceEntry> }>(`
-      query Files($sessionId: ID!, $path: String!) {
-        workspaceDirectory(sessionId: $sessionId, path: $path) { truncated entries { path name directory } }
-      }
-    `, { sessionId, path }, signal),
-  preview: (sessionId: string, path: string, diff: boolean, revision: string | undefined, signal: AbortSignal) =>
-    graphql<{ workspacePreview: WorkspacePreview }>(`
-      query Preview($sessionId: ID!, $path: String!, $diff: Boolean!, $revision: String) {
-        workspacePreview(sessionId: $sessionId, path: $path, diff: $diff, revision: $revision) { text truncated }
-      }
-    `, { sessionId, path, diff, revision }, signal),
+    apiJSON<WorkspaceList<WorkspaceEntry>>(workspacePath(sessionId) + '/files?' + new URLSearchParams({ path }), 'GET', signal),
+  preview: (sessionId: string, path: string, diff: boolean, revision: string | undefined, signal: AbortSignal) => {
+    const query = new URLSearchParams({ path, diff: String(diff) })
+    if (revision !== undefined) query.set('revision', revision)
+    return apiJSON<WorkspacePreview>(workspacePath(sessionId) + '/preview?' + query, 'GET', signal)
+  },
   commit: (sessionId: string, message: string, paths: string[], signal: AbortSignal) =>
-    graphql<{ commitWorkspace: string }>(`
-      mutation Commit($sessionId: ID!, $message: String!, $paths: [String!]!) {
-        commitWorkspace(sessionId: $sessionId, message: $message, paths: $paths)
-      }
-    `, { sessionId, message, paths }, signal),
+    apiJSON<string>(workspacePath(sessionId) + '/commits', 'POST', signal, { message, paths }),
 }

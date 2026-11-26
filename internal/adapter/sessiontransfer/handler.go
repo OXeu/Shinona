@@ -1,150 +1,31 @@
-// Package sessiontransfer serves signed-in session reads using binary Protobuf.
+// Package sessiontransfer streams live session updates over WebSocket.
 package sessiontransfer
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
-	"encoding/json"
-	"errors"
-	"io"
 	"log/slog"
-	"net/http"
-	"runtime"
-	"sync"
 	"time"
 
-	"github.com/andybalholm/brotli"
 	"github.com/gorilla/websocket"
-	"github.com/klauspost/compress/zstd"
-	"golang.org/x/sync/semaphore"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/OXeu/shinona/internal/adapter/httpserver"
-	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
-	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/timing"
 )
 
-const (
-	RecentPath     = "/api/session-transfer/v1/recent"
-	TranscriptPath = "/api/session-transfer/v1/transcript"
-
-	transcriptType = "application/vnd.shinona.transcript.v1+protobuf"
-	turnBatchSize  = 8
-)
-
 type Reader interface {
-	Projects(context.Context, string) ([]run.Project, error)
-	RecentSessions(context.Context, string, *string) ([]run.Session, error)
 	FullTranscript(context.Context, string, string) (*run.Transcript, error)
 	TranscriptPage(context.Context, string, string, int) (*run.Transcript, error)
 	Settings(context.Context, string) (run.Settings, error)
 }
 
 type Handler struct {
-	reader               Reader
-	logger               *slog.Logger
-	brotli               sync.Pool
-	zstd                 *zstd.Encoder
-	fullTranscriptSlots  *semaphore.Weighted
-	pagedTranscriptSlots *semaphore.Weighted
+	reader Reader
+	logger *slog.Logger
 }
 
-func New(reader Reader, logger *slog.Logger) (*Handler, error) {
-	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1))
-	if err != nil {
-		return nil, err
-	}
-	fullSlots := int64(min(max(runtime.GOMAXPROCS(0), 4), 16))
-	return &Handler{
-		reader:               reader,
-		logger:               logger,
-		zstd:                 encoder,
-		brotli:               sync.Pool{New: func() any { return brotli.NewWriterLevel(io.Discard, 4) }},
-		fullTranscriptSlots:  semaphore.NewWeighted(fullSlots),
-		pagedTranscriptSlots: semaphore.NewWeighted(2 * fullSlots),
-	}, nil
-}
-
-func (h *Handler) Close() error { return h.zstd.Close() }
-
-// Recent requires an authenticated upgrade. It checks the original cookie again on each poll.
-func (h *Handler) Recent(lifetime context.Context, origin string, sessionUser func(*http.Request) (*auth.User, error)) http.Handler {
-	upgrader := websocket.Upgrader{
-		HandshakeTimeout: 5 * time.Second,
-		CheckOrigin:      func(r *http.Request) bool { return r.Header.Get("Origin") == origin },
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		owner := auth.CurrentUser(r.Context()).ID
-		if owner == "" {
-			http.Error(w, "Sign in required.", http.StatusUnauthorized)
-			return
-		}
-		h.serveRecent(lifetime, w, r, upgrader, owner, sessionUser)
-	})
-}
-
-func (h *Handler) serveRecent(lifetime context.Context, w http.ResponseWriter, r *http.Request,
-	upgrader websocket.Upgrader, owner string, sessionUser func(*http.Request) (*auth.User, error),
-) {
-	conn, err := upgrader.Upgrade(w, r, httpserver.WebSocketTimingHeaders(w))
-	if err != nil {
-		return
-	}
-	defer func() { _ = conn.Close() }()
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	ctx, phases := timing.WithRecorder(ctx)
-	defer h.logSocketTimings("recent", phases)
-	stop := context.AfterFunc(lifetime, func() {
-		cancel()
-		_ = conn.Close()
-	})
-	defer stop()
-	conn.SetReadLimit(1024)
-
-	for {
-		if err := conn.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
-			return
-		}
-		kind, payload, err := conn.ReadMessage()
-		if err != nil {
-			return
-		}
-		var request sessionpb.RecentRequest
-		decode := timing.Start(ctx, "recent_decode")
-		valid := kind == websocket.BinaryMessage && proto.Unmarshal(payload, &request) == nil
-		decode()
-		if !valid {
-			closeSocket(conn, websocket.CloseUnsupportedData, "Invalid session list request.")
-			return
-		}
-		requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		user, err := sessionUser(r.WithContext(requestCtx))
-		if err != nil || user == nil || user.ID != owner {
-			cancel()
-			closeSocket(conn, websocket.ClosePolicyViolation, "Session unavailable.")
-			return
-		}
-		data, err := h.recent(requestCtx, owner, request.ProjectId)
-		cancel()
-		if err != nil {
-			h.logger.Error("encode session list", "error", err)
-			closeSocket(conn, websocket.CloseInternalServerErr, "Session list unavailable.")
-			return
-		}
-		if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
-			return
-		}
-		write := timing.Start(ctx, "websocket_write")
-		err = conn.WriteMessage(websocket.BinaryMessage, data)
-		write()
-		if err != nil {
-			return
-		}
-	}
+func New(reader Reader, logger *slog.Logger) *Handler {
+	return &Handler{reader: reader, logger: logger}
 }
 
 func (h *Handler) logSocketTimings(operation string, phases *timing.Recorder) {
@@ -158,168 +39,7 @@ func closeSocket(conn *websocket.Conn, code int, reason string) {
 	_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(time.Second))
 }
 
-func (h *Handler) recent(ctx context.Context, owner string, projectID *string) ([]byte, error) {
-	loadProjects := timing.Start(ctx, "recent_projects")
-	projects, err := h.reader.Projects(ctx, owner)
-	loadProjects()
-	if err != nil {
-		return nil, err
-	}
-	loadSessions := timing.Start(ctx, "recent_sessions")
-	sessions, err := h.reader.RecentSessions(ctx, owner, projectID)
-	loadSessions()
-	if err != nil {
-		return nil, err
-	}
-	build := timing.Start(ctx, "recent_build_page")
-	page := &sessionpb.RecentPage{
-		Projects: make([]*sessionpb.Project, len(projects)),
-		Sessions: make([]*sessionpb.SessionSummary, len(sessions)),
-	}
-	for i, project := range projects {
-		page.Projects[i] = &sessionpb.Project{Id: project.ID, Name: project.Name}
-	}
-	for i, session := range sessions {
-		page.Sessions[i] = summary(session)
-	}
-	build()
-	payload, err := encodeProtobuf(ctx, page)
-	if err != nil {
-		return nil, err
-	}
-	defer timing.Start(ctx, "brotli_compress")()
-	var compressed bytes.Buffer
-	writer := h.brotli.Get().(*brotli.Writer)
-	writer.Reset(&compressed)
-	if _, err := writer.Write(payload); err != nil {
-		return nil, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-	h.brotli.Put(writer)
-	return compressed.Bytes(), nil
-}
-
-func (h *Handler) Transcript(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	owner := auth.CurrentUser(ctx).ID
-	if owner == "" {
-		http.Error(w, "Sign in required.", http.StatusUnauthorized)
-		return
-	}
-	var request struct {
-		ID             string `json:"id"`
-		Paged          *bool  `json:"paged"`
-		BeforeSequence *int32 `json:"beforeSequence"`
-	}
-	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 1024))
-	decode := timing.Start(ctx, "transcript_decode")
-	valid := decoder.Decode(&request) == nil && request.ID != "" && errors.Is(decoder.Decode(new(any)), io.EOF)
-	paged := request.Paged == nil || *request.Paged
-	valid = valid && (request.BeforeSequence == nil || (paged && *request.BeforeSequence > 0))
-	decode()
-	if !valid {
-		http.Error(w, "Invalid transcript request.", http.StatusBadRequest)
-		return
-	}
-	// Queue each class before loading turns. The page pool stays available
-	// while full downloads hold their slots.
-	slots := h.fullTranscriptSlots
-	if paged {
-		slots = h.pagedTranscriptSlots
-	}
-	wait := timing.Start(ctx, "transcript_wait")
-	waitErr := slots.Acquire(ctx, 1)
-	wait()
-	if waitErr != nil {
-		return
-	}
-	defer slots.Release(1)
-	load := timing.Start(ctx, "transcript_load")
-	var transcript *run.Transcript
-	var err error
-	if paged {
-		before := 0
-		if request.BeforeSequence != nil {
-			before = int(*request.BeforeSequence)
-		}
-		transcript, err = h.reader.TranscriptPage(ctx, owner, request.ID, before)
-	} else {
-		transcript, err = h.reader.FullTranscript(ctx, owner, request.ID)
-	}
-	load()
-	if err != nil {
-		h.transcriptError(w, err)
-		return
-	}
-	loadSettings := timing.Start(ctx, "sandbox_settings")
-	settings, err := h.reader.Settings(ctx, owner)
-	loadSettings()
-	if err != nil {
-		h.transcriptError(w, err)
-		return
-	}
-
-	w.Header().Set("Content-Type", transcriptType)
-	streamCtx, finishStream := httpserver.StreamTiming(w, ctx)
-	defer finishStream()
-	defer timing.Start(streamCtx, "transcript_stream")()
-	controller := http.NewResponseController(w)
-	firstFrame := true
-	send := func(chunk *sessionpb.TranscriptChunk) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		var frame []byte
-		var err error
-		if firstFrame {
-			encode := timing.Start(ctx, "transcript_first_frame")
-			frame, err = h.transcriptFrame(streamCtx, chunk)
-			encode()
-			firstFrame = false
-		} else {
-			frame, err = h.transcriptFrame(streamCtx, chunk)
-		}
-		if err != nil {
-			return err
-		}
-		if err := controller.SetWriteDeadline(time.Now().Add(socketTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-			return err
-		}
-		defer timing.Start(streamCtx, "stream_write_flush")()
-		if _, err := w.Write(frame); err != nil {
-			return err
-		}
-		return controller.Flush()
-	}
-	if err := sendTranscript(streamCtx, transcript, settings, send); err != nil && ctx.Err() == nil {
-		h.logger.Debug("stream transcript", "error", err)
-	}
-}
-
-func (h *Handler) transcriptError(w http.ResponseWriter, err error) {
-	h.logger.Error("read transcript", "error", err)
-	http.Error(w, "The run service is unavailable.", http.StatusInternalServerError)
-}
-
-func (h *Handler) transcriptFrame(ctx context.Context, chunk *sessionpb.TranscriptChunk) ([]byte, error) {
-	payload, err := encodeProtobuf(ctx, chunk)
-	if err != nil {
-		return nil, err
-	}
-	// Reserve four bytes for the compressed frame length in network byte order.
-	frame := h.compressZstd(ctx, payload, make([]byte, 4, 4+len(payload)/8))
-	binary.BigEndian.PutUint32(frame, uint32(len(frame)-4))
-	return frame, nil
-}
-
 func encodeProtobuf(ctx context.Context, message proto.Message) ([]byte, error) {
 	defer timing.Start(ctx, "protobuf_encode")()
 	return proto.Marshal(message)
-}
-
-func (h *Handler) compressZstd(ctx context.Context, payload, prefix []byte) []byte {
-	defer timing.Start(ctx, "zstd_compress")()
-	return h.zstd.EncodeAll(payload, prefix)
 }

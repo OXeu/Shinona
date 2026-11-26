@@ -23,45 +23,45 @@ var (
 )
 
 type Change struct {
-	Path      string
-	Status    string
-	Untracked bool
-	Original  string
+	Path      string `json:"path"`
+	Status    string `json:"status"`
+	Untracked bool   `json:"untracked"`
+	Original  string `json:"-"`
 }
 
 type Changes struct {
-	Branch    string
-	Entries   []Change
-	Truncated bool
+	Branch    string   `json:"branch"`
+	Entries   []Change `json:"entries"`
+	Truncated bool     `json:"truncated"`
 }
 
 type Commit struct {
-	Hash    string
-	Short   string
-	Author  string
-	Date    string
-	Subject string
+	Hash    string `json:"hash"`
+	Short   string `json:"short"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+	Subject string `json:"subject"`
 }
 
 type History struct {
-	Entries   []Commit
-	Truncated bool
+	Entries   []Commit `json:"entries"`
+	Truncated bool     `json:"truncated"`
 }
 
 type Entry struct {
-	Path      string
-	Name      string
-	Directory bool
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Directory bool   `json:"directory"`
 }
 
 type Directory struct {
-	Entries   []Entry
-	Truncated bool
+	Entries   []Entry `json:"entries"`
+	Truncated bool    `json:"truncated"`
 }
 
 type Preview struct {
-	Text      string
-	Truncated bool
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
 }
 
 // Repository reads and commits content under a working directory. The root is

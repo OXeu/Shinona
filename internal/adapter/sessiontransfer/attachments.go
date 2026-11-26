@@ -12,7 +12,7 @@ import (
 	"github.com/OXeu/shinona/internal/timing"
 )
 
-const AttachmentPath = TranscriptPath + "/{sessionID}/turns/{turnID}/attachments/{index}"
+const AttachmentPath = "/api/v1/sessions/{id}/turns/{turnId}/attachments/{index}"
 
 type AttachmentReader interface {
 	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*run.Image, error)
@@ -27,7 +27,7 @@ func Attachment(reader AttachmentReader, logger *slog.Logger) http.Handler {
 		}
 		load := timing.Start(r.Context(), "attachment_load")
 		image, err := reader.Attachment(r.Context(), auth.CurrentUser(r.Context()).ID,
-			r.PathValue("sessionID"), r.PathValue("turnID"), index)
+			r.PathValue("id"), r.PathValue("turnId"), index)
 		load()
 		if err != nil {
 			logger.Error("read turn attachment", "error", err)
