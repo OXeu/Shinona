@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -39,6 +37,7 @@ type OAuthStore interface {
 	MCPGrant(ctx context.Context, owner, server string) ([]byte, error)
 	SaveMCPGrant(ctx context.Context, owner, server string, data []byte) error
 	ReplaceMCPGrant(ctx context.Context, owner, server string, previous, data []byte) (bool, error)
+	DeleteMCPGrantIfUnchanged(ctx context.Context, owner, server string, previous []byte) (bool, error)
 	DeleteMCPGrant(ctx context.Context, owner, server string) error
 }
 
@@ -173,8 +172,8 @@ func (o *OAuth) Finish(ctx context.Context, owner, state, code, issuer string, l
 		return ErrOAuthFlow
 	}
 	exchange := timing.Start(ctx, "mcp_oauth_token_exchange")
-	token, err := grant.Config.Exchange(grant.tokenContext(ctx, server.URL), code,
-		oauth2.VerifierOption(flow.verifier))
+	token, err := grant.Config.Exchange(context.WithValue(ctx, oauth2.HTTPClient, oauthHTTP(server.URL)), code,
+		oauth2.VerifierOption(flow.verifier), oauth2.SetAuthURLParam("resource", grant.Resource))
 	exchange()
 	if err != nil {
 		return err
@@ -265,12 +264,16 @@ func (o *OAuth) Token(ctx context.Context, owner string, server settings.MCPServ
 	if grant.Token.Valid() {
 		return grant.Token, nil
 	}
-	token, err := grant.Config.TokenSource(grant.tokenContext(ctx, server.URL), grant.Token).Token()
+	token, err := grant.refreshToken(ctx, oauthHTTP(server.URL))
 	if err != nil {
 		// Credentials and provider response bodies stay out of the chat.
 		if failure, ok := errors.AsType[*oauth2.RetrieveError](err); ok && failure.ErrorCode == "invalid_grant" {
-			if _, writeErr := o.store.ReplaceMCPGrant(ctx, owner, server.Name, previous, []byte("{}")); writeErr != nil {
+			deleted, writeErr := o.store.DeleteMCPGrantIfUnchanged(ctx, owner, server.Name, previous)
+			if writeErr != nil {
 				return nil, writeErr
+			}
+			if !deleted {
+				return o.currentToken(ctx, owner, server)
 			}
 			return nil, ErrOAuthRequired
 		}
@@ -289,43 +292,21 @@ func (o *OAuth) Token(ctx context.Context, owner string, server settings.MCPServ
 		return nil, err
 	}
 	if !saved {
-		return nil, ErrOAuthRequired
+		return o.currentToken(ctx, owner, server)
 	}
 	return token, nil
 }
 
-func (g oauthGrant) tokenContext(ctx context.Context, endpoint string) context.Context {
-	client := oauthHTTP(endpoint)
-	client.Transport = resourceTokenTransport{base: client.Transport, resource: g.Resource}
-	return context.WithValue(ctx, oauth2.HTTPClient, client)
-}
-
-// The token source has no parameter hook for sending the resource on refresh.
-type resourceTokenTransport struct {
-	base     http.RoundTripper
-	resource string
-}
-
-func (t resourceTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Body == nil {
-		return t.base.RoundTrip(req)
-	}
-	defer req.Body.Close()
-	payload, err := io.ReadAll(req.Body)
+// A refresh can lose its write to a disconnect or a newer authorization.
+func (o *OAuth) currentToken(ctx context.Context, owner string, server settings.MCPServer) (*oauth2.Token, error) {
+	grant, _, err := o.grant(ctx, owner, server)
 	if err != nil {
 		return nil, err
 	}
-	form, err := url.ParseQuery(string(payload))
-	if err != nil {
-		return nil, err
+	if !grant.Token.Valid() || !validBearer(grant.Token) {
+		return nil, ErrOAuthRequired
 	}
-	form.Set("resource", t.resource)
-	body := form.Encode()
-	bound := req.Clone(req.Context())
-	bound.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(body)), nil }
-	bound.Body, _ = bound.GetBody()
-	bound.ContentLength = int64(len(body))
-	return t.base.RoundTrip(bound)
+	return grant.Token, nil
 }
 
 func fingerprint(server settings.MCPServer) [sha256.Size]byte {

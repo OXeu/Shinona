@@ -84,3 +84,10 @@ func (r *Repository) ReplaceMCPGrant(ctx context.Context, owner, server string, 
 func (r *Repository) DeleteMCPGrant(ctx context.Context, owner, server string) error {
 	return r.db.WithContext(ctx).Where("owner_id = ? AND server = ?", owner, server).Delete(&mcpGrantRow{}).Error
 }
+
+func (r *Repository) DeleteMCPGrantIfUnchanged(ctx context.Context, owner, server string, previous []byte) (bool, error) {
+	result := r.db.WithContext(ctx).
+		Where("owner_id = ? AND server = ? AND grant = ?", owner, server, previous).
+		Delete(&mcpGrantRow{})
+	return result.RowsAffected == 1, result.Error
+}

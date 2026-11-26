@@ -84,6 +84,12 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 			}
 			access, refresh = "original-access", "original-refresh"
 		case "refresh_token":
+			if r.Form.Get("refresh_token") == "rotated-refresh" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				writeOAuthJSON(w, map[string]string{"error": "invalid_grant"})
+				return
+			}
 			if r.Form.Get("refresh_token") != "original-refresh" {
 				t.Error("refresh request did not use the original grant")
 				w.WriteHeader(http.StatusBadRequest)
@@ -164,6 +170,20 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	grant, _, err = oauth.grant(ctx, "owner", server)
 	if err != nil || grant.Token.RefreshToken != "rotated-refresh" {
 		t.Fatalf("the refreshed grant was not saved: %v", err)
+	}
+	grant.Token.Expiry = time.Now().Add(-time.Minute)
+	revoked, err := json.Marshal(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMCPGrant(ctx, "owner", server.Name, revoked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oauth.Token(ctx, "owner", server); !errors.Is(err, ErrOAuthRequired) {
+		t.Fatalf("invalidated refresh token was accepted: %v", err)
+	}
+	if data, err := store.MCPGrant(ctx, "owner", server.Name); err != nil || len(data) != 0 {
+		t.Fatalf("revoked grant was not removed: %v", err)
 	}
 	if err := oauth.Disconnect(ctx, "owner", server.Name); err != nil {
 		t.Fatal(err)

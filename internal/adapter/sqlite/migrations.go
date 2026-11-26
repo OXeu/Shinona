@@ -13,7 +13,9 @@ import (
 
 // Migrations are applied in order under the writer transaction. An unversioned
 // database may be empty or contain the pre-migration Shinona schema.
-var migrations = [...]func(*gorm.DB) error{initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime}
+var migrations = [...]func(*gorm.DB) error{
+	initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime, deleteRevokedMCPGrants,
+}
 
 func migrate(db *gorm.DB) error {
 	version, err := schemaVersion(db)
@@ -107,4 +109,8 @@ func migrateAuthenticationTime(db *gorm.DB) error {
 	modifier := fmt.Sprintf("-%d seconds", auth.SessionLifetime/time.Second)
 	return db.Exec(`UPDATE login_sessions SET authenticated_at = strftime('%Y-%m-%d %H:%M:%f', expires_at, ?)
 		WHERE authenticated_at IS NULL`, modifier).Error
+}
+
+func deleteRevokedMCPGrants(db *gorm.DB) error {
+	return db.Exec(`DELETE FROM mcp_oauth_grants WHERE grant = ?`, []byte("{}")).Error
 }
