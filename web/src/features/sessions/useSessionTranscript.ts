@@ -80,6 +80,7 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
 
   async function markRead(scope: SessionUpdates) {
     const entry = session.value
+    if (scope.signal.aborted) return
     if (!entry?.unread || entry.id !== scope.id || document.visibilityState !== 'visible' || reading === scope) return
     const turn = entry.turns.at(-1)
     if (!turn) return
@@ -92,7 +93,11 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
     } catch {
       // Keep the unread marker so opening or focusing the session can retry.
     } finally {
-      if (reading === scope) reading = undefined
+      if (reading === scope) {
+        reading = undefined
+        // A newer turn may have arrived while this request was in flight.
+        if (session.value?.turns.at(-1)?.id !== turn.id) void markRead(scope)
+      }
     }
   }
 
