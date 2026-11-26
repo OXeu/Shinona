@@ -7,13 +7,11 @@ const props = withDefaults(defineProps<{
   endMin?: number
   startCollapsed?: boolean
   endCollapsed?: boolean
-  collapsedStartSize?: number
   label: string
 }>(), {
   direction: 'row',
   startMin: 0,
   endMin: 0,
-  collapsedStartSize: 0,
 })
 
 const size = defineModel<number>({ required: true })
@@ -78,14 +76,12 @@ function keydown(event: KeyboardEvent) {
       '--split-size': size + '%',
       '--split-start-min': startMin + 'px',
       '--split-end-min': endMin + 'px',
-      '--split-collapsed-start': collapsedStartSize + 'px',
     }"
   >
     <div
       :id="startId"
       class="split-start"
-      :class="{ 'split-start--collapsed': startCollapsed }"
-      :hidden="startCollapsed && !collapsedStartSize"
+      :hidden="startCollapsed"
     >
       <slot name="start" />
     </div>
@@ -127,9 +123,7 @@ function keydown(event: KeyboardEvent) {
 .split-start, .split-end { min-width: 0; min-height: 0; overflow: hidden; }
 .split-start {
   flex: 0 0 clamp(min(var(--split-start-min), 50%), var(--split-size), max(50%, calc(100% - var(--split-end-min) - var(--divider-size))));
-  overflow: var(--split-start-overflow, hidden);
 }
-.split-start--collapsed { flex-basis: var(--split-collapsed-start); }
 .split-start:has(~ .split-end[hidden]) { flex: 1 1 0; }
 .split-end { flex: 1 1 0; }
 .split-divider {

@@ -1,15 +1,110 @@
-.app-shell>.split-start {
-  --split-start-overflow: visible;
-  position: relative;
-  z-index: 5;
-}
-
-.app-shell > .split-divider:not(:hover, :active, :focus-visible)::after {
-  background: transparent;
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
 .app-main {
-  height: 100%;
+  flex: 1 1 0;
   min-width: 0;
+  min-height: 0;
   overflow: auto;
+}
+
+.app-header {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  flex: 0 0 var(--header-height);
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, 2fr) minmax(max-content, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding-inline: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
+.app-header-start,
+.app-header-center,
+.app-header-end {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.app-header-center { justify-content: center; }
+.app-header-end { justify-content: end; }
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--radius-sm);
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.app-brand img {
+  display: block;
+  flex: none;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+}
+
+.app-header-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-header .icon-button { flex: none; }
+.app-header-link { text-decoration: none; }
+
+.app-header :is([aria-pressed='true'], .router-link-active.app-header-link) {
+  color: var(--foreground);
+  background: var(--selection-bg);
+}
+
+.header-account > .dropdown-trigger {
+  display: flex;
+  border-radius: var(--radius-full);
+}
+
+.header-account[open] > .dropdown-trigger,
+.header-account > .dropdown-trigger:hover {
+  box-shadow: 0 0 0 3px var(--selection-bg);
+}
+
+.account-description {
+  display: block;
+  max-width: 15rem;
+  overflow: hidden;
+  padding: 7px 9px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 36rem) {
+  .app-header {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 4px;
+    padding-inline: 6px;
+  }
+
+  .app-header-start,
+  .app-header-center,
+  .app-header-end { gap: 2px; }
+
+  .app-header-center { justify-content: start; }
+  .app-brand { gap: 4px; }
+  .app-brand-name { font-size: 0.75rem; }
 }

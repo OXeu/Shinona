@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, useId, useTemplateRef } from 'vue'
 
 import { messageFor } from '../../shared/errors'
+import { HttpError } from '../../shared/http'
 import { t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
@@ -10,10 +11,10 @@ import { useAuthStore } from '../auth/authStore'
 import TerminalSurface from './TerminalSurface.vue'
 import { terminalApi } from './terminalApi'
 import type { TerminalTab } from './terminalApi'
-import { rememberTerminalView, terminalView } from './terminalPreferences'
+import { activeTerminalTab, rememberTerminalTab } from './terminalPreferences'
 
-const props = defineProps<{ sessionId: string }>()
-const emit = defineEmits<{ close: [] }>()
+const props = defineProps<{ sessionId: string; visible: boolean }>()
+const emit = defineEmits<{ empty: []; unauthorized: [] }>()
 const auth = useAuthStore()
 const request = new AbortController()
 const tabList = useTemplateRef<{ $el: HTMLElement }>('tabs')
@@ -35,7 +36,7 @@ function select(id: string | null) {
   }
   if (id) visited.value.add(id)
   active.value = id
-  rememberTerminalView(auth.user?.id, props.sessionId, { active: id })
+  rememberTerminalTab(auth.user?.id, props.sessionId, id)
 }
 
 function discard(id: string) {
@@ -53,18 +54,18 @@ async function load() {
     const entries = await terminalApi.list(props.sessionId, request.signal)
     if (request.signal.aborted) return
     tabs.value = entries
-    const saved = terminalView(auth.user?.id, props.sessionId).active
+    const saved = activeTerminalTab(auth.user?.id, props.sessionId)
     select(tabs.value.find(({ id }) => id === saved)?.id ?? tabs.value[0]?.id ?? null)
   } catch (error) {
-    if (!request.signal.aborted) notify.error(messageFor(error, 'terminal.unavailable'))
+    report(error, 'terminal.unavailable')
     return
   } finally {
     loading.value = false
   }
-  if (!tabs.value.length) await add()
+  if (!tabs.value.length) await add(false)
 }
 
-async function add() {
+async function add(focus: boolean) {
   if (changing.value || loading.value || request.signal.aborted) return
   changing.value = true
   try {
@@ -72,9 +73,9 @@ async function add() {
     if (request.signal.aborted) return
     tabs.value.push(tab)
     select(tab.id)
-    await focusTab()
+    if (focus) await focusTab()
   } catch (error) {
-    if (!request.signal.aborted) notify.error(messageFor(error, 'terminal.unavailable'))
+    report(error, 'terminal.unavailable')
   } finally {
     changing.value = false
   }
@@ -88,17 +89,24 @@ async function remove(id: string, index: number) {
     if (request.signal.aborted) return
     discard(id)
     if (active.value === id) select(tabs.value[Math.min(index, tabs.value.length - 1)]?.id ?? null)
-    if (!tabs.value.length) emit('close')
+    if (!tabs.value.length) emit('empty')
     else await focusTab()
   } catch (error) {
-    if (!request.signal.aborted) notify.error(messageFor(error, 'terminal.closeFailed'))
+    report(error, 'terminal.closeFailed')
   } finally {
     changing.value = false
   }
 }
 
+function report(error: unknown, fallback: 'terminal.unavailable' | 'terminal.closeFailed') {
+  if (request.signal.aborted) return
+  if (error instanceof HttpError && error.status === 401) emit('unauthorized')
+  else notify.error(messageFor(error, fallback))
+}
+
 async function focusTab() {
   await nextTick()
+  if (!props.visible) return
   tabList.value?.$el.querySelector<HTMLElement>('[aria-selected="true"]')?.focus()
 }
 
@@ -161,10 +169,12 @@ onUnmounted(() => request.abort())
         icon="add-line"
         :label="t('terminal.new')"
         :disabled="loading || changing"
-        @click="add"
+        @click="add(true)"
       />
-      <UiIconButton icon="subtract-line" :label="t('terminal.close')" @click="emit('close')" />
     </UiHeader>
+    <UiBox v-if="!tabs.length" class="terminal-empty">
+      {{ t(loading || changing ? 'terminal.loading' : 'terminal.noTabs') }}
+    </UiBox>
     <TerminalSurface
       v-for="tab in mountedTabs"
       :id="panelId + '-panel-' + tab.id"
@@ -184,14 +194,13 @@ onUnmounted(() => request.abort())
 .terminal-panel {
   display: flex;
   flex-direction: column;
-  height: 100%;
   min-height: 0;
 }
 .terminal-header {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding-inline: 8px;
+  padding: 2px 6px;
   font-size: 0.8125rem;
 }
 .terminal-tabs {
@@ -207,6 +216,11 @@ onUnmounted(() => request.abort())
   flex: none;
   align-items: center;
   border-radius: var(--radius-sm);
+}
+.terminal-empty {
+  padding: 12px;
+  color: var(--muted);
+  text-align: center;
 }
 .terminal-tab:has([aria-selected="true"]) { background: var(--selection-bg); }
 .terminal-tab > [role="tab"] {

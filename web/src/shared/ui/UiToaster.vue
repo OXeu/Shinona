@@ -6,11 +6,15 @@ import { notificationHost, notificationView } from '../notifications'
 import UiIcon from './UiIcon.vue'
 import UiIconButton from './UiIconButton.vue'
 
+defineProps<{ belowHeader: boolean }>()
+
 const state = shallowRef(notificationView.state())
 let unsubscribe: (() => void) | undefined
 
 onMounted(() => {
-  const sync = () => { state.value = notificationView.state() }
+  const sync = () => {
+    state.value = notificationView.state()
+  }
   unsubscribe = notificationView.subscribe(sync)
   sync()
 })
@@ -21,7 +25,7 @@ onUnmounted(() => unsubscribe?.())
   <Teleport :to="notificationHost ?? 'body'">
     <div class="notification-announcement" role="status">{{ state.status }}</div>
     <div class="notification-announcement" role="alert">{{ state.alert }}</div>
-    <ol class="notification-list">
+    <ol class="notification-list" :class="{ 'notification-list--below-header': belowHeader }">
       <li
         v-for="item in state.toasts"
         :key="item.id"
@@ -72,6 +76,8 @@ onUnmounted(() => unsubscribe?.())
   list-style: none;
   pointer-events: none;
 }
+
+.notification-list--below-header { inset-block-start: calc(var(--header-height) + 12px); }
 
 .notification {
   display: flex;

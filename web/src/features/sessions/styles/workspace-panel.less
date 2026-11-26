@@ -2,143 +2,147 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--background);
+  min-height: 0;
+  background: var(--sidebar-bg);
 }
 
-.repo-toolbar {
+.workspace-switcher,
+.workspace-tabs,
+.workspace-controls {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 8px 6px;
+  min-width: 0;
 }
 
-.repo-tabs {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  gap: 4px;
+.workspace-switcher {
+  flex: none;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-tabs {
+  flex: 1;
+  gap: 2px;
   overflow-x: auto;
+  padding: 2px;
   scrollbar-width: thin;
 }
 
-.repo-tab, .repo-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: transparent;
+.workspace-tab,
+.workspace-row {
   color: var(--muted);
+  background: transparent;
   font-weight: 500;
 }
 
-.repo-tab {
+.workspace-tab {
   flex: 0 0 auto;
-  min-height: 32px;
-  padding: 4px 8px;
+  min-height: 30px;
+  padding: 4px 6px;
   white-space: nowrap;
   font-size: 0.75rem;
 }
 
-.repo-tab:hover, .repo-row:hover, .repo-tab[aria-pressed='true'] {
-  background: var(--selection-bg);
+.workspace-tab:is([aria-pressed='true'], :hover:not(:disabled)),
+.workspace-row:hover:not(:disabled) {
   color: var(--foreground);
+  background: var(--selection-bg);
 }
 
-.repo-panes {
-  flex: 1 1 auto;
+.workspace-content,
+.right-panel > .workspace-terminal {
+  flex: 1 1 0;
   min-height: 0;
-  padding: 0 8px 8px;
 }
 
-.repo-card {
+.workspace-view {
   display: flex;
-  flex-direction: column;
   height: 100%;
   min-height: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
+  flex-direction: column;
 }
 
-.repo-card-header {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
+.workspace-controls {
+  flex: none;
   gap: 7px;
-  padding: 7px 8px;
-  border-bottom: 1px solid var(--border);
+  min-height: 38px;
+  padding: 4px 8px;
+  font-size: 0.82rem;
 }
 
-.repo-card-header h2 {
+.workspace-controls h2 {
+  font-size: inherit;
+}
+
+.workspace-search { padding: 6px 8px; }
+.workspace-set-root {
+  flex: none;
+  font-size: 0.72rem;
+}
+
+.workspace-controls .icon-button[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: default;
+}
+.workspace-changes { overflow: auto; }
+
+.workspace-scroll {
   flex: 1 1 auto;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-size: 0.79rem;
-}
-
-// Mini text button that sits at the end of the folder path in the files header.
-.repo-set-root {
-  flex: 0 0 auto;
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.repo-set-root:hover:not(:disabled) {
-  background: var(--selection-bg);
-  color: var(--foreground);
-}
-
-.repo-card-scroll {
   min-height: 0;
   overflow: auto;
-  padding: 4px;
+  padding: 3px 5px;
 }
 
-.repo-pill {
-  max-width: 45%;
-  overflow: hidden;
-  padding: 2px 6px;
-  border-radius: var(--radius-full);
-  background: var(--sidebar-bg);
-  color: var(--muted);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 0.7rem;
-}
+.workspace-changes > .workspace-scroll { min-height: 52px; }
 
-.repo-empty, .repo-note {
+.workspace-empty,
+.workspace-note {
   color: var(--muted);
   font-size: 0.81rem;
 }
 
-.repo-empty {
-  display: flex;
-  justify-content: center;
-  align-items: center;
+.workspace-empty {
+  display: grid;
+  flex: 1 1 0;
   height: 100%;
-  padding: 18px;
+  place-items: center;
+  padding: 16px;
   text-align: center;
 }
 
-.repo-note { display: block; padding: 8px; }
-.repo-rows { margin: 0; padding: 0; list-style: none; }
-.repo-change { display: flex; align-items: center; gap: 4px; padding-inline-start: 4px; }
+.workspace-note {
+  display: block;
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+}
 
-.repo-row {
+.workspace-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workspace-change {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-inline-start: 4px;
+}
+
+.workspace-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   min-width: 0;
-  min-height: 32px;
+  min-height: 30px;
   padding: 4px 7px;
   text-align: start;
   font-size: 0.81rem;
 }
 
-.repo-row-name, .repo-path {
+.workspace-ellipsis {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -147,30 +151,62 @@
   text-overflow: ellipsis;
 }
 
-.repo-status { font: 0.72rem ui-monospace, monospace; }
-.repo-status[data-status='D'] { color: var(--danger); }
-.repo-status[data-status='??'], .repo-status[data-status='A'] { color: var(--success); }
+.workspace-status { font: 0.74rem ui-monospace, monospace; }
+.workspace-status[data-status*='D'] { color: var(--danger); }
+.workspace-status:is([data-status='??'], [data-status*='A']) { color: var(--success); }
 
-.repo-commit .field { padding: 6px 8px 0; }
-.repo-commit .field label { font-size: 0.76rem; }
-.repo-commit .field textarea { min-height: 42px; padding: 6px; resize: none; font-size: 0.79rem; }
-.repo-commit-actions { display: flex; justify-content: end; margin: auto 8px 7px; padding-top: 5px; }
-.repo-tools { padding: 6px; border-bottom: 1px solid var(--border); }
-.repo-commit-description { display: grid; flex: 1; min-width: 0; }
-
-.repo-meta {
-  overflow: hidden;
-  color: var(--muted);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 0.71rem;
+.workspace-commit {
+  flex: none;
+  padding: 8px;
+  border-top: 1px solid var(--border);
 }
 
-.ui-dialog.repo-preview { width: min(58rem, calc(100% - 2rem)); }
-.repo-preview .repo-card-header { padding-inline: 0; }
-.repo-preview .repo-card-header h2 { margin-bottom: 0; }
-.repo-preview-text { max-height: 65dvh; overflow: auto; font-size: 0.78rem; }
-.repo-diff-line { display: block; min-height: 1.5em; }
-.repo-diff-line[data-marker='+'] { background: color-mix(in srgb, var(--success) 13%, transparent); }
-.repo-diff-line[data-marker='-'] { background: color-mix(in srgb, var(--danger) 13%, transparent); }
-.repo-diff-line[data-marker='@'] { color: var(--link); }
+.workspace-commit .field label { font-size: 0.76rem; }
+
+.workspace-commit .field textarea {
+  min-height: 48px;
+  max-height: 24dvh;
+  padding: 6px;
+  font-size: 0.79rem;
+}
+
+.workspace-commit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding-top: 6px;
+}
+
+.workspace-commit-description {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.workspace-meta {
+  color: var(--muted);
+  font-size: 0.73rem;
+}
+
+.workspace-code {
+  flex: 1 1 0;
+  min-height: 0;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  font: 0.78rem/1.5 ui-monospace, monospace;
+}
+
+.workspace-code:focus-visible { outline: 2px solid var(--accent); }
+.workspace-diff-line {
+  display: block;
+  min-width: 100%;
+  min-height: 1.5em;
+  width: max-content;
+}
+.workspace-diff-line[data-kind='addition'] { background: color-mix(in srgb, var(--success) 16%, transparent); }
+.workspace-diff-line[data-kind='deletion'] { background: color-mix(in srgb, var(--danger) 16%, transparent); }
+.workspace-diff-line[data-kind='hunk'] { color: var(--link); }

@@ -9,7 +9,7 @@ import { RetryBackoff } from '../../shared/retryBackoff'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
 import UiSearchField from '../../shared/ui/UiSearchField.vue'
 import UiSplitPanel from '../../shared/ui/UiSplitPanel.vue'
-import { UiBox, UiButton, UiHeader, UiNav } from '../../shared/ui/elements'
+import { UiBox, UiButton, UiNav } from '../../shared/ui/elements'
 import SessionList from './SessionList.vue'
 import SessionProjectPicker from './SessionProjectPicker.vue'
 import type { SessionAction } from './presentation'
@@ -21,9 +21,8 @@ const props = defineProps<{
   selectedId?: string
   sessions: SessionSummary[]
   now: number
-  compact?: boolean
 }>()
-const emit = defineEmits<{ select: []; close: []; action: [action: SessionAction, entry: SessionSummary] }>()
+const emit = defineEmits<{ select: []; action: [action: SessionAction, entry: SessionSummary] }>()
 const store = useSessionStore()
 const router = useRouter()
 const query = defineModel<string>({ required: true })
@@ -121,7 +120,7 @@ onUnmounted(() => {
 
 <template>
   <UiNav class="session-nav" :aria-label="t('sessions.heading')">
-    <UiHeader class="session-nav-header">
+    <UiBox class="session-nav-tools">
       <UiBox class="session-nav-controls" :inert="searchOpen">
         <SessionProjectPicker compact />
         <UiBox class="session-nav-actions">
@@ -130,12 +129,6 @@ onUnmounted(() => {
             icon="refresh-line"
             :label="t('sessions.refresh')"
             @click="restart"
-          />
-          <UiIconButton
-            icon="close-line"
-            :label="t('sessions.hide')"
-            :hidden="!compact"
-            @click="emit('close')"
           />
           <UiIconButton
             icon="search-line"
@@ -161,7 +154,7 @@ onUnmounted(() => {
           @click="closeSearch"
         />
       </UiBox>
-    </UiHeader>
+    </UiBox>
 
     <UiSplitPanel
       v-model="topSize"

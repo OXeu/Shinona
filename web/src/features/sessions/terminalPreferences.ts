@@ -1,40 +1,28 @@
-interface TerminalView {
-  open: boolean
-  active: string | null
-}
-
-const defaultView: TerminalView = { open: false, active: null }
-const views = new Map<string, TerminalView>()
+const activeTabs = new Map<string, string>()
 
 function storageKey(owner: string, session: string) {
-  return 'shinona.terminal.' + owner + '.' + session
+  return 'shinona.terminal-tab.' + owner + '.' + session
 }
 
-export function terminalView(owner: string | undefined, session: string | undefined): TerminalView {
-  if (!owner || !session) return defaultView
+export function activeTerminalTab(owner: string | undefined, session: string) {
+  if (!owner) return null
   const key = storageKey(owner, session)
-  const cached = views.get(key)
-  if (cached) return cached
   try {
-    const saved: unknown = JSON.parse(window.localStorage.getItem(key) ?? 'null')
-    if (saved && typeof saved === 'object' && 'open' in saved) {
-      return { open: saved.open === true, active: 'active' in saved && typeof saved.active === 'string' ? saved.active : null }
-    }
+    return window.localStorage.getItem(key)
   } catch {
-    // Keep the view in memory when browser storage is unavailable.
+    return activeTabs.get(key) ?? null
   }
-  return defaultView
 }
 
-export function rememberTerminalView(owner: string | undefined, session: string | undefined, patch: Partial<TerminalView>) {
-  if (!owner || !session) return
+export function rememberTerminalTab(owner: string | undefined, session: string, tab: string | null) {
+  if (!owner) return
   const key = storageKey(owner, session)
-  const view = { ...terminalView(owner, session), ...patch }
-  views.set(key, view)
   try {
-    window.localStorage.setItem(key, JSON.stringify(view))
-    views.delete(key)
+    if (tab) window.localStorage.setItem(key, tab)
+    else window.localStorage.removeItem(key)
+    activeTabs.delete(key)
   } catch {
-    // Keep the view in memory when browser storage is unavailable.
+    if (tab) activeTabs.set(key, tab)
+    else activeTabs.delete(key)
   }
 }

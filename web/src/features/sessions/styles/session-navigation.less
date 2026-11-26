@@ -3,14 +3,13 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--background);
+  background: var(--sidebar-bg);
 }
 
-.session-nav-header {
-  --session-nav-header-inline-padding: 11px;
+.session-nav-tools {
+  --session-nav-tools-inline-padding: 11px;
   position: relative;
-  padding: 13px var(--session-nav-header-inline-padding) 9px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px var(--session-nav-tools-inline-padding);
 }
 
 .session-nav-controls,
@@ -25,8 +24,8 @@
 .session-nav-search {
   position: absolute;
   z-index: 1;
-  inset-block: 13px 9px;
-  inset-inline-end: var(--session-nav-header-inline-padding);
+  inset-block: 8px;
+  inset-inline-end: var(--session-nav-tools-inline-padding);
   inline-size: 32px;
   overflow: clip;
   visibility: hidden;
@@ -35,7 +34,7 @@
 }
 
 .session-nav-search[data-open='true'] {
-  inline-size: calc(100% - 2 * var(--session-nav-header-inline-padding));
+  inline-size: calc(100% - 2 * var(--session-nav-tools-inline-padding));
   visibility: visible;
   transition-delay: 0s;
 }
@@ -64,5 +63,5 @@
 .session-scroll {
   height: 100%;
   overflow: auto;
-  padding: 13px 10px;
+  padding: 8px 10px;
 }

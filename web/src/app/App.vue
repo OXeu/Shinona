@@ -4,25 +4,22 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from '../features/auth/authStore'
 import { useSessionStore } from '../features/sessions/sessionStore'
+import { provideWorkbench } from '../features/sessions/workbench'
 import { t } from '../shared/i18n'
 import { notify } from '../shared/notifications'
-import UiSplitPanel from '../shared/ui/UiSplitPanel.vue'
 import UiToaster from '../shared/ui/UiToaster.vue'
-import { UiMain } from '../shared/ui/elements'
-import breakpoints from '../shared/ui/styles/breakpoints.module.less'
-import { useMediaQuery } from '../shared/ui/useMediaQuery'
-import AppNav from './AppNav.vue'
+import { UiBox, UiMain } from '../shared/ui/elements'
+import AppHeader from './AppHeader.vue'
 
 const auth = useAuthStore()
 const sessions = useSessionStore()
 const route = useRoute()
 const router = useRouter()
 const signingOut = ref(false)
-const navSize = ref(16.7)
-const navCollapsed = ref(false)
-const compact = useMediaQuery(breakpoints.navigation)
-const showNav = computed(() => route.name !== 'login' && !!auth.user)
-const collapsed = computed(() => navCollapsed.value || compact.value)
+const showHeader = computed(() => route.name !== 'login' && !!auth.user)
+const workbenchPage = computed(() => route.name === 'sessions' || route.name === 'session')
+const sessionId = computed(() => route.name === 'session' ? String(route.params.id) : undefined)
+provideWorkbench(() => workbenchPage.value, () => sessionId.value)
 
 async function signOut() {
   if (signingOut.value) return
@@ -41,29 +38,17 @@ async function signOut() {
 </script>
 
 <template>
-  <UiSplitPanel
-    v-model="navSize"
-    class="app-shell"
-    :start-min="154"
-    :end-min="610"
-    :start-collapsed="!showNav || collapsed"
-    :collapsed-start-size="showNav ? (compact ? 54 : 64) : 0"
-    :label="t('nav.resize')"
-  >
-    <template #start>
-      <AppNav
-        :collapsed="collapsed"
-        :compact="compact"
-        :signing-out="signingOut"
-        @toggle="navCollapsed = !navCollapsed"
-        @sign-out="signOut"
-      />
-    </template>
-    <template #end>
-      <UiMain class="app-main">
-        <RouterView />
-      </UiMain>
-    </template>
-  </UiSplitPanel>
-  <UiToaster />
+  <UiBox class="app-shell">
+    <AppHeader
+      v-if="showHeader"
+      :workbench-page="workbenchPage"
+      :session-selected="!!sessionId"
+      :signing-out="signingOut"
+      @sign-out="signOut"
+    />
+    <UiMain class="app-main">
+      <RouterView />
+    </UiMain>
+  </UiBox>
+  <UiToaster :below-header="showHeader" />
 </template>
