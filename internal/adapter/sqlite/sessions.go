@@ -479,15 +479,18 @@ func historyQuery(db *gorm.DB, turn run.Run, limit int) *gorm.DB {
 			Where("id NOT IN (?)", retried).
 			Where("(status IN ? OR (status = ? AND started_at IS NOT NULL))", []run.Status{run.Succeeded, run.Failed}, run.Stopped)
 	}
-	query := eligibleTurns().Select("id", "prompt", "output", "steering", "payload", "agent_messages", "compacted_context").
-		Order("sequence DESC")
+	query := eligibleTurns().Order("sequence DESC")
 	if limit > 0 {
-		query = query.Limit(limit)
-	} else {
-		checkpoint := eligibleTurns().Select("sequence").Where("compacted_context IS NOT NULL").Order("sequence DESC").Limit(1)
-		query = query.Where("sequence >= COALESCE((?), 0)", checkpoint)
+		return query.Select("id", "prompt", "output", "steering", "payload", "agent_messages", "compacted_context").Limit(limit)
 	}
-	return query
+	const hasCheckpoint = "length(compacted_context) > 0"
+	checkpoint := eligibleTurns().Select("sequence").Where(hasCheckpoint).Order("sequence DESC").Limit(1)
+	// The checkpoint already contains context through its own turn. Omit that
+	// turn's original payload so attachment hydration reads only later images.
+	return query.Select(`id, prompt, output, steering, compacted_context,
+		CASE WHEN `+hasCheckpoint+` THEN NULL ELSE payload END AS payload,
+		CASE WHEN `+hasCheckpoint+` THEN NULL ELSE agent_messages END AS agent_messages`).
+		Where("sequence >= COALESCE((?), 0)", checkpoint)
 }
 
 // AdoptLegacy explicitly assigns unowned runs from the pre-login schema.

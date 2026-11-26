@@ -298,23 +298,38 @@ func TestHistoryStartsAtLatestEligibleCompaction(t *testing.T) {
 	newSession(t, repo, "other", "other-session")
 	reverted := time.Now().UTC()
 	checkpoint := []byte(`[{"role":"user","content":"Compacted history"}]`)
+	payload := run.Payload{Images: []run.Image{{Name: "photo.png", MediaType: "image/png"}}}
 	rows := []row{
 		{ID: "old", OwnerID: "owner", SessionID: "session", Sequence: 1, Status: run.Succeeded, Prompt: "old"},
-		{ID: "compact", OwnerID: "owner", SessionID: "session", Sequence: 2, Status: run.Running, Prompt: "compacted"},
+		{ID: "compact", OwnerID: "owner", SessionID: "session", Sequence: 2, Status: run.Running, Prompt: "compacted", Payload: payload},
 		{ID: "failed", OwnerID: "owner", SessionID: "session", Sequence: 3, Status: run.Failed, CompactedContext: checkpoint},
-		{ID: "retry", OwnerID: "owner", SessionID: "session", Sequence: 4, RetryOf: "failed", Status: run.Succeeded, Prompt: "retry"},
+		{ID: "retry", OwnerID: "owner", SessionID: "session", Sequence: 4, RetryOf: "failed", Status: run.Succeeded, Prompt: "retry", Payload: payload},
 		{ID: "reverted", OwnerID: "owner", SessionID: "session", Sequence: 5, Status: run.Succeeded, RevertedAt: &reverted, CompactedContext: checkpoint},
 		{ID: "other", OwnerID: "other", SessionID: "other-session", Sequence: 5, Status: run.Succeeded, CompactedContext: checkpoint},
+		{ID: "empty", OwnerID: "owner", SessionID: "session", Sequence: 6, Status: run.Succeeded, Prompt: "later", CompactedContext: []byte{}},
 	}
 	if err := repo.db.WithContext(ctx).Create(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Conversations.Complete(ctx, "compact", run.Completion{Result: run.Result{CompactedContext: checkpoint}, Status: run.Succeeded, UpdatedAt: reverted}); err != nil {
+	for _, id := range []string{"compact", "retry"} {
+		if err := repo.db.Create(&runAttachmentRow{TurnID: id, Position: 0, Content: []byte("photo")}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := run.Result{CompactedContext: checkpoint, AgentMessages: []byte(`[{"role":"assistant","content":"original"}]`)}
+	if err := repo.Conversations.Complete(ctx, "compact", run.Completion{Result: result, Status: run.Succeeded, UpdatedAt: reverted}); err != nil {
 		t.Fatal(err)
 	}
-	history, err := repo.Conversations.History(ctx, run.Run{OwnerID: "owner", SessionID: "session", Sequence: 6}, 0)
-	if err != nil || len(history) != 2 || history[0].Prompt != "compacted" || !slices.Equal(history[0].CompactedContext, checkpoint) || history[1].Prompt != "retry" {
+	history, err := repo.Conversations.History(ctx, run.Run{OwnerID: "owner", SessionID: "session", Sequence: 7}, 0)
+	if err != nil || len(history) != 3 || history[0].Prompt != "compacted" ||
+		!slices.Equal(history[0].CompactedContext, checkpoint) || history[1].Prompt != "retry" || history[2].Prompt != "later" {
 		t.Fatalf("expected the current branch's checkpoint and later messages: %+v, %v", history, err)
+	}
+	if len(history[0].Images) != 0 || len(history[0].AgentMessages) != 0 {
+		t.Fatal("loading a checkpoint fetched content already replaced by that checkpoint")
+	}
+	if len(history[1].Images) != 1 || history[1].Images[0].Data != "cGhvdG8=" {
+		t.Fatalf("the later turn did not replay its original attachment: %+v", history[1].Images)
 	}
 }
 

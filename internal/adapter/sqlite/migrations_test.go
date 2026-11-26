@@ -217,11 +217,16 @@ func TestMigratesLegacyThinkingSignaturesBeforeReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	exchanges, err := repo.Conversations.History(ctx, run.Run{OwnerID: "owner", SessionID: "session", Sequence: 2}, 0)
+	turn := run.Run{OwnerID: "owner", SessionID: "session", Sequence: 2}
+	exchanges, err := repo.Conversations.History(ctx, turn, 1)
 	if err != nil || len(exchanges) != 1 {
-		t.Fatalf("loading migrated history: %v, %v", exchanges, err)
+		t.Fatalf("loading migrated original messages: %v, %v", exchanges, err)
 	}
-	for _, history := range [][]byte{exchanges[0].AgentMessages, exchanges[0].CompactedContext} {
+	snapshots, err := repo.Conversations.History(ctx, turn, 0)
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("loading migrated compaction checkpoint: %v, %v", snapshots, err)
+	}
+	for _, history := range [][]byte{exchanges[0].AgentMessages, snapshots[0].CompactedContext} {
 		var messages []json.RawMessage
 		if err := json.Unmarshal(history, &messages); err != nil || len(messages) != 2 {
 			t.Fatalf("reading migrated messages: %s, %v", history, err)
