@@ -241,7 +241,7 @@ func TestLegacyRunsStayPrivateAndCanBeAdopted(t *testing.T) {
 	}
 }
 
-func TestOpenAddsSessionListIndexesToExistingDatabase(t *testing.T) {
+func TestOpenMigratesSessionAndQueueIndexes(t *testing.T) {
 	ctx := t.Context()
 	filename := filepath.Join(t.TempDir(), "shinona.db")
 	old, err := Open(ctx, filename)
@@ -249,7 +249,9 @@ func TestOpenAddsSessionListIndexesToExistingDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = old.Close() })
-	if err := old.db.Exec("DROP INDEX idx_sessions_recent; DROP INDEX idx_runs_session_status").Error; err != nil {
+	if err := old.db.Exec(`DROP INDEX idx_sessions_recent;
+		DROP INDEX idx_runs_session_status_sequence;
+		CREATE INDEX idx_runs_session_status ON runs(session_id, status)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := old.CreateSession(ctx, run.Session{ID: "stored", OwnerID: "owner", Title: "Stored session"}); err != nil {
@@ -278,13 +280,33 @@ func TestOpenAddsSessionListIndexesToExistingDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"idx_sessions_recent", "COVERING INDEX idx_runs_session_status"} {
+	for _, expected := range []string{"idx_sessions_recent", "COVERING INDEX idx_runs_session_status_sequence"} {
 		if !slices.ContainsFunc(plan, func(step planStep) bool { return strings.Contains(step.Detail, expected) }) {
 			t.Errorf("expected %s in session list query plan: %+v", expected, plan)
 		}
 	}
 	if slices.ContainsFunc(plan, func(step planStep) bool { return strings.Contains(step.Detail, "TEMP B-TREE") }) {
 		t.Errorf("expected the session list index to satisfy the sort: %+v", plan)
+	}
+	if repo.db.Migrator().HasIndex(&row{}, "idx_runs_session_status") {
+		t.Error("the superseded two-column index is still present")
+	}
+	plan = nil
+	err = repo.db.Raw(`EXPLAIN QUERY PLAN
+		SELECT candidate.id FROM runs AS candidate
+		WHERE candidate.status = ? AND candidate.owner_id <> '' AND candidate.session_id <> ''
+		AND NOT EXISTS (
+			SELECT 1 FROM runs AS earlier WHERE earlier.session_id = candidate.session_id
+			AND earlier.sequence < candidate.sequence AND earlier.status IN ?
+		)
+		ORDER BY candidate.created_at, candidate.id LIMIT 1`, run.Queued, []run.Status{run.Queued, run.Running}).Scan(&plan).Error
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(plan, func(step planStep) bool {
+		return strings.Contains(step.Detail, "SEARCH earlier USING COVERING INDEX idx_runs_session_status_sequence (session_id=? AND status=? AND sequence<?)")
+	}) {
+		t.Errorf("expected the earlier-turn check to use the covering index: %+v", plan)
 	}
 }
 

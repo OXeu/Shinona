@@ -25,9 +25,9 @@ import (
 type row struct {
 	ID               string `gorm:"primaryKey"`
 	OwnerID          string
-	SessionID        string `gorm:"index:idx_turns_session,priority:1;index:idx_runs_session_status,priority:1;index:idx_runs_retries,priority:1,where:retry_of <> ''"`
+	SessionID        string `gorm:"index:idx_turns_session,priority:1;index:idx_runs_session_status_sequence,priority:1;index:idx_runs_retries,priority:1,where:retry_of <> ''"`
 	RetryOf          string
-	Sequence         int `gorm:"index:idx_turns_session,priority:2;index:idx_runs_retries,priority:2"`
+	Sequence         int `gorm:"index:idx_turns_session,priority:2;index:idx_runs_session_status_sequence,priority:3;index:idx_runs_retries,priority:2"`
 	Policy           sandbox.Policy
 	Backend          string
 	MachineID        string
@@ -41,7 +41,7 @@ type row struct {
 	ContextWindow    int
 	TokenUsage       *run.TokenUsage  `gorm:"serializer:json"`
 	LiveContext      run.ContextUsage `gorm:"-"`
-	Status           run.Status       `gorm:"not null;index:idx_runs_queue,priority:1;index:idx_runs_session_status,priority:2"`
+	Status           run.Status       `gorm:"not null;index:idx_runs_queue,priority:1;index:idx_runs_session_status_sequence,priority:2"`
 	Output           string
 	CreatedAt        time.Time `gorm:"not null;index:idx_runs_queue,priority:2;index"`
 	StartedAt        *time.Time
@@ -86,6 +86,10 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 		models = append(models, table)
 	}
 	if err := db.WithContext(ctx).AutoMigrate(models...); err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
+	// The covering index also serves the old index's session and status lookups.
+	if err := db.WithContext(ctx).Exec("DROP INDEX IF EXISTS idx_runs_session_status").Error; err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
 	if err := protectDeletedAccounts(db.WithContext(ctx)); err != nil {
