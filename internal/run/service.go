@@ -150,14 +150,14 @@ func (s *Service) Transcript(ctx context.Context, owner, id string) (*Transcript
 	return s.TranscriptPage(ctx, owner, id, 0)
 }
 
-func (s *Service) FullTranscript(ctx context.Context, owner, id string) (*Transcript, error) {
-	// Legacy full WebSocket subscriptions emit one frame. Larger histories
-	// use paged subscriptions or the HTTP streaming transcript.
-	transcript, err := s.stores.Transcripts.Transcript(ctx, owner, id, MaxLiveTranscriptTurns+1)
-	if transcript != nil && len(transcript.Turns) > MaxLiveTranscriptTurns {
-		return nil, ErrTranscriptExportLimit
+func (s *Service) TranscriptUpdate(ctx context.Context, owner, id string, window LiveTranscriptWindow,
+	known map[string]TurnVersion,
+) (*TranscriptUpdate, error) {
+	update, err := s.stores.Transcripts.TranscriptUpdate(ctx, owner, id, window, known)
+	if err == nil && update != nil {
+		s.addTranscriptProgress(update.ChangedTurns)
 	}
-	return s.withTranscriptProgress(transcript, err)
+	return update, err
 }
 
 func (s *Service) TranscriptPage(ctx context.Context, owner, id string, beforeSequence int) (*Transcript, error) {

@@ -28,8 +28,8 @@ type SessionRepository interface {
 
 type TranscriptRepository interface {
 	TranscriptState(ctx context.Context, ownerID, sessionID string) (*TranscriptState, error)
-	Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*Transcript, error)
 	TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*Transcript, error)
+	TranscriptUpdate(ctx context.Context, ownerID, sessionID string, window LiveTranscriptWindow, known map[string]TurnVersion) (*TranscriptUpdate, error)
 	StreamTranscript(ctx context.Context, ownerID, sessionID string, write func(TranscriptStream) error) error
 	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Image, error)
 	AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error)

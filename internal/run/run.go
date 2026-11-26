@@ -130,6 +130,39 @@ type Transcript struct {
 	NextBeforeSequence int
 }
 
+type LiveTranscriptWindow uint8
+
+const (
+	LiveLatestPage LiveTranscriptWindow = iota
+	LiveFullHistory
+)
+
+func (w LiveTranscriptWindow) Limit() int {
+	if w == LiveFullHistory {
+		return MaxLiveTranscriptTurns
+	}
+	return TranscriptPageSize
+}
+
+type TurnVersion struct {
+	ID        string
+	UpdatedAt time.Time
+	Status    Status
+}
+
+func (v TurnVersion) NeedsSync(known map[string]TurnVersion) bool {
+	previous, ok := known[v.ID]
+	return !ok || v.Status == Running || v.Status != previous.Status || !v.UpdatedAt.Equal(previous.UpdatedAt)
+}
+
+type TranscriptUpdate struct {
+	Session            Session
+	Versions           []TurnVersion
+	ChangedTurns       []Run
+	LastOptions        *Options
+	NextBeforeSequence int
+}
+
 // TranscriptStream reads forward from one durable snapshot. Next is valid
 // for the duration of the repository callback and returns nil at the end.
 type TranscriptStream struct {

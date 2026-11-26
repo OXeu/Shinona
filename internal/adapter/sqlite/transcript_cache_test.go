@@ -88,6 +88,16 @@ func TestLatestTranscriptCacheTracksPersistedHeadAndSummary(t *testing.T) {
 	if got := read(1, run.Succeeded, true).Turns[0].Parts[0].Text; got != "Original" {
 		t.Fatalf("cache exposed its parts slice: %q", got)
 	}
+	known := map[string]run.TurnVersion{"first": {ID: "first", UpdatedAt: now, Status: run.Succeeded}}
+	update, err := reader.Conversations.TranscriptUpdate(ctx, owner, id, run.LiveLatestPage, known)
+	if err != nil || update == nil || len(update.ChangedTurns) != 0 || len(update.Versions) != 1 ||
+		update.LastOptions == nil || !slices.Equal(update.LastOptions.MCPServers, []string{"fixture"}) {
+		t.Fatalf("cached live update included unchanged data or lost the last options: %+v, %v", update, err)
+	}
+	update.LastOptions.MCPServers[0] = "changed by live caller"
+	if options := read(1, run.Succeeded, true).LastOptions(); !slices.Equal(options.MCPServers, []string{"fixture"}) {
+		t.Fatalf("the live update exposed cached options: %+v", options)
+	}
 
 	title := "Updated"
 	if _, err := writer.Conversations.UpdateSession(ctx, owner, id, run.SessionChanges{Title: &title}); err != nil {

@@ -121,8 +121,13 @@ func (r *ConversationStore) TranscriptPage(ctx context.Context, ownerID, session
 	}
 	key := latestTranscriptKey{owner: ownerID, session: sessionID}
 	if cached := r.latest.get(key); cached != nil {
-		if page, hit, err := r.validateCachedTranscript(ctx, key, cached); hit || err != nil {
-			return page, err
+		state, hit, err := r.cachedTranscriptState(ctx, key, cached)
+		if err != nil || (hit && state == nil) {
+			return nil, err
+		}
+		if hit {
+			defer timing.Start(ctx, "transcript_cache_hit")()
+			return &run.Transcript{TranscriptState: *state, Turns: cloneTranscriptTurns(cached.turns), NextBeforeSequence: cached.next}, nil
 		}
 	}
 	page, err := r.transcript(ctx, ownerID, sessionID, window)

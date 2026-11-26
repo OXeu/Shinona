@@ -11,7 +11,6 @@ import (
 
 	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
-	"github.com/OXeu/shinona/internal/timing"
 )
 
 const (
@@ -110,7 +109,7 @@ func readTranscriptHead(db *gorm.DB, owner, id string) (transcriptHeadRow, error
 	return current, err
 }
 
-func (r *ConversationStore) validateCachedTranscript(ctx context.Context, key latestTranscriptKey, page *latestTranscriptPage) (*run.Transcript, bool, error) {
+func (r *ConversationStore) cachedTranscriptState(ctx context.Context, key latestTranscriptKey, page *latestTranscriptPage) (*run.TranscriptState, bool, error) {
 	state, err := r.TranscriptState(ctx, key.owner, key.session)
 	if err != nil {
 		return nil, false, err
@@ -124,10 +123,7 @@ func (r *ConversationStore) validateCachedTranscript(ctx context.Context, key la
 		r.latest.discard(page)
 		return nil, false, nil
 	}
-	defer timing.Start(ctx, "transcript_cache_hit")()
-	return &run.Transcript{
-		TranscriptState: *state, Turns: cloneTranscriptTurns(page.turns), NextBeforeSequence: page.next,
-	}, true, nil
+	return state, true, nil
 }
 
 func cloneTranscriptTurns(turns []run.Run) []run.Run {

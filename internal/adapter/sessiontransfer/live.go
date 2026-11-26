@@ -27,11 +27,9 @@ type LiveSource interface {
 	WatchSession(context.Context, string, string) (*run.SessionWatch, error)
 }
 
-type turnVersion struct{ updatedAt, status string }
-
 type liveConnection struct {
-	paged    bool
-	known    map[string]turnVersion
+	window   run.LiveTranscriptWindow
+	known    map[string]run.TurnVersion
 	progress run.LiveProgress
 }
 
@@ -95,12 +93,12 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 			return
 		}
 		defer watch.Close()
-		known := make(map[string]turnVersion, len(request.KnownTurns))
+		known := make(map[string]run.TurnVersion, len(request.KnownTurns))
 		for _, version := range request.KnownTurns {
-			if version == nil {
-				continue
+			updated, err := time.Parse(time.RFC3339Nano, version.GetUpdatedAt())
+			if err == nil {
+				known[version.Id] = run.TurnVersion{ID: version.Id, UpdatedAt: updated, Status: run.Status(version.Status)}
 			}
-			known[version.Id] = turnVersion{version.UpdatedAt, version.Status}
 		}
 		var sequence uint32
 		var nextAuth time.Time
@@ -132,7 +130,10 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 			defer timing.Start(ctx, "websocket_write")()
 			return conn.WriteMessage(websocket.BinaryMessage, payload)
 		}
-		state := liveConnection{paged: request.Paged == nil || *request.Paged, known: known}
+		state := liveConnection{window: run.LiveLatestPage, known: known}
+		if request.Paged != nil && !request.GetPaged() {
+			state.window = run.LiveFullHistory
+		}
 		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send, heartbeat)
 		switch {
 		case errors.Is(err, errLiveAuth):
@@ -197,13 +198,7 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 	syncPage := func(phase string) (bool, error) {
 		defer timing.Start(ctx, phase)()
 		load := timing.Start(ctx, "live_load_transcript")
-		var page *run.Transcript
-		var err error
-		if state.paged {
-			page, err = h.reader.TranscriptPage(ctx, owner, id, 0)
-		} else {
-			page, err = h.reader.FullTranscript(ctx, owner, id)
-		}
+		update, err := h.reader.TranscriptUpdate(ctx, owner, id, state.window, state.known)
 		load()
 		if err != nil {
 			return false, err
@@ -215,10 +210,10 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 			return false, err
 		}
 		build := timing.Start(ctx, "live_build_sync")
-		snapshot := state.sync(page, settings)
+		snapshot := state.sync(update, settings)
 		build()
 		err = send(&sessionpb.LiveMessage{Item: &sessionpb.LiveMessage_Sync{Sync: snapshot}})
-		return page != nil, err
+		return update != nil, err
 	}
 	if found, err := syncPage("live_bootstrap"); err != nil || !found {
 		return err
@@ -263,28 +258,26 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 	}
 }
 
-func (s *liveConnection) sync(page *run.Transcript, settings run.Settings) *sessionpb.LiveSync {
+func (s *liveConnection) sync(update *run.TranscriptUpdate, settings run.Settings) *sessionpb.LiveSync {
 	result := &sessionpb.LiveSync{SandboxSettings: SandboxSettings(settings)}
-	if page == nil {
+	if update == nil {
 		return result
 	}
-	result.Session = Summary(page.Session)
-	result.LastOptions = RunOptions(page.LastOptions())
-	result.NextBeforeSequence = int32(page.NextBeforeSequence)
-	result.TurnIds = make([]string, 0, len(page.Turns))
-	next := make(map[string]turnVersion, len(page.Turns))
+	result.Session = Summary(update.Session)
+	result.LastOptions = RunOptions(update.LastOptions)
+	result.NextBeforeSequence = int32(update.NextBeforeSequence)
+	result.TurnIds = make([]string, 0, len(update.Versions))
+	s.known = make(map[string]run.TurnVersion, len(update.Versions))
+	for _, version := range update.Versions {
+		result.TurnIds = append(result.TurnIds, version.ID)
+		s.known[version.ID] = version
+	}
 	s.progress = run.LiveProgress{}
-	for _, item := range page.Turns {
-		version := turnVersion{item.UpdatedAt.Format(time.RFC3339Nano), string(item.Status)}
-		result.TurnIds = append(result.TurnIds, item.ID)
-		next[item.ID] = version
+	for _, item := range update.ChangedTurns {
 		if item.Status == run.Running {
 			s.progress = run.LiveProgress{TurnID: item.ID, Parts: item.Parts, Steering: item.Steering, Context: item.LiveContext}
 		}
-		if known, exists := s.known[item.ID]; !exists || known != version || item.Status == run.Running {
-			result.ChangedTurns = append(result.ChangedTurns, Turn(item))
-		}
+		result.ChangedTurns = append(result.ChangedTurns, Turn(item))
 	}
-	s.known = next
 	return result
 }

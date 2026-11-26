@@ -14,8 +14,7 @@ import (
 )
 
 type Reader interface {
-	FullTranscript(context.Context, string, string) (*run.Transcript, error)
-	TranscriptPage(context.Context, string, string, int) (*run.Transcript, error)
+	TranscriptUpdate(context.Context, string, string, run.LiveTranscriptWindow, map[string]run.TurnVersion) (*run.TranscriptUpdate, error)
 	Settings(context.Context, string) (run.Settings, error)
 }
 
