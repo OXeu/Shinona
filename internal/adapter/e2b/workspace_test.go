@@ -1,6 +1,7 @@
 package e2b
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -257,6 +258,106 @@ func TestWorkspaceUsesSDKForFilesCommandsAndTerminal(t *testing.T) {
 		t.Fatalf("terminal cleanup replaced the caller's deadline: got %s, want %s", got, want)
 	}
 }
+
+func TestTerminalCancellationDoesNotWaitForEnvdResponse(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	start := []byte(`{"event":{"start":{"pid":17}}}`)
+	frame := binary.BigEndian.AppendUint32([]byte{0}, uint32(len(start)))
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	body := &stalledProcessBody{start: bytes.NewReader(append(frame, start...)), entered: entered, release: release}
+	stopped := make(chan bool, 1)
+	client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+		response.Header.Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v2/sandboxes":
+			response.StatusCode = http.StatusCreated
+			response.Body = io.NopCloser(strings.NewReader(`{"sandboxID":"sdk-test","envdVersion":"0.5.7","envdAccessToken":"data-key"}`))
+		case "/envd/process.Process/Start":
+			response.Header.Set("Content-Type", "application/connect+json")
+			response.Body = body
+		case "/envd/process.Process/SendSignal":
+			var signal struct{ Process struct{ Tag string } }
+			if err := json.NewDecoder(r.Body).Decode(&signal); err != nil {
+				return nil, err
+			}
+			stopped <- signal.Process.Tag != ""
+			response.Body = io.NopCloser(strings.NewReader("{}"))
+		default:
+			return nil, fmt.Errorf("unexpected endpoint %s", r.URL.Path)
+		}
+		return response, nil
+	})}
+	store := openStore(t, ":memory:")
+	seedWorkspaceOwner(t, store, "fixture", "")
+	provider, err := New(Config{APIKey: "team-key", APIVersion: "v2", BaseURL: "https://fixture.test",
+		ProxyURL: "https://fixture.test/envd", WorkspaceUser: "user", WorkDirectory: "/workspace"}, client, store.E2B)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := provider.Acquire(ctx, sandbox.Spec{Policy: sandbox.Shared, OwnerID: "fixture", RunID: "run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ws.Close(ctx) }()
+	lifetime, endTerminal := context.WithCancel(ctx)
+	defer endTerminal()
+	shell, err := ws.(sandbox.TerminalWorkspace).OpenTerminal(lifetime, sandbox.TerminalSize{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("envd stream never reached the stalled read")
+	}
+	endTerminal()
+	read := make(chan error, 1)
+	go func() {
+		var data [1]byte
+		_, err := shell.Read(data[:])
+		read <- err
+	}()
+	select {
+	case err := <-read:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("terminal read lost its cancellation cause: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("terminal read remained blocked on the envd response")
+	}
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- shell.Close(ctx) }()
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("terminal close remained blocked on the envd response")
+	}
+	requireTaggedStop(t, stopped)
+}
+
+type stalledProcessBody struct {
+	start   *bytes.Reader
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (b *stalledProcessBody) Read(p []byte) (int, error) {
+	if b.start.Len() > 0 {
+		return b.start.Read(p)
+	}
+	close(b.entered)
+	// Keep the SDK inside Read until the test releases the transport.
+	<-b.release
+	return 0, io.EOF
+}
+
+func (*stalledProcessBody) Close() error { return nil }
 
 func envdOK(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")

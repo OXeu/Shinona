@@ -20,6 +20,7 @@ type terminal struct {
 	handle    *sdk.CommandHandle
 	workspace *workspace
 	tag       string
+	finished  <-chan struct{}
 	closed    sync.Once
 	closeErr  error
 }
@@ -30,7 +31,6 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	}
 	stream, cancel := context.WithCancel(w.requestContext(ctx))
 	reader, writer := io.Pipe()
-	stop := context.AfterFunc(stream, func() { _ = reader.CloseWithError(stream.Err()) })
 	shell, tag := sandbox.Shell("-i"), uuid.NewString()
 	handle, err := w.box.Pty.Create(stream, sdk.PtyOptions{
 		Cmd: shell.Program, Args: shell.Args, User: w.user, Cwd: w.directory, Tag: tag,
@@ -42,7 +42,6 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	}
 	if err != nil {
 		cancel()
-		stop()
 		_ = reader.Close()
 		_ = writer.Close()
 		if handle != nil {
@@ -50,18 +49,22 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 		}
 		return nil, errors.Join(err, w.stopProcess(context.WithoutCancel(ctx), tag))
 	}
+	finished := make(chan struct{})
 	go func() {
-		defer stop()
-		exit, err := handle.Wait(context.WithoutCancel(ctx))
+		defer close(finished)
+		defer cancel()
+		exit, err := handle.Wait(stream)
 		if exit != nil {
 			err = nil
 			if exit.Error != "" {
 				err = fmt.Errorf("envd terminal: %s", exit.Error)
 			}
+		} else if cancellation := stream.Err(); cancellation != nil {
+			err = cancellation
 		}
 		_ = writer.CloseWithError(err)
 	}()
-	return &terminal{reader: reader, cancel: cancel, handle: handle, workspace: w, tag: tag}, nil
+	return &terminal{reader: reader, cancel: cancel, handle: handle, workspace: w, tag: tag, finished: finished}, nil
 }
 
 func (t *terminal) Read(data []byte) (int, error) { return t.reader.Read(data) }
@@ -80,8 +83,9 @@ func (t *terminal) Resize(ctx context.Context, size sandbox.TerminalSize) error 
 func (t *terminal) Close(ctx context.Context) error {
 	t.closed.Do(func() {
 		t.cancel()
-		_ = t.reader.Close()
 		t.handle.Disconnect()
+		// Wait for our pipe writer, which stops as soon as the context ends.
+		<-t.finished
 		if _, exited := t.handle.ExitCode(); !exited {
 			t.closeErr = t.workspace.stopProcess(ctx, t.tag)
 		}
