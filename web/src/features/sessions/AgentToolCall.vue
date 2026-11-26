@@ -12,6 +12,7 @@ const props = defineProps<{ part: TurnPart }>()
 const category = computed(() => toolCategory(props.part.tool))
 const failed = computed(() => props.part.status === 'FAILED')
 const parsedInput = computed(() => {
+  if (!props.part.input) return null
   try {
     return JSON.parse(props.part.input) as { path?: unknown; command?: unknown } | null
   } catch {

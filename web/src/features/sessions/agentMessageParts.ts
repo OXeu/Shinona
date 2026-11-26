@@ -12,7 +12,7 @@ export const activityIcons: Record<ToolCategory, string> = {
   thinking: 'brain-line',
 }
 
-export function toolCategory(name: string): ToolCategory {
+export function toolCategory(name: string | undefined): ToolCategory {
   switch (name) {
     case 'bash': return 'command'
     case 'read': return 'read'
@@ -26,7 +26,7 @@ export function messageChunks({ parts, status, output }: Pick<Turn, 'parts' | 's
   if (status === 'SUCCEEDED') {
     foldBefore = output.trim()
       ? parts.length
-      : parts.findLastIndex((part) => part.kind === 'text' && !!part.text.trim())
+      : parts.findLastIndex((part) => part.kind === 'text' && !!part.text?.trim())
   }
   const chunks: Chunk[] = []
   for (const [index, part] of parts.entries()) {

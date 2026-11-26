@@ -24,6 +24,14 @@ test('successful turns without a separate output keep the last text part visible
   ])
 })
 
+test('completed transcript parts can omit empty fields', () => {
+  const emptyText = { kind: 'text' }
+  const emptyTool = { kind: 'tool' }
+  const chunks = messageChunks({ status: 'SUCCEEDED', output: '', parts: [emptyTool, ...parts, emptyText] })
+  deepEqual(chunks.at(-2), { kind: 'text', part: { ...parts[3], index: 4 } })
+  deepEqual(activityCategories([emptyTool], false), ['tool'])
+})
+
 test('rich content remains visible after a successful turn', () => {
   const ui = { kind: 'ui', text: 'Total', output: '{}' }
   const chunks = messageChunks({ status: 'SUCCEEDED', output: 'Final response', parts: [...parts, ui] })

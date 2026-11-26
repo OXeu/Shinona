@@ -59,11 +59,11 @@ export interface ContextUsage {
 
 export interface TurnPart {
   kind: 'text' | 'thinking' | 'tool' | 'failure' | 'ui'
-  text: string
-  tool: string
-  input: string
-  output: string
-  status: RunStatus | ''
+  text?: string
+  tool?: string
+  input?: string
+  output?: string
+  status?: RunStatus | ''
   estimatedTokens?: number
 }
 

@@ -105,26 +105,28 @@ func (c *encodedTranscriptTurns) encode(ctx context.Context, turn run.Run, store
 }
 
 func encodeStoredTurn(turn run.Run, stored run.StoredTurnJSON) ([]byte, error) {
-	if stored.Parts != "" {
-		if err := stdjson.Unmarshal([]byte(stored.Parts), &turn.Parts); err != nil {
-			return nil, err
-		}
+	parts := strings.TrimSpace(stored.Parts)
+	if parts == "" || parts == "null" {
+		parts = "[]"
 	}
-	response := publicTurn(turn)
-	if stored.TokenUsage == "" {
-		return json.Marshal(response)
+	if parts[0] != '[' {
+		return nil, fmt.Errorf("stored transcript parts must be a JSON array")
 	}
 	usage, err := storedTokenUsage(stored.TokenUsage)
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(struct {
+	return stdjson.Marshal(struct {
 		turnResponse
-		TokenUsage json.RawMessage `json:"tokenUsage"`
-	}{response, usage})
+		Parts      stdjson.RawMessage `json:"parts"`
+		TokenUsage json.RawMessage    `json:"tokenUsage"`
+	}{publicTurn(turn), stdjson.RawMessage(parts), usage})
 }
 
 func storedTokenUsage(value string) (json.RawMessage, error) {
+	if value == "" {
+		return nil, nil
+	}
 	// SQLite writes the same three int32 fields as the REST response. Older
 	// or differently formatted values use the typed path to preserve defaults.
 	fields, opened := strings.CutPrefix(value, `{"input":`)

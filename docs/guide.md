@@ -161,6 +161,8 @@ The SSH provider creates one container per account and project and starts comman
 
 The session list uses `GET /api/v1/sessions`. The transcript uses `GET /api/v1/sessions/{id}/transcript`. It returns the latest 30 turns and a cursor for fetching earlier turns with `beforeSequence`. Use `paged=false` to read the full transcript. The HTTP middleware compresses JSON responses of at least 1 KiB when the client accepts gzip.
 
+Completed turns return `parts` using the stored JSON shape. Each part has a `kind`. Empty `text`, `tool`, `input`, `output`, and `status` fields and zero `estimatedTokens` may be omitted. A turn without parts returns `parts: []`.
+
 An open conversation receives Protobuf updates over `/api/v1/live`. Client and server negotiate WebSocket compression when they connect. Growing text and tool output are sent as appended text. Changes to the turn list or status include changed turn records. The browser reconciles with the current transcript on reconnect and polls about once per second while an active session's live socket is unavailable. Intermediate progress can coalesce for slow viewers. The server sends a heartbeat every 15 seconds and checks the login cookie when it sends an update.
 
 On a reverse proxy, forward `/api/v1/` to Shinona and preserve the WebSocket upgrade and browser `Origin` for `/api/v1/live`.

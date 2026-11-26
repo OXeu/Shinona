@@ -54,7 +54,7 @@ class SessionState {
         const part = parts[index]
         if (!part) throw new Error('Live progress has no base part.')
         parts[index] = {
-          ...part, text: part.text + item.value.text, output: part.output + item.value.output,
+          ...part, text: (part.text ?? '') + item.value.text, output: (part.output ?? '') + item.value.output,
           estimatedTokens: item.value.estimatedTokens,
         }
       } else {

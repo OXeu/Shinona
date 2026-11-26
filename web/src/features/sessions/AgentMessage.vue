@@ -101,14 +101,14 @@ async function copy() {
           v-for="part in chunk.kind === 'text' ? [chunk.part] : []"
           :key="part.index"
           class="agent-answer"
-          :text="part.text"
+          :text="part.text ?? ''"
         />
         <AgentRichContent
           v-for="part in chunk.kind === 'ui' ? [chunk.part] : []"
           :key="part.index"
-          :format="part.tool"
-          :payload="part.output"
-          :summary="part.text"
+          :format="part.tool ?? ''"
+          :payload="part.output ?? ''"
+          :summary="part.text ?? ''"
         />
         <UiBox v-for="group in chunk.kind === 'process' ? [chunk] : []" :key="group.index">
           <UiButton
@@ -133,7 +133,7 @@ async function copy() {
                 v-for="text in part.kind === 'text' ? [part] : []"
                 :key="text.index"
                 class="agent-answer"
-                :text="text.text"
+                :text="text.text ?? ''"
               />
               <UiDisclosure v-for="thought in part.kind === 'thinking' ? [part] : []" :key="thought.index">
                 <template #summary>
@@ -142,7 +142,7 @@ async function copy() {
                     <UiIcon name="brain-line" /> {{ t('chat.activity.thinking') }}
                   </UiBox>
                 </template>
-                <UiMarkdown class="agent-part-detail" :text="thought.text" />
+                <UiMarkdown class="agent-part-detail" :text="thought.text ?? ''" />
               </UiDisclosure>
               <AgentToolCall
                 v-for="tool in part.kind === 'tool' ? [part] : []"

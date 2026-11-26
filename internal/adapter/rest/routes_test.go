@@ -132,11 +132,15 @@ func TestConversationLifecycleAndOwnership(t *testing.T) {
 		Result: run.Result{Output: "complete", Parts: []run.TurnPart{{Kind: "thinking", Text: "Review the request."}}}}); err != nil {
 		t.Fatal(err)
 	}
-	page := decode[transcriptResponse](t, perform(t, router, "alice", "GET", path+"/transcript", nil, 200)).Session
+	response := perform(t, router, "alice", "GET", path+"/transcript", nil, 200)
+	page := decode[transcriptResponse](t, response).Session
 	if page == nil || page.Title != "first prompt" || page.DefaultTitle || page.TurnCount != 1 ||
 		page.LastOptions == nil || !page.LastOptions.ArrowJS || page.Turns[0].StartedAt == nil ||
 		page.Turns[0].Parts[0].Text != "Review the request." {
 		t.Fatalf("unexpected transcript: %+v", page)
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`"parts":[{"kind":"thinking","text":"Review the request."}]`)) {
+		t.Fatalf("transcript did not retain the stored part fields: %s", response.Body)
 	}
 	hidden := decode[transcriptResponse](t, perform(t, router, "bob", "GET", path+"/transcript", nil, 200))
 	if hidden.Session != nil {

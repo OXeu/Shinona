@@ -41,6 +41,9 @@ func TestCompletedTranscriptTurnsReuseJSONAndKeepItsShape(t *testing.T) {
 		got.TokenUsage == nil || *got.TokenUsage != *want.TokenUsage || bytes.Contains(cold, []byte("<script>")) {
 		t.Fatalf("JSON shape or escaping changed: %s", cold)
 	}
+	if !bytes.Contains(cold, []byte(`"parts":[{"kind":"text","text":"\u003cscript\u003e\u0026"}]`)) {
+		t.Fatalf("completed turn expanded omitted part fields: %s", cold)
+	}
 	hot, err := cache.encode(ctx, item, fields)
 	if err != nil || len(hot) == 0 || &hot[0] != &cold[0] {
 		t.Fatalf("completed turn did not reuse its encoded bytes: %s, %v", hot, err)
@@ -62,5 +65,19 @@ func TestCompletedTranscriptTurnsReuseJSONAndKeepItsShape(t *testing.T) {
 	live, err = cache.encode(ctx, item, run.StoredTurnJSON{})
 	if err != nil || !bytes.Contains(live, []byte("new progress")) {
 		t.Fatalf("running turn reused its old parts: %s, %v", live, err)
+	}
+}
+
+func TestStoredTranscriptPartsAreAnArray(t *testing.T) {
+	for _, stored := range []string{"", "null", "[]"} {
+		body, err := encodeStoredTurn(run.Run{}, run.StoredTurnJSON{Parts: stored})
+		if err != nil || !bytes.Contains(body, []byte(`"parts":[]`)) {
+			t.Fatalf("parts %q: got %s, %v", stored, body, err)
+		}
+	}
+	for _, stored := range []string{`{}`, `[`, `[] {}`} {
+		if _, err := encodeStoredTurn(run.Run{}, run.StoredTurnJSON{Parts: stored}); err == nil {
+			t.Errorf("accepted invalid parts %q", stored)
+		}
 	}
 }
