@@ -1,4 +1,8 @@
-import { apiJSON } from '../../shared/http'
+import { fromBinary } from '@bufbuild/protobuf'
+
+import { apiJSON, request } from '../../shared/http'
+import { decodeRunOptions, decodeSandboxSettings, decodeSessionSummary, decodeTurn } from './wire/sessionMessages'
+import { TranscriptPageSchema } from './wire/session_transfer_pb'
 
 export type RunStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'STOPPED'
 export type Policy = 'FRESH' | 'SHARED'
@@ -120,9 +124,21 @@ interface TranscriptPage {
   sandboxSettings: SandboxSettings
 }
 
-function transcriptPage(id: string, signal: AbortSignal, beforeSequence?: number) {
+async function transcriptPage(id: string, signal: AbortSignal, beforeSequence?: number): Promise<TranscriptPage> {
   const query = beforeSequence === undefined ? '' : '?beforeSequence=' + beforeSequence
-  return apiJSON<TranscriptPage>(sessionPath(id) + '/transcript' + query, 'GET', signal)
+  const response = await request('/api/v1' + sessionPath(id) + '/transcript' + query, undefined, signal)
+  if (response.headers.get('Content-Type')?.split(';', 1)[0] !== 'application/protobuf') {
+    throw new Error('Unexpected transcript content type.')
+  }
+  const page = fromBinary(TranscriptPageSchema, new Uint8Array(await response.arrayBuffer()))
+  if (!page.complete || !page.sandboxSettings) throw new Error('Incomplete transcript response.')
+  return {
+    session: page.session ? {
+      ...decodeSessionSummary(page.session), turns: page.turns.map(decodeTurn),
+      nextBeforeSequence: page.nextBeforeSequence, lastOptions: decodeRunOptions(page.lastOptions),
+    } : null,
+    sandboxSettings: decodeSandboxSettings(page.sandboxSettings),
+  }
 }
 
 export const sessionApi = {

@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/segmentio/encoding/json"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
+	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
+	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -139,20 +141,6 @@ type transcriptRequest struct {
 	Paged          *bool  `form:"paged"`
 }
 
-type transcriptMetadata struct {
-	sessionSummary
-	NextBeforeSequence int             `json:"nextBeforeSequence"`
-	LastOptions        *lastRunOptions `json:"lastOptions"`
-}
-
-type lastRunOptions struct {
-	Model      string   `json:"model"`
-	Permission string   `json:"permission"`
-	Thinking   string   `json:"thinking"`
-	MCPServers []string `json:"mcpServers"`
-	ArrowJS    bool     `json:"arrowJs"`
-}
-
 func (r *handler) transcript(c *gin.Context) {
 	var args transcriptRequest
 	if !bind(c, &args, false) {
@@ -188,15 +176,17 @@ func (r *handler) transcript(c *gin.Context) {
 		writeError(c, r.apiError(err))
 		return
 	}
-	settings, err := r.SandboxSettings(ctx)
+	settings, err := r.service.Settings(ctx, owner)
 	if err != nil {
-		writeError(c, err)
+		writeError(c, r.apiError(err))
 		return
 	}
+	c.Header("X-Content-Type-Options", "nosniff")
 
 	if !paged && transcript != nil && len(transcript.Turns) > run.TranscriptPageSize {
 		if err := r.streamTranscript(c, transcript, settings); err != nil && ctx.Err() == nil {
 			if !c.Writer.Written() {
+				c.Header("Content-Type", "")
 				writeError(c, r.apiError(err))
 			} else {
 				r.logger.Debug("write transcript response", "error", err)
@@ -219,16 +209,15 @@ func (r *handler) transcript(c *gin.Context) {
 		writeError(c, r.apiError(err))
 		return
 	}
-	c.Data(http.StatusOK, "application/json; charset=utf-8", body.Bytes())
+	c.Data(http.StatusOK, httpserver.ProtobufMediaType, body.Bytes())
 }
 
-// Stream large full transcripts as a regular JSON object, encoding one turn
-// at a time to keep response buffering independent of transcript length.
-func (r *handler) streamTranscript(c *gin.Context, transcript *run.TranscriptSnapshot, settings sandboxSettings) error {
+// Stream one Protobuf message without buffering the entire response.
+func (r *handler) streamTranscript(c *gin.Context, transcript *run.TranscriptSnapshot, settings run.Settings) error {
 	ctx, finish := httpserver.StreamTiming(c.Writer, c.Request.Context())
 	defer finish()
 	defer timing.Start(ctx, "transcript_write")()
-	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Header("Content-Type", httpserver.ProtobufMediaType)
 	buffer := bufio.NewWriterSize(c.Writer, 32<<10)
 	if err := r.writeTranscript(ctx, buffer, transcript, settings); err != nil {
 		return err
@@ -236,57 +225,39 @@ func (r *handler) streamTranscript(c *gin.Context, transcript *run.TranscriptSna
 	return buffer.Flush()
 }
 
-func (r *handler) writeTranscript(ctx context.Context, w io.Writer, transcript *run.TranscriptSnapshot, settings sandboxSettings) error {
-	settingsJSON, err := json.Marshal(settings)
+func (r *handler) writeTranscript(ctx context.Context, w io.Writer, transcript *run.TranscriptSnapshot, settings run.Settings) error {
+	meta := &sessionpb.TranscriptPage{SandboxSettings: sessiontransfer.SandboxSettings(settings)}
+	if transcript != nil {
+		meta.Session = sessiontransfer.Summary(transcript.Session)
+		meta.NextBeforeSequence = int32(transcript.NextBeforeSequence)
+		meta.LastOptions = sessiontransfer.RunOptions(transcript.LastOptions())
+	}
+	header, err := proto.Marshal(meta)
 	if err != nil {
 		return err
 	}
-	if transcript == nil {
-		_, err = io.WriteString(w, `{"session":null,"sandboxSettings":`+string(settingsJSON)+"}")
+	if _, err := w.Write(header); err != nil {
 		return err
 	}
-
-	meta := transcriptMetadata{
-		sessionSummary:     publicSession(transcript.Session),
-		NextBeforeSequence: transcript.NextBeforeSequence,
-	}
-	if options := transcript.LastOptions(); options != nil {
-		meta.LastOptions = &lastRunOptions{
-			Model: options.Model, Permission: options.Permission, Thinking: options.Thinking,
-			MCPServers: nonNil(options.SelectedMCPServers()), ArrowJS: options.ArrowJS,
-		}
-	}
-	header, err := json.Marshal(meta)
-	if err != nil {
-		return err
-	}
-	if _, err := io.WriteString(w, `{"session":`); err != nil {
-		return err
-	}
-	if _, err := w.Write(header[:len(header)-1]); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(w, `,"turns":[`); err != nil {
-		return err
-	}
-	for i, turn := range transcript.Turns {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		body, err := r.transcriptTurns.encode(ctx, turn, transcript.StoredTurns[i])
-		if err != nil {
-			return err
-		}
-		if i != 0 {
-			if _, err := io.WriteString(w, ","); err != nil {
+	if transcript != nil {
+		for i, turn := range transcript.Turns {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			body, err := r.transcriptTurns.encode(ctx, turn, transcript.StoredTurns[i])
+			if err != nil {
+				return err
+			}
+			if _, err := w.Write(body); err != nil {
 				return err
 			}
 		}
-		if _, err := w.Write(body); err != nil {
-			return err
-		}
 	}
-	_, err = io.WriteString(w, `]},"sandboxSettings":`+string(settingsJSON)+"}")
+	end, err := proto.Marshal(&sessionpb.TranscriptPage{Complete: true})
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(end)
 	return err
 }
 

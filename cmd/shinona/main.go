@@ -144,7 +144,7 @@ func newAPIRouter(ctx context.Context, origin string, service *run.Service, app 
 	routes.Handle("GET "+sessiontransfer.LivePath, authHandler.RequireUser(transfer.Live(ctx, origin, authHandler.SessionUser, service)))
 	routes.Handle("GET "+sessiontransfer.AttachmentPath, authHandler.RequireUser(sessiontransfer.Attachment(service, logger)))
 
-	api := router.Group(rest.Prefix, httpserver.CompressJSON, authHandler.RequireGinUser)
+	api := router.Group(rest.Prefix, httpserver.Compress, authHandler.RequireGinUser)
 	rest.Register(api, service, app, logger)
 	return router
 }

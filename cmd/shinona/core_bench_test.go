@@ -14,18 +14,22 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/klauspost/compress/zstd"
 	fastjson "github.com/segmentio/encoding/json"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/password"
 	"github.com/OXeu/shinona/internal/adapter/rest"
+	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
@@ -33,6 +37,14 @@ import (
 )
 
 const benchmarkPrompt = "Review the workspace changes and summarize the test results."
+
+var benchmarkZstdDecoders = sync.Pool{New: func() any {
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+	if err != nil {
+		panic(err)
+	}
+	return decoder
+}}
 
 func BenchmarkCoreAPI(b *testing.B) {
 	b.Run("SessionsList", benchmarkSessionsList)
@@ -142,6 +154,7 @@ func (a *benchmarkAPI) request(ctx context.Context, client *http.Client, method,
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Origin", a.URL)
+	req.Header.Set("Accept-Encoding", "zstd")
 	response, err := client.Do(req)
 	if err != nil {
 		return nil, nil, err
@@ -150,6 +163,14 @@ func (a *benchmarkAPI) request(ctx context.Context, client *http.Client, method,
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, nil, err
+	}
+	if response.Header.Get("Content-Encoding") == "zstd" {
+		decoder := benchmarkZstdDecoders.Get().(*zstd.Decoder)
+		data, err = decoder.DecodeAll(data, nil)
+		benchmarkZstdDecoders.Put(decoder)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	if response.StatusCode != status {
 		return nil, nil, fmt.Errorf("%s returned %d, want %d: %s", path, response.StatusCode, status, data)
@@ -345,22 +366,16 @@ func (a *benchmarkAPI) transcriptBenchmarkClient(b testing.TB, client *http.Clie
 		if err != nil {
 			return err
 		}
-		if !strings.HasPrefix(headers.Get("Content-Type"), "application/json") {
+		if headers.Get("Content-Type") != httpserver.ProtobufMediaType {
 			return fmt.Errorf("unexpected transcript content type: %s", headers.Get("Content-Type"))
 		}
-		var page struct {
-			Session struct {
-				ID                            string
-				TurnCount, NextBeforeSequence int
-				Turns                         []run.Run
-			}
-		}
-		if err := fastjson.Unmarshal(data, &page); err != nil {
+		var page sessionpb.TranscriptPage
+		if err := proto.Unmarshal(data, &page); err != nil {
 			return err
 		}
-		if page.Session.ID != session || page.Session.TurnCount != turnCount ||
-			len(page.Session.Turns) != wantCount || page.Session.NextBeforeSequence != wantCursor {
-			return fmt.Errorf("unexpected transcript page: turns=%d, cursor=%d", len(page.Session.Turns), page.Session.NextBeforeSequence)
+		if !page.Complete || page.SandboxSettings == nil || page.GetSession().GetId() != session || page.GetSession().GetTurnCount() != int32(turnCount) ||
+			len(page.Turns) != wantCount || page.NextBeforeSequence != int32(wantCursor) {
+			return fmt.Errorf("unexpected transcript page: turns=%d, cursor=%d, complete=%t", len(page.Turns), page.NextBeforeSequence, page.Complete)
 		}
 		return nil
 	}

@@ -3,15 +3,15 @@ package rest
 import (
 	"container/list"
 	"context"
-	stdjson "encoding/json"
+	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
 	"sync"
 
-	"github.com/segmentio/encoding/json"
 	"golang.org/x/sync/singleflight"
+	"google.golang.org/protobuf/proto"
 
+	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
+	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -77,7 +77,7 @@ func (c *encodedTranscriptTurns) add(key transcriptTurnKey, body []byte) {
 
 func (c *encodedTranscriptTurns) encode(ctx context.Context, turn run.Run, stored run.StoredTurnJSON) ([]byte, error) {
 	if !turn.Status.Completed() {
-		return json.Marshal(publicTurn(turn))
+		return marshalTranscriptTurn(turn)
 	}
 	key := transcriptTurnKey{
 		owner: turn.OwnerID, session: turn.SessionID, id: turn.ID, status: turn.Status, updatedAt: turn.UpdatedAt.UnixNano(),
@@ -105,50 +105,20 @@ func (c *encodedTranscriptTurns) encode(ctx context.Context, turn run.Run, store
 }
 
 func encodeStoredTurn(turn run.Run, stored run.StoredTurnJSON) ([]byte, error) {
-	parts := strings.TrimSpace(stored.Parts)
-	if parts == "" || parts == "null" {
-		parts = "[]"
+	if stored.Parts != "" {
+		if err := json.Unmarshal([]byte(stored.Parts), &turn.Parts); err != nil {
+			return nil, err
+		}
 	}
-	if parts[0] != '[' {
-		return nil, fmt.Errorf("stored transcript parts must be a JSON array")
+	if stored.TokenUsage != "" {
+		if err := json.Unmarshal([]byte(stored.TokenUsage), &turn.TokenUsage); err != nil {
+			return nil, err
+		}
 	}
-	usage, err := storedTokenUsage(stored.TokenUsage)
-	if err != nil {
-		return nil, err
-	}
-	return stdjson.Marshal(struct {
-		turnResponse
-		Parts      stdjson.RawMessage `json:"parts"`
-		TokenUsage json.RawMessage    `json:"tokenUsage"`
-	}{publicTurn(turn), stdjson.RawMessage(parts), usage})
+	return marshalTranscriptTurn(turn)
 }
 
-func storedTokenUsage(value string) (json.RawMessage, error) {
-	if value == "" {
-		return nil, nil
-	}
-	// SQLite writes the same three int32 fields as the REST response. Older
-	// or differently formatted values use the typed path to preserve defaults.
-	fields, opened := strings.CutPrefix(value, `{"input":`)
-	input, fields, hasCached := strings.Cut(fields, `,"cached":`)
-	cached, output, hasOutput := strings.Cut(fields, `,"output":`)
-	output, closed := strings.CutSuffix(output, "}")
-	if opened && hasCached && hasOutput && closed &&
-		canonicalInt32(input) && canonicalInt32(cached) && canonicalInt32(output) {
-		return json.RawMessage(value), nil
-	}
-	var usage *run.TokenUsage
-	if err := stdjson.Unmarshal([]byte(value), &usage); err != nil {
-		return nil, err
-	}
-	return json.Marshal(usage)
-}
-
-func canonicalInt32(value string) bool {
-	n, err := strconv.ParseInt(value, 10, 32)
-	if err != nil {
-		return false
-	}
-	var buffer [11]byte
-	return string(strconv.AppendInt(buffer[:0], n, 10)) == value
+func marshalTranscriptTurn(turn run.Run) ([]byte, error) {
+	// Concatenating these partial messages appends to the page's repeated turns.
+	return proto.Marshal(&sessionpb.TranscriptPage{Turns: []*sessionpb.Turn{sessiontransfer.Turn(turn)}})
 }

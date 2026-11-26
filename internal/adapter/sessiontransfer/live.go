@@ -227,12 +227,12 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 }
 
 func (s *liveConnection) sync(page *run.Transcript, settings run.Settings) *sessionpb.LiveSync {
-	result := &sessionpb.LiveSync{SandboxSettings: sandboxSettings(settings)}
+	result := &sessionpb.LiveSync{SandboxSettings: SandboxSettings(settings)}
 	if page == nil {
 		return result
 	}
-	result.Session = summary(page.Session)
-	result.LastOptions = runOptions(page.LastOptions())
+	result.Session = Summary(page.Session)
+	result.LastOptions = RunOptions(page.LastOptions())
 	result.NextBeforeSequence = int32(page.NextBeforeSequence)
 	result.TurnIds = make([]string, 0, len(page.Turns))
 	next := make(map[string]turnVersion, len(page.Turns))
@@ -245,7 +245,7 @@ func (s *liveConnection) sync(page *run.Transcript, settings run.Settings) *sess
 			s.progress = run.LiveProgress{TurnID: item.ID, Parts: item.Parts, Steering: item.Steering, Context: item.LiveContext}
 		}
 		if known, exists := s.known[item.ID]; !exists || known != version || item.Status == run.Running {
-			result.ChangedTurns = append(result.ChangedTurns, turn(item))
+			result.ChangedTurns = append(result.ChangedTurns, Turn(item))
 		}
 	}
 	s.known = next

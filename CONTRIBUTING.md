@@ -40,7 +40,7 @@ The [Benchmarks workflow](.github/workflows/benchmarks.yml) runs the core API ba
 | Benchmark | API and fixture |
 | --- | --- |
 | `SessionsList` | Authenticated `GET /api/v1/sessions`, returning 30 sessions from 256 across four projects |
-| `Transcript` | HTTP transcript read with gzip negotiation and JSON decoding, using the default latest 30 turns from a 120-turn session |
+| `Transcript` | HTTP transcript read with Zstandard negotiation and Protobuf decoding, using the default latest 30 turns from a 120-turn session |
 | `Send` / `Queue` | `POST /api/v1/sessions/{id}/turns` on an idle session and with an active turn, respectively. Timing ends at the submission response. |
 | `Steering` | The REST steering endpoint targeting a held turn in the real worker. The fixture agent verifies delivery outside the timer. |
 | `Revert` | The original revert operation through the REST endpoint, including the head check and returned draft. The fixture reverts three of 30 turns per request. |
@@ -89,7 +89,7 @@ Set the `BENCHER_API_KEY` repository secret to a project key for [Shinona](https
 
 ## Session transfer schema
 
-Live session WebSocket messages use [session_transfer.proto](internal/adapter/sessiontransfer/session_transfer.proto). Keep existing Protobuf field numbers stable. After changing the schema, regenerate both checked-in bindings. Install `protoc` and `protoc-gen-go` v1.36.11 on your `PATH`.
+Transcript HTTP responses and live session WebSocket messages use [session_transfer.proto](internal/adapter/sessiontransfer/session_transfer.proto). Keep existing Protobuf field numbers stable. After changing the schema, regenerate both checked-in bindings. Install `protoc` and `protoc-gen-go` v1.36.11 on your `PATH`.
 
 ```sh
 npm exec --yes --package=@bufbuild/protoc-gen-es@2.17.0 -- \

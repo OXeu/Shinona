@@ -77,6 +77,17 @@ message TurnPart {
   int32 estimated_tokens = 7;
 }
 
+message TranscriptPage {
+  // Absent when the session is unavailable to the caller.
+  SessionSummary session = 1;
+  SandboxSettings sandbox_settings = 2;
+  RunOptions last_options = 3;
+  int32 next_before_sequence = 4;
+  repeated Turn turns = 5;
+  // Written after the last turn so a truncated stream can be detected.
+  bool complete = 6;
+}
+
 message LiveRequest {
   string session_id = 1;
   repeated TurnVersion known_turns = 2;

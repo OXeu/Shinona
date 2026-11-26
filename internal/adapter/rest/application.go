@@ -1,4 +1,4 @@
-// Package rest exposes the signed-in application API over JSON and HTTP.
+// Package rest exposes the signed-in application API over HTTP.
 package rest
 
 import (

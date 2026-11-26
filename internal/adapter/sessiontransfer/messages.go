@@ -7,7 +7,7 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
-func summary(session run.Session) *sessionpb.SessionSummary {
+func Summary(session run.Session) *sessionpb.SessionSummary {
 	return &sessionpb.SessionSummary{
 		Id: session.ID, ProjectId: optionalText(session.ProjectID), Title: session.Title,
 		DefaultTitle: session.TurnCount == 0 && !session.CustomTitle,
@@ -16,7 +16,7 @@ func summary(session run.Session) *sessionpb.SessionSummary {
 	}
 }
 
-func runOptions(options *run.Options) *sessionpb.RunOptions {
+func RunOptions(options *run.Options) *sessionpb.RunOptions {
 	if options == nil {
 		return nil
 	}
@@ -24,7 +24,7 @@ func runOptions(options *run.Options) *sessionpb.RunOptions {
 		Thinking: options.Thinking, McpServers: options.SelectedMCPServers(), ArrowJs: options.ArrowJS}
 }
 
-func turn(item run.Run) *sessionpb.Turn {
+func Turn(item run.Run) *sessionpb.Turn {
 	result := &sessionpb.Turn{
 		Id: item.ID, Sequence: int32(item.Sequence), Prompt: item.Prompt,
 		Status: string(item.Status), Policy: optionalText(string(item.Policy)), Output: item.Output,
@@ -57,7 +57,7 @@ func contextUsage(usage run.ContextUsage) *sessionpb.ContextUsage {
 	return &sessionpb.ContextUsage{Tokens: usage.Tokens, Window: usage.Window, Estimated: usage.Estimated}
 }
 
-func sandboxSettings(settings run.Settings) *sessionpb.SandboxSettings {
+func SandboxSettings(settings run.Settings) *sessionpb.SandboxSettings {
 	result := &sessionpb.SandboxSettings{Available: make([]string, len(settings.Available)), Selected: optionalText(string(settings.Selected))}
 	for i, policy := range settings.Available {
 		result.Available[i] = string(policy)

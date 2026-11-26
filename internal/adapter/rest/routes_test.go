@@ -2,11 +2,9 @@ package rest
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,10 +15,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/klauspost/compress/zstd"
 	"golang.org/x/sync/semaphore"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
+	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
@@ -28,14 +29,6 @@ import (
 )
 
 type fixtureApplication struct{ Application }
-
-type transcriptResponse struct {
-	Session *struct {
-		transcriptMetadata
-		Turns []turnResponse `json:"turns"`
-	}
-	SandboxSettings sandboxSettings
-}
 
 func (fixtureApplication) ComposerOptions(context.Context) (ComposerOptions, error) {
 	return ComposerOptions{Models: []ModelInfo{}, MCPServers: []string{}}, nil
@@ -49,7 +42,7 @@ func restFixture(t *testing.T) (*sqlite.Repository, *gin.Engine) {
 	}
 	t.Cleanup(func() { _ = repo.Close() })
 	router := gin.New()
-	Register(router.Group(Prefix, httpserver.CompressJSON), fixtureService(repo), fixtureApplication{}, slog.New(slog.DiscardHandler))
+	Register(router.Group(Prefix, httpserver.Compress), fixtureService(repo), fixtureApplication{}, slog.New(slog.DiscardHandler))
 	return repo, router
 }
 
@@ -98,6 +91,21 @@ func decode[T any](t *testing.T, response *httptest.ResponseRecorder) T {
 	return result
 }
 
+func decodeTranscript(t *testing.T, response *httptest.ResponseRecorder) *sessionpb.TranscriptPage {
+	t.Helper()
+	if got := response.Header().Get("Content-Type"); got != httpserver.ProtobufMediaType {
+		t.Fatalf("transcript content type = %s", got)
+	}
+	var page sessionpb.TranscriptPage
+	if err := proto.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if !page.Complete || page.SandboxSettings == nil {
+		t.Fatalf("incomplete transcript: %v", &page)
+	}
+	return &page
+}
+
 func checkCode(t *testing.T, response *httptest.ResponseRecorder, want string) {
 	t.Helper()
 	if got := response.Header().Get("X-Shinona-Error-Code"); got != want {
@@ -133,16 +141,13 @@ func TestConversationLifecycleAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := perform(t, router, "alice", "GET", path+"/transcript", nil, 200)
-	page := decode[transcriptResponse](t, response).Session
-	if page == nil || page.Title != "first prompt" || page.DefaultTitle || page.TurnCount != 1 ||
-		page.LastOptions == nil || !page.LastOptions.ArrowJS || page.Turns[0].StartedAt == nil ||
-		page.Turns[0].Parts[0].Text != "Review the request." {
-		t.Fatalf("unexpected transcript: %+v", page)
+	page := decodeTranscript(t, response)
+	if page.Session == nil || page.Session.Title != "first prompt" || page.Session.DefaultTitle || page.Session.TurnCount != 1 ||
+		!page.GetLastOptions().GetArrowJs() || len(page.Turns) != 1 || page.Turns[0].StartedAt == nil ||
+		len(page.Turns[0].Parts) != 1 || page.Turns[0].Parts[0].Text != "Review the request." {
+		t.Fatalf("unexpected transcript: %v", page)
 	}
-	if !bytes.Contains(response.Body.Bytes(), []byte(`"parts":[{"kind":"thinking","text":"Review the request."}]`)) {
-		t.Fatalf("transcript did not retain the stored part fields: %s", response.Body)
-	}
-	hidden := decode[transcriptResponse](t, perform(t, router, "bob", "GET", path+"/transcript", nil, 200))
+	hidden := decodeTranscript(t, perform(t, router, "bob", "GET", path+"/transcript", nil, 200))
 	if hidden.Session != nil {
 		t.Fatalf("another account received the transcript: %+v", hidden)
 	}
@@ -150,13 +155,13 @@ func TestConversationLifecycleAndOwnership(t *testing.T) {
 	if named.DefaultTitle || named.Title != "Named session" {
 		t.Fatalf("rename session: %+v", named)
 	}
-	renamed := decode[transcriptResponse](t, perform(t, router, "alice", "GET", path+"/transcript", nil, 200)).Session
-	if renamed == nil || renamed.Title != "Named session" || len(renamed.Turns) != 1 {
+	renamed := decodeTranscript(t, perform(t, router, "alice", "GET", path+"/transcript", nil, 200))
+	if renamed.Session == nil || renamed.Session.Title != "Named session" || len(renamed.Turns) != 1 {
 		t.Fatalf("transcript reused an old session summary: %+v", renamed)
 	}
 	perform(t, router, "alice", "POST", path+"/turns/"+first.ID+"/revert", map[string]string{"expectedHeadId": first.ID}, 200)
-	reverted := decode[transcriptResponse](t, perform(t, router, "alice", "GET", path+"/transcript", nil, 200)).Session
-	if reverted == nil || len(reverted.Turns) != 0 || reverted.TurnCount != 0 {
+	reverted := decodeTranscript(t, perform(t, router, "alice", "GET", path+"/transcript", nil, 200))
+	if reverted.Session == nil || len(reverted.Turns) != 0 || reverted.Session.TurnCount != 0 {
 		t.Fatalf("encoded cache retained a reverted turn: %+v", reverted)
 	}
 	perform(t, router, "alice", "DELETE", path, nil, 204)
@@ -247,23 +252,23 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 		}
 	}
 	const path = "/sessions/history/transcript"
-	latest := decode[transcriptResponse](t, perform(t, router, "alice", "GET", path, nil, 200)).Session
-	if latest == nil || latest.TurnCount != run.TranscriptPageSize+1 || len(latest.Turns) != run.TranscriptPageSize ||
+	latest := decodeTranscript(t, perform(t, router, "alice", "GET", path, nil, 200))
+	if latest.GetSession().GetTurnCount() != run.TranscriptPageSize+1 || len(latest.Turns) != run.TranscriptPageSize ||
 		latest.Turns[0].Sequence != 2 || latest.NextBeforeSequence != 2 {
 		t.Fatalf("latest page: %+v", latest)
 	}
-	older := decode[transcriptResponse](t, perform(t, router, "alice", "GET", path+"?beforeSequence=2", nil, 200)).Session
-	if older == nil || len(older.Turns) != 1 || older.Turns[0].Sequence != 1 || older.NextBeforeSequence != 0 {
+	older := decodeTranscript(t, perform(t, router, "alice", "GET", path+"?beforeSequence=2", nil, 200))
+	if len(older.Turns) != 1 || older.Turns[0].Sequence != 1 || older.NextBeforeSequence != 0 {
 		t.Fatalf("older page: %+v", older)
 	}
 	checkCode(t, perform(t, router, "alice", "GET", path+"?paged=false&beforeSequence=2", nil, 400), "INVALID_TRANSCRIPT_CURSOR")
 
 	plain := perform(t, router, "alice", "GET", path+"?paged=false", nil, 200)
-	full := decode[transcriptResponse](t, plain).Session
-	if full == nil || len(full.Turns) != run.TranscriptPageSize+1 || full.Turns[0].Sequence != 1 {
+	full := decodeTranscript(t, plain)
+	if len(full.Turns) != run.TranscriptPageSize+1 || full.Turns[0].Sequence != 1 {
 		t.Fatalf("full transcript: %+v", full)
 	}
-	for _, encoding := range []string{"br, gzip", "gzip;q=0, *;q=1"} {
+	for _, encoding := range []string{"br, zstd", "gzip", "zstd;q=0, *;q=1"} {
 		request := httptest.NewRequestWithContext(auth.WithUser(t.Context(), auth.User{ID: "alice"}), http.MethodGet, Prefix+path+"?paged=false", nil)
 		request.Header.Set("Accept-Encoding", encoding)
 		got := serve(t, router, request, 200)
@@ -271,16 +276,16 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 			t.Fatalf("missing Vary: %+v", got.Header())
 		}
 		raw := got.Body.Bytes()
-		if encoding == "br, gzip" {
-			if got.Header().Get("Content-Encoding") != "gzip" {
-				t.Fatal("response did not use HTTP gzip")
+		if encoding == "br, zstd" {
+			if got.Header().Get("Content-Encoding") != "zstd" {
+				t.Fatal("response did not use HTTP Zstandard")
 			}
-			reader, err := gzip.NewReader(bytes.NewReader(raw))
+			reader, err := zstd.NewReader(nil, zstd.WithDecoderMaxWindow(8<<20))
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err = io.ReadAll(reader)
-			_ = reader.Close()
+			raw, err = reader.DecodeAll(raw, nil)
+			reader.Close()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -288,7 +293,7 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 			t.Fatal("an explicitly rejected encoding was used")
 		}
 		if !bytes.Equal(raw, plain.Body.Bytes()) {
-			t.Fatal("compression changed the JSON representation")
+			t.Fatal("compression changed the Protobuf representation")
 		}
 	}
 }
@@ -318,8 +323,8 @@ func TestFullTranscriptQueueAllowsPagedReadsAndCancellation(t *testing.T) {
 	pagedContext, stop := context.WithTimeout(ctx, time.Second)
 	defer stop()
 	paged := httptest.NewRequestWithContext(pagedContext, http.MethodGet, Prefix+path, nil)
-	page := serve(t, router, paged, http.StatusOK)
-	if !strings.Contains(page.Body.String(), "sandboxSettings") {
+	page := decodeTranscript(t, serve(t, router, paged, http.StatusOK))
+	if page.Session != nil {
 		t.Fatal("the full queue blocked the paged request")
 	}
 	select {
