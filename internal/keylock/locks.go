@@ -54,7 +54,10 @@ func (l *Locks[K]) Acquire(ctx context.Context, key K, shared bool) (func(), err
 		drop()
 		return nil, err
 	}
-	return func() { gate.Release(weight); drop() }, nil
+	return sync.OnceFunc(func() {
+		gate.Release(weight)
+		drop()
+	}), nil
 }
 
 func (l *Locks[K]) TryAcquire(key K, shared bool) (release func(), ok bool) {
@@ -63,5 +66,8 @@ func (l *Locks[K]) TryAcquire(key K, shared bool) (release func(), ok bool) {
 		drop()
 		return nil, false
 	}
-	return func() { gate.Release(weight); drop() }, true
+	return sync.OnceFunc(func() {
+		gate.Release(weight)
+		drop()
+	}), true
 }

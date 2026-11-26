@@ -35,7 +35,7 @@ func (c *Cache[K, V]) Get(key K) (value V, ok bool) {
 }
 
 func (c *Cache[K, V]) Put(key K, value V, size int) {
-	if size > c.maxBytes {
+	if c.maxCount <= 0 || c.maxBytes <= 0 || size < 0 || size > c.maxBytes {
 		return
 	}
 	c.mu.Lock()
@@ -43,7 +43,7 @@ func (c *Cache[K, V]) Put(key K, value V, size int) {
 	if previous := c.keys[key]; previous != nil {
 		c.remove(previous)
 	}
-	for len(c.keys) >= c.maxCount || c.bytes+size > c.maxBytes {
+	for len(c.keys) >= c.maxCount || size > c.maxBytes-c.bytes {
 		c.remove(c.order.Back())
 	}
 	c.keys[key] = c.order.PushFront(entry[K, V]{key, value, size})
