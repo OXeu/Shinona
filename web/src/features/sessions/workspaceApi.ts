@@ -1,6 +1,6 @@
 import { apiJSON } from '../../shared/http'
 
-export interface ChangedFile {
+interface ChangedFile {
   path: string
   status: string
   untracked: boolean

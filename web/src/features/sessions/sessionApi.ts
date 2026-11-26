@@ -49,13 +49,13 @@ export interface Turn {
   liveContext?: ContextUsage | null
 }
 
-export interface TokenUsage {
+interface TokenUsage {
   input: number
   cached: number
   output: number
 }
 
-export interface ContextUsage {
+interface ContextUsage {
   tokens: number
   window: number
   estimated: boolean
