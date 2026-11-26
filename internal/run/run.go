@@ -63,6 +63,10 @@ type SessionChanges struct {
 
 const TranscriptPageSize = 30
 
+const MaxTranscriptExportTurns = 5000
+
+var ErrTranscriptExportLimit = errors.New("the transcript is too large for an unpaged response")
+
 type Transcript struct {
 	Session            Session
 	Turns              []Run
@@ -74,6 +78,15 @@ type Transcript struct {
 type TranscriptSnapshot struct {
 	Transcript
 	StoredTurns []StoredTurnJSON
+}
+
+// TranscriptStream reads forward from one durable snapshot. Next is valid
+// for the duration of the repository callback and returns nil at the end.
+type TranscriptStream struct {
+	Session     *Session
+	LastOptions *Options
+	TurnCount   int
+	Next        func() (*TranscriptSnapshot, error)
 }
 
 type StoredTurnJSON struct {
@@ -177,7 +190,8 @@ type Repository interface {
 	RemoveProject(ctx context.Context, ownerID, id string) error
 	Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*Transcript, error)
 	TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*Transcript, error)
-	TranscriptSnapshot(ctx context.Context, ownerID, sessionID string, paged bool, beforeSequence int) (*TranscriptSnapshot, error)
+	TranscriptSnapshot(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*TranscriptSnapshot, error)
+	StreamTranscript(ctx context.Context, ownerID, sessionID string, write func(TranscriptStream) error) error
 	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Image, error)
 	SessionProject(ctx context.Context, ownerID, sessionID string) (string, error)
 	WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error)

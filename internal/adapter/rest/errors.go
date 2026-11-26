@@ -23,6 +23,8 @@ func (r *handler) apiError(err error) error {
 		return codedError{err, "INVALID_PROMPT"}
 	case errors.Is(err, run.ErrImages):
 		return codedError{err, "INVALID_IMAGES"}
+	case errors.Is(err, run.ErrTranscriptExportLimit):
+		return codedError{err, "TRANSCRIPT_EXPORT_LIMIT"}
 	case errors.Is(err, run.ErrOptions):
 		return codedError{err, "INVALID_COMPOSER_OPTIONS"}
 	case errors.Is(err, run.ErrNotRunning):
@@ -81,6 +83,8 @@ func writeError(c *gin.Context, err error) {
 		status = http.StatusNotFound
 	case "ADMIN_REQUIRED":
 		status = http.StatusForbidden
+	case "TRANSCRIPT_EXPORT_LIMIT":
+		status = http.StatusRequestEntityTooLarge
 	case "RUN_NOT_ACCEPTING", "QUEUE_FULL", "PROJECT_NAME_EXISTS", "SSH_SERVER_NAME_EXISTS", "SSH_SERVER_IN_USE",
 		"WORKSPACE_BUSY", "ACTIVE_TURN", "HISTORY_CHANGED", "RETRY_TURN_UNAVAILABLE":
 		status = http.StatusConflict

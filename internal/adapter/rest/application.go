@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 	"golang.org/x/sync/semaphore"
@@ -35,4 +36,5 @@ type handler struct {
 	fullTranscript  *semaphore.Weighted
 	pagedTranscript *semaphore.Weighted
 	transcriptTurns encodedTranscriptTurns
+	transcriptPages *responsecache.Cache[transcriptPageKey, transcriptPageBody]
 }

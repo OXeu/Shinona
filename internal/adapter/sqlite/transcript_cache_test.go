@@ -75,7 +75,7 @@ func TestLatestTranscriptCacheTracksPersistedHeadAndSummary(t *testing.T) {
 	enqueue("first")
 	claim("first")
 	complete("first")
-	snapshot, err := reader.TranscriptSnapshot(ctx, owner, id, true, 0)
+	snapshot, err := reader.TranscriptSnapshot(ctx, owner, id, 0)
 	if err != nil || snapshot == nil || len(snapshot.StoredTurns) != 1 {
 		t.Fatalf("read completed snapshot: %+v, %v", snapshot, err)
 	}
@@ -85,7 +85,7 @@ func TestLatestTranscriptCacheTracksPersistedHeadAndSummary(t *testing.T) {
 		t.Fatalf("snapshot did not retain the stored JSON: %+v", snapshot)
 	}
 	snapshot.StoredTurns[0].Parts = "changed by caller"
-	cached, err := reader.TranscriptSnapshot(ctx, owner, id, true, 0)
+	cached, err := reader.TranscriptSnapshot(ctx, owner, id, 0)
 	if err != nil || cached == nil || len(cached.StoredTurns) != 1 || cached.StoredTurns[0] != stored {
 		t.Fatalf("snapshot exposed mutable cache state: %+v, %v", cached, err)
 	}
@@ -120,7 +120,7 @@ func TestLatestTranscriptCacheTracksPersistedHeadAndSummary(t *testing.T) {
 	read(2, run.Queued, false)
 	claim("second")
 	read(2, run.Running, false)
-	active, err := reader.TranscriptSnapshot(ctx, owner, id, true, 0)
+	active, err := reader.TranscriptSnapshot(ctx, owner, id, 0)
 	if err != nil || active == nil || len(active.Turns) != 2 || active.Turns[1].Status != run.Running ||
 		active.StoredTurns[0] != stored || active.StoredTurns[1] != (run.StoredTurnJSON{}) {
 		t.Fatalf("snapshot did not distinguish completed and running turns: %+v, %v", active, err)

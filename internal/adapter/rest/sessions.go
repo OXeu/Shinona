@@ -1,21 +1,13 @@
 package rest
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"errors"
-	"io"
-	"net/http"
 	"slices"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"google.golang.org/protobuf/proto"
 
-	"github.com/OXeu/shinona/internal/adapter/httpserver"
-	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
-	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -153,110 +145,57 @@ func (r *handler) transcript(c *gin.Context) {
 			return
 		}
 	}
-	slots := r.fullTranscript
-	if paged {
-		slots = r.pagedTranscript
-	}
 	ctx := c.Request.Context()
-	wait := timing.Start(ctx, "transcript_wait")
-	err := slots.Acquire(ctx, 1)
-	wait()
-	if err != nil {
-		return
-	}
-	defer slots.Release(1)
-
 	owner := auth.CurrentUser(ctx).ID
-	load := timing.Start(ctx, "transcript_load")
-	transcript, err := r.service.TranscriptSnapshot(ctx, owner, args.ID, paged, before)
-	load()
-	if err != nil {
-		writeError(c, r.apiError(err))
-		return
-	}
 	settings, err := r.service.Settings(ctx, owner)
 	if err != nil {
 		writeError(c, r.apiError(err))
 		return
 	}
 	c.Header("X-Content-Type-Options", "nosniff")
-
-	if !paged && transcript != nil && len(transcript.Turns) > run.TranscriptPageSize {
-		if err := r.streamTranscript(c, transcript, settings); err != nil && ctx.Err() == nil {
-			if !c.Writer.Written() {
-				c.Header("Content-Type", "")
-				writeError(c, r.apiError(err))
-			} else {
-				r.logger.Debug("write transcript response", "error", err)
-			}
-		}
-		return
-	}
-	var body bytes.Buffer
-	encode := timing.Start(ctx, "transcript_encode")
-	if transcript != nil {
-		size := 512 + len(transcript.Session.Title)
-		for i, turn := range transcript.Turns {
-			size += 512 + len(turn.Prompt) + len(turn.Output) + len(transcript.StoredTurns[i].Parts)
-		}
-		body.Grow(size)
-	}
-	err = r.writeTranscript(ctx, &body, transcript, settings)
-	encode()
+	key, err := r.transcriptResponseKey(c, owner, args.ID, before, !paged, settings)
 	if err != nil {
 		writeError(c, r.apiError(err))
 		return
 	}
-	c.Data(http.StatusOK, httpserver.ProtobufMediaType, body.Bytes())
-}
-
-// Stream one Protobuf message without buffering the entire response.
-func (r *handler) streamTranscript(c *gin.Context, transcript *run.TranscriptSnapshot, settings run.Settings) error {
-	ctx, finish := httpserver.StreamTiming(c.Writer, c.Request.Context())
-	defer finish()
-	defer timing.Start(ctx, "transcript_write")()
-	c.Header("Content-Type", httpserver.ProtobufMediaType)
-	buffer := bufio.NewWriterSize(c.Writer, 32<<10)
-	if err := r.writeTranscript(ctx, buffer, transcript, settings); err != nil {
-		return err
+	if r.serveCachedTranscript(c, key) {
+		return
 	}
-	return buffer.Flush()
-}
-
-func (r *handler) writeTranscript(ctx context.Context, w io.Writer, transcript *run.TranscriptSnapshot, settings run.Settings) error {
-	meta := &sessionpb.TranscriptPage{SandboxSettings: sessiontransfer.SandboxSettings(settings)}
-	if transcript != nil {
-		meta.Session = sessiontransfer.Summary(transcript.Session)
-		meta.NextBeforeSequence = int32(transcript.NextBeforeSequence)
-		meta.LastOptions = sessiontransfer.RunOptions(transcript.LastOptions())
+	slots := r.fullTranscript
+	if paged {
+		slots = r.pagedTranscript
 	}
-	header, err := proto.Marshal(meta)
+	wait := timing.Start(ctx, "transcript_wait")
+	err = slots.Acquire(ctx, 1)
+	wait()
 	if err != nil {
-		return err
+		return
 	}
-	if _, err := w.Write(header); err != nil {
-		return err
+	defer slots.Release(1)
+
+	if paged {
+		err = r.pagedTranscriptResponse(c, key, settings)
+	} else {
+		// Exports waiting for a slot can reuse a response filled while they waited.
+		key, err = r.transcriptResponseKey(c, owner, args.ID, before, true, settings)
+		if err != nil {
+			writeError(c, r.apiError(err))
+			return
+		}
+		if r.serveCachedTranscript(c, key) {
+			return
+		}
+		err = r.fullTranscriptResponse(c, key, settings)
 	}
-	if transcript != nil {
-		for i, turn := range transcript.Turns {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			body, err := r.transcriptTurns.encode(ctx, turn, transcript.StoredTurns[i])
-			if err != nil {
-				return err
-			}
-			if _, err := w.Write(body); err != nil {
-				return err
-			}
+	if err != nil {
+		if !c.Writer.Written() {
+			c.Header("Content-Type", "")
+			c.Header("Content-Encoding", "")
+			writeError(c, r.apiError(err))
+		} else {
+			r.logger.Debug("write transcript response", "error", err)
 		}
 	}
-	end, err := proto.Marshal(&sessionpb.TranscriptPage{Complete: true})
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(end)
-	return err
 }
 
 func (r *handler) createSession(ctx context.Context, args struct {

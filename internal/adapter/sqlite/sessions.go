@@ -150,13 +150,10 @@ func (r *Repository) TranscriptPage(ctx context.Context, ownerID, sessionID stri
 	return &page.Transcript, err
 }
 
-func (r *Repository) TranscriptSnapshot(ctx context.Context, ownerID, sessionID string, paged bool, beforeSequence int) (*run.TranscriptSnapshot, error) {
-	window := transcriptWindow{paged: paged, before: beforeSequence, retainJSON: true}
-	if !paged {
-		return r.transcript(ctx, ownerID, sessionID, window)
-	}
-	window.limit = run.TranscriptPageSize
-	return r.transcriptPage(ctx, ownerID, sessionID, window)
+func (r *Repository) TranscriptSnapshot(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*run.TranscriptSnapshot, error) {
+	return r.transcriptPage(ctx, ownerID, sessionID, transcriptWindow{
+		limit: run.TranscriptPageSize, before: beforeSequence, paged: true, retainJSON: true,
+	})
 }
 
 func (r *Repository) transcriptPage(ctx context.Context, ownerID, sessionID string, window transcriptWindow) (*run.TranscriptSnapshot, error) {
@@ -229,23 +226,7 @@ func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, 
 		if err != nil {
 			return err
 		}
-		// Project image metadata by index. Reading json_each.value would
-		// materialize the entire image, including its base64 data.
-		query := conversationTurns(tx, ownerID, sessionID).Select(`id, owner_id, session_id, sequence, policy, backend, machine_id, prompt,
-			status, output, steering, parts, context_tokens, context_window, token_usage, created_at, started_at, updated_at,
-			CASE WHEN json_array_length(payload, '$.images') > 0 THEN
-				json_object('options', json_extract(payload, '$.options'), 'images', json((
-					WITH RECURSIVE image_indices(i) AS (
-						VALUES (0)
-						UNION ALL
-						SELECT i + 1 FROM image_indices WHERE i + 1 < json_array_length(payload, '$.images')
-					)
-					SELECT json_group_array(json_object(
-						'name', json_extract(payload, '$.images[' || i || '].name'),
-						'mediaType', json_extract(payload, '$.images[' || i || '].mediaType')
-					)) FROM image_indices
-				)))
-			ELSE payload END AS payload`).
+		query := transcriptQuery(tx, ownerID, sessionID).
 			Order("sequence DESC").Offset(window.offset)
 		if window.before != 0 {
 			query = query.Where("sequence < ?", window.before)
@@ -273,28 +254,58 @@ func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, 
 	if err != nil || result == nil {
 		return nil, err
 	}
+	if err := decodeTranscriptRows(ctx, result, turns, window.retainJSON, true); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Project image metadata by index. Reading json_each.value would materialize
+// the entire image, including its base64 data.
+func transcriptQuery(db *gorm.DB, ownerID, sessionID string) *gorm.DB {
+	return conversationTurns(db, ownerID, sessionID).Select(`id, owner_id, session_id, sequence, policy, backend, machine_id, prompt,
+		status, output, steering, parts, context_tokens, context_window, token_usage, created_at, started_at, updated_at,
+		CASE WHEN json_array_length(payload, '$.images') > 0 THEN
+			json_object('options', json_extract(payload, '$.options'), 'images', json((
+				WITH RECURSIVE image_indices(i) AS (
+					VALUES (0)
+					UNION ALL
+					SELECT i + 1 FROM image_indices WHERE i + 1 < json_array_length(payload, '$.images')
+				)
+				SELECT json_group_array(json_object(
+					'name', json_extract(payload, '$.images[' || i || '].name'),
+					'mediaType', json_extract(payload, '$.images[' || i || '].mediaType')
+				)) FROM image_indices
+			)))
+		ELSE payload END AS payload`)
+}
+
+func decodeTranscriptRows(ctx context.Context, result *run.TranscriptSnapshot, turns []transcriptRow, retainJSON, descending bool) error {
 	defer timing.Start(ctx, "transcript_json")()
 	result.Turns = make([]run.Run, len(turns))
-	if window.retainJSON {
+	if retainJSON {
 		result.StoredTurns = make([]run.StoredTurnJSON, len(turns))
 	}
 	for i := range turns {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
 		record := &turns[i]
-		index := len(turns) - 1 - i
-		retain := window.retainJSON && record.Run.Status.Completed()
+		index := i
+		if descending {
+			index = len(turns) - 1 - i
+		}
+		retain := retainJSON && record.Run.Status.Completed()
 		turn, err := record.turn(retain)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		result.Turns[index] = turn
 		if retain {
 			result.StoredTurns[index] = run.StoredTurnJSON{Parts: string(record.Parts), TokenUsage: string(record.TokenUsage)}
 		}
 	}
-	return result, nil
+	return nil
 }
 
 func (r *Repository) UpdateSession(ctx context.Context, ownerID, sessionID string, changes run.SessionChanges) (run.Session, error) {

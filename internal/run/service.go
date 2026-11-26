@@ -145,15 +145,22 @@ func (s *Service) Transcript(ctx context.Context, owner, id string) (*Transcript
 }
 
 func (s *Service) FullTranscript(ctx context.Context, owner, id string) (*Transcript, error) {
-	return s.withTranscriptProgress(s.repo.Transcript(ctx, owner, id, 0))
+	// Legacy full WebSocket subscriptions emit one frame. Larger histories
+	// use paged subscriptions or the HTTP streaming transcript.
+	const maxLiveTurns = 256
+	transcript, err := s.repo.Transcript(ctx, owner, id, maxLiveTurns+1)
+	if transcript != nil && len(transcript.Turns) > maxLiveTurns {
+		return nil, ErrTranscriptExportLimit
+	}
+	return s.withTranscriptProgress(transcript, err)
 }
 
 func (s *Service) TranscriptPage(ctx context.Context, owner, id string, beforeSequence int) (*Transcript, error) {
 	return s.withTranscriptProgress(s.repo.TranscriptPage(ctx, owner, id, beforeSequence))
 }
 
-func (s *Service) TranscriptSnapshot(ctx context.Context, owner, id string, paged bool, beforeSequence int) (*TranscriptSnapshot, error) {
-	snapshot, err := s.repo.TranscriptSnapshot(ctx, owner, id, paged, beforeSequence)
+func (s *Service) TranscriptSnapshot(ctx context.Context, owner, id string, beforeSequence int) (*TranscriptSnapshot, error) {
+	snapshot, err := s.repo.TranscriptSnapshot(ctx, owner, id, beforeSequence)
 	if err != nil || snapshot == nil {
 		return snapshot, err
 	}
@@ -161,6 +168,29 @@ func (s *Service) TranscriptSnapshot(ctx context.Context, owner, id string, page
 	return snapshot, nil
 }
 
+func (s *Service) StreamTranscript(ctx context.Context, owner, id string, write func(TranscriptStream) error) error {
+	s.controls.mu.Lock()
+	progress := s.controls.active[sessionKey{owner, id}].progress()
+	s.controls.mu.Unlock()
+	return s.repo.StreamTranscript(ctx, owner, id, func(stream TranscriptStream) error {
+		if stream.Next != nil && progress.TurnID != "" {
+			next := stream.Next
+			stream.Next = func() (*TranscriptSnapshot, error) {
+				batch, err := next()
+				if err == nil && batch != nil {
+					for i := range batch.Turns {
+						turn := &batch.Turns[i]
+						if turn.Status == Running && turn.ID == progress.TurnID {
+							turn.Parts, turn.Steering, turn.LiveContext = progress.Parts, progress.Steering, progress.Context
+						}
+					}
+				}
+				return batch, err
+			}
+		}
+		return write(stream)
+	})
+}
 func (s *Service) withTranscriptProgress(transcript *Transcript, err error) (*Transcript, error) {
 	if err != nil || transcript == nil {
 		return transcript, err

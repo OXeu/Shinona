@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
+	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 )
@@ -24,10 +25,12 @@ type responseControllerKey struct{}
 
 // Register installs resource routes on the authenticated API group.
 func Register(api *gin.RouterGroup, service *run.Service, app Application, logger *slog.Logger) {
-	fullSlots := int64(min(max(runtime.GOMAXPROCS(0), 4), 16))
+	readConnections := min(max(runtime.GOMAXPROCS(0), 2), 16)
+	fullSlots := int64(min(4, readConnections-1))
 	h := &handler{
 		service: service, app: app, logger: logger,
-		fullTranscript: semaphore.NewWeighted(fullSlots), pagedTranscript: semaphore.NewWeighted(2 * fullSlots),
+		fullTranscript: semaphore.NewWeighted(fullSlots), pagedTranscript: semaphore.NewWeighted(int64(2 * max(4, readConnections))),
+		transcriptPages: responsecache.New[transcriptPageKey, transcriptPageBody](256, 16<<20),
 	}
 	api.Use(protectWrites())
 	api.GET("/mode", read(func(context.Context) (string, error) { return h.app.Mode(), nil }))

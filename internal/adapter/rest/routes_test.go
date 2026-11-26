@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 type fixtureApplication struct{ Application }
@@ -257,6 +259,14 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 		latest.Turns[0].Sequence != 2 || latest.NextBeforeSequence != 2 {
 		t.Fatalf("latest page: %+v", latest)
 	}
+	ctx, recorder := timing.WithRecorder(auth.WithUser(t.Context(), auth.User{ID: "alice"}))
+	request := httptest.NewRequestWithContext(ctx, http.MethodGet, Prefix+path, nil)
+	cached := decodeTranscript(t, serve(t, router, request, 200))
+	if !proto.Equal(cached, latest) || !slices.ContainsFunc(recorder.Metrics(), func(metric timing.Metric) bool {
+		return metric.Name == "transcript_response_cache_hit"
+	}) {
+		t.Fatalf("latest stable page did not return its cached representation: %+v", recorder.Metrics())
+	}
 	older := decodeTranscript(t, perform(t, router, "alice", "GET", path+"?beforeSequence=2", nil, 200))
 	if len(older.Turns) != 1 || older.Turns[0].Sequence != 1 || older.NextBeforeSequence != 0 {
 		t.Fatalf("older page: %+v", older)
@@ -295,6 +305,21 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 		if !bytes.Equal(raw, plain.Body.Bytes()) {
 			t.Fatal("compression changed the Protobuf representation")
 		}
+	}
+	ctx, recorder = timing.WithRecorder(auth.WithUser(t.Context(), auth.User{ID: "alice"}))
+	request = httptest.NewRequestWithContext(ctx, http.MethodGet, Prefix+path+"?paged=false", nil)
+	request.Header.Set("Accept-Encoding", "zstd")
+	cachedResponse := serve(t, router, request, 200)
+	if cachedResponse.Header().Get("Content-Encoding") != "zstd" ||
+		!slices.ContainsFunc(recorder.Metrics(), func(metric timing.Metric) bool {
+			return metric.Name == "transcript_response_cache_hit"
+		}) {
+		t.Fatalf("stable export did not reuse compressed response: %+v", recorder.Metrics())
+	}
+	perform(t, router, "alice", "DELETE", "/sessions/history", nil, http.StatusNoContent)
+	archived := decodeTranscript(t, perform(t, router, "alice", "GET", path+"?paged=false", nil, 200))
+	if archived.Session != nil || len(archived.Turns) != 0 {
+		t.Fatal("export cache served a transcript after archiving")
 	}
 }
 
