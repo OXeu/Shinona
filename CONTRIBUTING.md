@@ -43,45 +43,69 @@ Coordinate REST route and response changes with the clients in `web/src/features
 
 ## Performance benchmarks
 
-The [Benchmarks workflow](.github/workflows/benchmarks.yml) runs the core API baselines, core read load variants, and live SSH/Docker benchmarks on pushes to `main`, pull requests targeting `main`, and manual runs. The `go-bench` artifact contains the baseline and sandbox Go output. These benchmarks use one authenticated client over loopback and report mean latency in ns/op. Request timing includes reading and decoding the response. Account setup, fixture creation, and state reset between iterations are outside the timer.
+The [Benchmarks workflow](.github/workflows/benchmarks.yml) runs the core API, compression, load, SSH/Docker, and web benchmarks on pushes to `main`, pull requests targeting `main`, and manual runs. The `go-bench` artifact contains Go benchmark output, web measurements, and the combined Bencher Metric Format (BMF) JSON. Go benchmarks report `ns/op`, `B/op`, and `allocs/op`. The loopback HTTP benchmarks include response reads and client decoding where indicated. Account setup, fixture creation, and state resets run outside the timer.
 
 | Benchmark | API and fixture |
 | --- | --- |
 | `SessionsList` | Authenticated `GET /api/v1/sessions`, returning 30 sessions from 256 across four projects |
-| `SessionListPoll` | Full response, unchanged `304`, and a one-session rename delta against the same 256-session fixture. `body-B/op` measures the uncompressed response size. |
+| `SessionListPoll` | Full response, unchanged `304`, and a one-session rename delta against the same 256-session fixture. |
+| `SessionsListFiltered` | Switches between four project filters and starts each request with an empty list snapshot history. |
 | `WorkerScheduling` | Two 25 ms fixture turns in the same session or in separate accounts. `overlap-%` measures how many pairs execute concurrently. `start-us/op` measures the time from submission to the first turn starting. The same-session case verifies submission order. |
 | `Transcript` | HTTP transcript read with Zstandard negotiation and Protobuf decoding, using the default latest 30 turns from a 120-turn session |
 | `TranscriptServer` | Same transcript fixture through the authenticated HTTP handler with a counting response writer. It excludes loopback and client decoding and reports compressed response bytes as `wire-B/op`. |
-| `Send` / `Queue` | `POST /api/v1/sessions/{id}/turns` on an idle session and with an active turn, respectively. Timing ends at the submission response. |
+| `TranscriptCold` / `TranscriptWithImages` | A historical cursor bypasses the SQLite latest-page cache. A fresh router clears response and encoded-turn caches. The image case verifies attachment names on turns with roughly 360 KiB PNGs stored separately from transcript JSON. |
+| `TranscriptFullStream` | A 600-turn export exceeds the 512 KiB compressed-response cache limit. A probe verifies Protobuf completion and batch timing. Timed clients drain the compressed stream and the benchmark reports sampled `peak-heap-B`. |
+| `Attachment` | A Cold download loads the image from SQLite and validates the decoded PNG. A Hot download reuses the cached bytes and checks turn visibility. |
+| `AuthSession` | Authenticated lookups on a warm and an invalidated session cache. `InvalidateOwner` exercises 32 concurrent readers under the CI CPU setting while account updates invalidate their sessions. All three variants report p50 and p99. |
+| `LiveSync` / `LiveStream` | Full and one-turn incremental reconnects to `/api/v1/live`, plus verified text and tool-log suffix deltas fanned out to 1, 8, and 32 subscribers. |
+| `Send` / `Queue` | `POST /api/v1/sessions/{id}/turns` on an idle session and with an active turn, respectively. Timing ends at the submission response. `Queue` reports p50 and p99. |
 | `Steering` | The REST steering endpoint targeting a held turn in the real worker. The fixture agent verifies delivery outside the timer. |
 | `Revert` | The original revert operation through the REST endpoint, including the head check and returned draft. The fixture reverts three of 30 turns per request. |
-| `GitChanges` / `FileList` / `GitHistory` | REST workspace reads on an already-running project sandbox with a 40-file Git fixture, 12 commits, and two pending changes |
+| `GitChanges` / `FileList` / `GitHistory` | REST workspace reads on an already-running project sandbox with a 40-file Git fixture, 12 commits, and two pending changes. |
+| `WorkspacePreview` / `WorkspaceCommit` | Verify a file truncated to 16 KiB and a commit of a selected change. Each commit iteration restores the benchmark repository's original HEAD outside the timer. |
 | `Initialize` / `Recreate` / `Destroy` | REST project lifecycle operations. Initialize starts from an absent sandbox, and recreate and destroy start from a running sandbox. The SSH base image is already available on the host. |
 | `PTYRoundTrip` | A binary input frame through the connected terminal WebSocket until the shell's response arrives. Sandbox, shell, and WebSocket startup are outside the timer. |
+| `TerminalCreate` | Time from the create request to the first WebSocket status frame with `state: running`, reported as `ttfb-us/op`. |
 
 Before running locally, follow the repository's [temporary file instructions](AGENTS.md).
 
 ```sh
 mkdir -p .tmp
 export TMPDIR="$PWD/.tmp" TMP="$PWD/.tmp" TEMP="$PWD/.tmp" GOTMPDIR="$PWD/.tmp"
-go test -p 1 -cpu 2 -run '^$' -bench '^BenchmarkCoreAPI$' \
-  -benchmem -benchtime=500ms -count=1 ./cmd/shinona
+go test -p 1 -cpu 2 -run '^$' -bench '^Benchmark(CoreAPI|ZstdTranscriptEncoding)$' \
+  -benchmem -benchtime=1s -count=1 ./cmd/shinona ./internal/adapter/httpserver
 ```
 
-Core read load uses the same authenticated APIs. Each client issues its next request as soon as its previous response has been read and decoded. Clients warm up before the five-second measurement window and finish outstanding requests after it. Transcript clients cycle through four sessions. The load generator and server share a Go process with `GOMAXPROCS=2` in CI.
+Core load uses the same authenticated APIs. Readers warm up before each five-second measurement window, issue their next request after consuming the current response, and finish outstanding requests at the end of the window. The load generator and server share a Go process with `GOMAXPROCS=2` in CI.
 
 | Benchmark | Bencher variant parameters |
 | --- | --- |
 | `CoreAPI/SessionsList` | `concurrency` of 1, 4, 16, or 64 crossed with `sessions` of 256 or 2,000. Each poll still returns the latest 30 sessions. |
 | `CoreAPI/Transcript` | The same `concurrency` levels crossed with `page` of `latest` or `full`, with `turns` fixed at 200. The latest page returns 30 turns. The full response returns all 200. |
+| `CoreAPI/Mixed` | 4, 16, or 64 list and latest-transcript readers, with two writers updating a title and advancing a read marker every 20 ms and 35 ms. The writers target separate sessions owned by the same account as the readers. |
+| `CoreAPI/TranscriptFullStream` | 1 or 64 concurrent exports of the 600-turn fixture beyond the compressed cache limit. |
 
-Load results include mean, p50, and p99 latency in nanoseconds, plus throughput in completed requests per second. CI saves the raw BMF v1 report and test log in the `core-read-load` artifact. The load report selects BMF v1 explicitly so Bencher can filter variants by parameters and plot both latency percentiles on the latency measure.
+Load reports include mean, p50, and p99 latency in nanoseconds, completed requests per second, and wire bytes per read. `cache-hit-rate` measures hits in the HTTP transcript response cache. Mixed load also reports write latency and throughput and separate list and transcript read latencies. The test log records average `Server-Timing` phases, including stream trailers. CI saves the log and BMF v1 JSON in `core-read-load` and verifies variant parameters, measures, and percentiles before and after publishing.
 
-The `BenchmarkZstdTranscriptEncoding` codec benchmark in `internal/adapter/httpserver` compares Zstandard settings without HTTP or client decoding. The web production build limits the combined compressed Arrow frame assets to 480 KiB.
+The allocation, CPU, and GC pause totals are divided by completed requests, including writes in mixed load. They cover both client and server activity. `peak-heap` samples Go `HeapInuse` during load, and `heap-inuse` measures retained heap after two GCs. On Linux the benchmark measures process CPU with `getrusage` and resets `VmHWM` before sampling the process RSS high-water mark, which includes SQLite C allocations. Use `TranscriptServer` for handler-side allocation comparisons. The full streaming client drains bytes without building a decoded response in memory.
 
 ```sh
 GOMAXPROCS=2 SHINONA_BENCH_LOAD_OUTPUT="$PWD/.tmp/core-read-load.json" \
   go test -p 1 -count=1 -run '^TestCoreReadLoad$' -v ./cmd/shinona
+GOMAXPROCS=2 SHINONA_BENCH_IDLE_WAL=1 \
+  go test -p 1 -count=1 -run '^TestBenchmarkIdleWAL$' -v ./cmd/shinona
+```
+
+The opt-in idle WAL benchmark reports ten seconds of process CPU time and context switches. The CI codec benchmark compares Zstandard settings independently of HTTP. HTTP `wire-B/op` counts encoded response-body bytes and `body-B/op` counts decoded bytes. WebSocket wire metrics count server frames with framing and negotiated compression, excluding the HTTP upgrade.
+
+The web benchmarks measure the entry point and statically imported JavaScript and CSS, plus the three emitted Arrow frame assets. The raw total includes the precompressed Wasm file as emitted. The gzip total uses its existing size and gzips the JS and HTML separately, matching the production limit of 480 KiB. The Node cases time decoding a 200-turn Protobuf response and grouping message parts from the decoded turns.
+
+```sh
+cd web
+npm ci
+npm run build -- --manifest
+node bench/bundle-sizes.js
+node bench/session-paths.js
 ```
 
 The SSH fixture runs a dedicated loopback OpenSSH server with a generated key and a Docker image containing Bash and Git. It needs `sshd`, `sudo -n`, and access to Docker. On Ubuntu and Debian, initialize the system OpenSSH runtime directory with `sudo install -d -o root -g root -m 0755 /run/sshd` if it is missing. Alternatively, use a dedicated SSH/Docker host by setting `SHINONA_BENCH_SSH_ADDRESS`, `SHINONA_BENCH_SSH_USER`, `SHINONA_BENCH_SSH_KEY_PATH`, `SHINONA_BENCH_SSH_HOST_FINGERPRINT`, and `SHINONA_BENCH_SSH_IMAGE`, then run the same Go command without the SSH fixture script.
@@ -98,7 +122,9 @@ go test -p 1 -cpu 2 -run '^$' -bench '^BenchmarkSandboxAPI$/^e2b$' \
   -benchmem -benchtime=5x -count=1 ./cmd/shinona
 ```
 
-Set the `BENCHER_API_KEY` repository secret to a project key for [Shinona](https://bencher.dev/console/projects/shinona). Core and SSH results go to the `github-ubuntu-24.04-x64` testbed. Same-repository PR reports use `pr-<number>` with the target branch as their start point. Fork PRs and runs without a key still produce the Go artifact. To run E2B in Actions, configure the `SHINONA_BENCH_E2B_API_KEY` repository secret and the `SHINONA_BENCH_E2B_TEMPLATE` repository variable, then dispatch the workflow on `main` with `e2b` enabled. It produces a `go-bench-e2b` artifact and publishes to the separate `github-ubuntu-24.04-x64-e2b` testbed.
+Set the `BENCHER_API_KEY` repository secret to a project key for [Shinona](https://bencher.dev/console/projects/shinona). CI registers custom measures with units and publishes core, SSH, and web results to `github-ubuntu-24.04-x64`. Same-repository PR reports use `pr-<number>` with the target branch as their start point. Fork PRs and runs without a key still produce the artifacts. Bencher alerts on increases of 5% for wire bytes, 15% for allocated bytes, 10% for allocation counts, and 3% for gzip size after five samples. Mean latency alerts use a t-test. Tail latency and CPU are observational on shared runners. The Arrow gzip budget and report validation are enforced by CI.
+
+To run E2B in Actions, configure the `SHINONA_BENCH_E2B_API_KEY` repository secret and the `SHINONA_BENCH_E2B_TEMPLATE` repository variable, then dispatch the workflow on `main` with `e2b` enabled. It produces a `go-bench-e2b` artifact and publishes to the separate `github-ubuntu-24.04-x64-e2b` testbed.
 
 ## Session transfer schema
 

@@ -31,18 +31,25 @@ jobs:
       - name: Prepare benchmark directory
         run: |
           mkdir -p .tmp
+          find -P .tmp -mindepth 1 -depth ! -type d -amin +120 -mmin +120 -delete
+          find -P .tmp -mindepth 1 -depth -type d -empty -amin +120 -mmin +120 -delete
           for name in TMPDIR TMP TEMP GOTMPDIR; do
             printf '%s=%s/.tmp\n' "$name" "$GITHUB_WORKSPACE"
           done >> "$GITHUB_ENV"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Run core API benchmarks
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Run core API and compression benchmarks
         run: |
           set -o pipefail
           go test -p 1 -cpu 2 -run '^$' \
-            -bench '^BenchmarkCoreAPI$' -benchmem -benchtime=500ms -count=1 \
-            ./cmd/shinona | tee .tmp/go-bench.txt
+            -bench '^Benchmark(CoreAPI|ZstdTranscriptEncoding)$' -benchmem -benchtime=1s -count=1 \
+            ./cmd/shinona ./internal/adapter/httpserver | tee .tmp/go-bench.txt
       - name: Run live SSH sandbox API benchmarks
         run: |
           set -o pipefail
@@ -53,18 +60,34 @@ jobs:
           # Ubuntu's OpenSSH requires this directory even for a separate daemon.
           sudo install -d -o root -g root -m 0755 /run/sshd
           bash .github/scripts/benchmark-ssh.sh bash -e -c '
-            go test -p 1 -cpu 2 -run "^\$" -bench "^BenchmarkSandboxAPI\$/^ssh\$/^(FileList|GitChanges|GitHistory|PTYRoundTrip)\$" \
-              -benchmem -benchtime=500ms -count=1 ./cmd/shinona
-            go test -p 1 -cpu 2 -run "^\$" -bench "^BenchmarkSandboxAPI\$/^ssh\$/^(Initialize|Recreate|Destroy)\$" \
+            go test -p 1 -cpu 2 -run "^\$" -bench "^BenchmarkSandboxAPI\$/^ssh\$/^(FileList|GitChanges|GitHistory|WorkspacePreview|PTYRoundTrip)\$" \
+              -benchmem -benchtime=1s -count=1 ./cmd/shinona
+            go test -p 1 -cpu 2 -run "^\$" -bench "^BenchmarkSandboxAPI\$/^ssh\$/^(Initialize|Recreate|Destroy|WorkspaceCommit|TerminalCreate)\$" \
               -benchmem -benchtime=5x -count=1 ./cmd/shinona
           ' | tee -a .tmp/go-bench.txt
+      - name: Build web assets and measure session hot paths
+        working-directory: web
+        run: |
+          npm ci
+          npm run build -- --manifest
+          node bench/bundle-sizes.js > ../.tmp/web-sizes.json
+          node bench/session-paths.js > ../.tmp/web-bench.json
+      - name: Convert Go and web measurements to BMF
+        run: |
+          python3 .github/scripts/benchmark-metrics.py go .tmp/go-bench.txt > .tmp/go-bench.json
+          jq -s add .tmp/go-bench.json .tmp/web-sizes.json .tmp/web-bench.json > .tmp/benchmarks.json
       - uses: actions/upload-artifact@v7
         with:
           name: go-bench
-          path: .tmp/go-bench.txt
+          path: |
+            .tmp/go-bench.txt
+            .tmp/go-bench.json
+            .tmp/web-sizes.json
+            .tmp/web-bench.json
+            .tmp/benchmarks.json
           include-hidden-files: true
           if-no-files-found: error
-      - name: Run core read load variants
+      - name: Run core load variants
         id: core-read-load
         env:
           GOMAXPROCS: '2'
@@ -74,6 +97,7 @@ jobs:
           SHINONA_BENCH_LOAD_OUTPUT="$GITHUB_WORKSPACE/.tmp/core-read-load.json" \
             go test -p 1 -count=1 -run '^TestCoreReadLoad$' -v ./cmd/shinona | tee .tmp/core-read-load.txt
           echo "ended_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+          python3 .github/scripts/benchmark-metrics.py check-load --linux .tmp/core-read-load.json
       - uses: actions/upload-artifact@v7
         with:
           name: core-read-load
@@ -84,6 +108,14 @@ jobs:
           if-no-files-found: error
       - uses: bencherdev/bencher@b2484bc6734c8e6da4fad141bd13527a11da3988 # v0.6.17
         if: github.repository == 'OXeu/Shinona' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      - name: Register Bencher measures with units
+        if: github.repository == 'OXeu/Shinona' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
+        run: |
+          if [[ -n "$BENCHER_API_KEY" ]]; then
+            bash .github/scripts/benchmark-measures.sh
+          fi
       - name: Publish to Bencher
         if: github.repository == 'OXeu/Shinona' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         env:
@@ -104,10 +136,19 @@ jobs:
             options+=(--start-point "$GITHUB_BASE_REF" --ci-number "$PR_NUMBER")
           fi
 
+          thresholds=()
+          for criterion in wire-bytes-per-op:0.05 alloc-bytes-per-op:0.15 allocs-per-op:0.10 gzip-bytes:0.03; do
+            thresholds+=(--threshold-measure "${criterion%:*}" --threshold-test percentage
+              --threshold-min-sample-size 5 --threshold-max-sample-size 20
+              --threshold-upper-boundary "${criterion#*:}")
+          done
+          thresholds+=(--threshold-measure latency --threshold-test t_test
+            --threshold-min-sample-size 5 --threshold-max-sample-size 20 --threshold-upper-boundary 0.99)
+
           bencher run --project shinona --branch "$branch" --hash "$BENCHMARK_SHA" \
-            --testbed github-ubuntu-24.04-x64 --adapter go_bench --file .tmp/go-bench.txt \
-            --github-actions "$GITHUB_TOKEN" "${options[@]}"
-      - name: Publish core read load variants to Bencher
+            --testbed github-ubuntu-24.04-x64 --adapter json --file .tmp/benchmarks.json \
+            --github-actions "$GITHUB_TOKEN" "${thresholds[@]}" "${options[@]}"
+      - name: Publish core load variants to Bencher
         if: github.repository == 'OXeu/Shinona' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         env:
           BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
@@ -130,26 +171,20 @@ jobs:
           fi
 
           # The REST API can select BMF v1 per report on a project whose default is v0.
-          if ! report=$(jq -n --arg branch "$branch" --arg base "$base" --arg hash "$BENCHMARK_SHA" \
+          if ! jq -n --arg branch "$branch" --arg base "$base" --arg hash "$BENCHMARK_SHA" \
             --arg start "$STARTED_AT" --arg end "$ENDED_AT" --rawfile results .tmp/core-read-load.json '
               {bmf_version: 1, branch: $branch, hash: $hash, testbed: "github-ubuntu-24.04-x64",
                start_time: $start, end_time: $end, settings: {adapter: "json_v1"}, results: [$results]}
               + (if $base == "" then {} else {start_point: {branch: $base}} end)
             ' | curl --silent --show-error --fail-with-body --max-time 60 \
               -H "Authorization: Bearer $BENCHER_API_KEY" -H 'Content-Type: application/json' \
-              --data-binary @- https://api.bencher.dev/v0/projects/shinona/reports); then
-            printf '%s\n' "$report" >&2
+              --data-binary @- https://api.bencher.dev/v0/projects/shinona/reports > .tmp/bencher-load-response.json; then
+            cat .tmp/bencher-load-response.json >&2
             exit 1
           fi
-          expected=$(jq '[.[] | length] | add' .tmp/core-read-load.json)
-          report_uuid=$(jq -er --argjson expected "$expected" '
-            if .bmf_version == 1 and .parse_outcome == "parsed" and $expected > 0
-              and (.results[0] | length) == $expected
-              and all(.results[0][]; .variant.parameters.concurrency > 0 and (.measures | length) == 2)
-            then .uuid // error("The read load report has no UUID")
-            else error("Bencher did not parse all read load variants") end
-          ' <<< "$report")
-          echo "Benchmarked $expected read variants: https://bencher.dev/console/projects/shinona/reports/$report_uuid"
+          report_uuid=$(python3 .github/scripts/benchmark-metrics.py check-load --linux \
+            --published .tmp/bencher-load-response.json .tmp/core-read-load.json)
+          echo "Benchmarked load variants: https://bencher.dev/console/projects/shinona/reports/$report_uuid"
       - name: Run live E2B sandbox API benchmarks
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.e2b
         env:
@@ -162,11 +197,14 @@ jobs:
           go test -p 1 -cpu 2 -run '^$' \
             -bench '^BenchmarkSandboxAPI$/^e2b$' -benchmem -benchtime=5x -count=1 \
             ./cmd/shinona | tee .tmp/go-bench-e2b.txt
+          python3 .github/scripts/benchmark-metrics.py go .tmp/go-bench-e2b.txt > .tmp/go-bench-e2b.json
       - uses: actions/upload-artifact@v7
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.e2b
         with:
           name: go-bench-e2b
-          path: .tmp/go-bench-e2b.txt
+          path: |
+            .tmp/go-bench-e2b.txt
+            .tmp/go-bench-e2b.json
           include-hidden-files: true
           if-no-files-found: error
       - name: Publish E2B results to Bencher
@@ -179,4 +217,4 @@ jobs:
             exit 0
           fi
           bencher run --project shinona --branch "$GITHUB_REF_NAME" --hash "$GITHUB_SHA" \
-            --testbed github-ubuntu-24.04-x64-e2b --adapter go_bench --file .tmp/go-bench-e2b.txt
+            --testbed github-ubuntu-24.04-x64-e2b --adapter json --file .tmp/go-bench-e2b.json
