@@ -10,6 +10,7 @@ import UiIcon from '../../shared/ui/UiIcon.vue'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
 import UiMarkdown from '../../shared/ui/UiMarkdown'
 import { UiBox, UiButton, UiInline, UiTime } from '../../shared/ui/elements'
+import AgentActivityLabel from './AgentActivityLabel.vue'
 import AgentToolCall from './AgentToolCall.vue'
 import { activityCategories, activityIcons, hasSettled, messageChunks } from './agentMessageParts'
 import { formatCompactTokens } from './presentation'
@@ -45,26 +46,30 @@ const elapsed = computed(() => {
 })
 const displayedChunks = computed(() => chunks.value.map((chunk) => {
   if (chunk.kind !== 'process') return chunk
+  const active = !settled.value && chunk === chunks.value.at(-1)
   const summary = completed.value && chunk === lastProcess.value
-    ? { text: elapsed.value, icon: 'time-line' }
-    : activity(chunk.parts, !settled.value && chunk === chunks.value.at(-1))
-  return { ...chunk, summary }
+    ? { text: elapsed.value, icon: 'time-line', animationKey: '' }
+    : activity(chunk.parts, active)
+  return { ...chunk, summary, animate: active && props.turn.status === 'RUNNING' }
 }))
 
 function activity(parts: TurnPart[], active: boolean) {
   const categories = activityCategories(parts, active)
+  const category = categories[0] ?? 'thinking'
   const labels = categories.slice(0, 3).map((category) => t(`chat.activity.${category}`))
   const latest = parts.at(-1)
   const estimatedTokens = latest?.kind === 'thinking' ? latest.estimatedTokens : undefined
-  if (active && categories[0] === 'thinking' && estimatedTokens) {
+  if (active && category === 'thinking' && estimatedTokens) {
     return {
       icon: activityIcons.thinking,
       text: t('chat.activeThinkingTokens', { count: new Intl.NumberFormat(languageTag()).format(estimatedTokens) }),
+      animationKey: 'thinking-tokens',
     }
   }
   return {
-    icon: activityIcons[categories[0] ?? 'thinking'],
+    icon: activityIcons[category],
     text: active ? t('chat.activeActivity', { activity: labels[0] ?? '' }) : new Intl.ListFormat(languageTag()).format(labels),
+    animationKey: category,
   }
 }
 
@@ -109,12 +114,18 @@ async function copy() {
         <UiBox v-for="group in chunk.kind === 'process' ? [chunk] : []" :key="group.index">
           <UiButton
             class="agent-process-toggle"
+            :aria-label="group.summary.text"
             :aria-expanded="openGroups.has(group.index)"
             :aria-controls="processId + '-' + group.index"
             @click="toggleGroup(group.index)"
           >
             <UiIcon :name="group.summary.icon" />
-            {{ group.summary.text }}
+            <AgentActivityLabel
+              v-for="summary in group.animate ? [group.summary] : []"
+              :key="summary.animationKey"
+              :text="summary.text"
+            />
+            <UiInline :hidden="group.animate">{{ group.summary.text }}</UiInline>
             <UiIcon :name="openGroups.has(group.index) ? 'arrow-down-s-line' : 'arrow-right-s-line'" />
           </UiButton>
           <UiBox :id="processId + '-' + group.index" class="agent-process-member" :hidden="!openGroups.has(group.index)">
