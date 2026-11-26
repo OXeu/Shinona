@@ -13,25 +13,17 @@ import (
 func (r *ConversationStore) RevertTurn(ctx context.Context, ownerID, sessionID, turnID, expectedHeadID string, now time.Time) (run.RevertedTurn, error) {
 	var result run.RevertedTurn
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var session sessionRow
-		if err := withActivity(sessionScope(tx, ownerID)).Take(&session, "id = ?", sessionID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return run.ErrSession
-			}
-			return err
-		}
-		if session.HasActive {
-			return run.ErrActiveRun
-		}
-		var head row
-		err := conversationTurns(tx, ownerID, sessionID).Select("id").
-			Order("sequence DESC").Take(&head).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && head.ID != expectedHeadID) {
-			return run.ErrHistoryChanged
+		head, err := readTranscriptHead(tx, ownerID, sessionID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return run.ErrSession
 		}
 		if err != nil {
 			return err
 		}
+		if err := head.state().CheckRevert(expectedHeadID); err != nil {
+			return err
+		}
+		session := head.Session
 
 		var items [1]row
 		selected := &items[0]

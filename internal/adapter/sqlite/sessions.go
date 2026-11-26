@@ -310,19 +310,27 @@ func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitl
 			return err
 		}
 		if retry != nil {
-			var previous [1]row
-			err := conversationTurns(tx, item.OwnerID, item.SessionID).Select("id", "prompt", "payload").
-				Take(&previous[0], "id = ? AND sequence = ? AND status = ?", item.RetryOf, session.TurnCount, run.Failed).Error
+			var previous transcriptRow
+			err := conversationTurns(tx, item.OwnerID, item.SessionID).Select("id", "sequence", "status", "prompt", "payload").
+				Take(&previous, "id = ?", item.RetryOf).Error
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return run.ErrRetryTurn
 			}
 			if err != nil {
 				return err
 			}
-			if err := hydrateRunAttachments(tx, previous[:]); err != nil {
+			if err := describeSession(session).CheckRetry(previous.Run.Sequence, previous.Run.Status); err != nil {
 				return err
 			}
-			item.Prompt, item.Payload = previous[0].Prompt, previous[0].Payload
+			original, err := previous.turn()
+			if err != nil {
+				return err
+			}
+			records := [...]row{row(original)}
+			if err := hydrateRunAttachments(tx, records[:]); err != nil {
+				return err
+			}
+			item.Prompt, item.Payload = records[0].Prompt, records[0].Payload
 			item.Payload.Options = retry.Apply(item.Payload.Options)
 		}
 

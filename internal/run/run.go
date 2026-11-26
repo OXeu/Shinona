@@ -70,6 +70,14 @@ func (s Session) TitleAfterRemoval(remaining int) string {
 	return s.Title
 }
 
+// CheckRetry validates the visible turn against a session read in the same transaction.
+func (s Session) CheckRetry(sequence int, status Status) error {
+	if sequence != s.TurnCount || status != Failed {
+		return ErrRetryTurn
+	}
+	return nil
+}
+
 type SessionListSnapshot struct {
 	Revision int64
 	Projects []Project

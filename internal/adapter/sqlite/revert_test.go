@@ -2,12 +2,93 @@ package sqlite
 
 import (
 	"errors"
+	"fmt"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/OXeu/shinona/internal/run"
 )
+
+func TestConcurrentTurnEditsKeepAdmissionAndHistoryChecksAtomic(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "turn-edits.db")
+	var stores []*ConversationStore
+	for range 2 {
+		repo, err := Open(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = repo.Close() })
+		if len(stores) == 0 {
+			seedAccounts(t, repo, "owner")
+		}
+		stores = append(stores, repo.Conversations)
+	}
+	now := time.Now().UTC()
+	const owner, sessionID = "owner", "session"
+	if err := stores[0].CreateSession(ctx, run.Session{OwnerID: owner, ID: sessionID, Title: run.DefaultSessionTitle, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	item := run.Run{ID: "original", OwnerID: owner, SessionID: sessionID, Prompt: "Inspect the failure", Status: run.Queued, CreatedAt: now, UpdatedAt: now}
+	if _, err := stores[0].Enqueue(ctx, item, item.Prompt, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := stores[0].ClaimNext(ctx, now); err != nil || got == nil || got.ID != item.ID {
+		t.Fatalf("claim original = %+v, %v", got, err)
+	}
+	if err := stores[0].Complete(ctx, item.ID, run.Completion{Status: run.Failed, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	editConcurrently := func(expected error, edit func(int, *ConversationStore) error) {
+		t.Helper()
+		start := make(chan struct{})
+		results := make(chan error, len(stores))
+		for i, store := range stores {
+			go func() {
+				<-start
+				results <- edit(i, store)
+			}()
+		}
+		close(start)
+		first, second := <-results, <-results
+		if first != nil {
+			first, second = second, first
+		}
+		if first != nil || !errors.Is(second, expected) {
+			t.Fatalf("concurrent edits = %v and %v, want one success and %v", first, second, expected)
+		}
+	}
+	editConcurrently(run.ErrActiveRun, func(i int, store *ConversationStore) error {
+		retry := run.Run{ID: fmt.Sprintf("retry-%d", i), OwnerID: owner, SessionID: sessionID, RetryOf: item.ID,
+			Status: run.Queued, CreatedAt: now, UpdatedAt: now}
+		_, err := store.EnqueueRetry(ctx, retry, run.RetryOptions{})
+		return err
+	})
+	state, err := stores[0].TranscriptState(ctx, owner, sessionID)
+	if err != nil || state == nil || state.Session.TurnCount != 2 || !state.Session.Active {
+		t.Fatalf("retry did not become the single active head: %+v, %v", state, err)
+	}
+	if err := stores[0].StopQueued(ctx, owner, sessionID, state.HeadID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := stores[0].db.Exec("UPDATE runs SET payload = ? WHERE id = ?", "{invalid", state.HeadID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores[0].EnqueueRetry(ctx, run.Run{ID: "invalid-retry", OwnerID: owner, SessionID: sessionID, RetryOf: state.HeadID},
+		run.RetryOptions{}); !errors.Is(err, run.ErrRetryTurn) {
+		t.Fatalf("ineligible retry attempted to decode the payload: %v", err)
+	}
+	editConcurrently(run.ErrHistoryChanged, func(_ int, store *ConversationStore) error {
+		_, err := store.RevertTurn(ctx, owner, sessionID, item.ID, state.HeadID, now)
+		return err
+	})
+	state, err = stores[0].TranscriptState(ctx, owner, sessionID)
+	if err != nil || state == nil || state.HeadID != "" || state.Session.TurnCount != 0 || state.Session.Title != run.DefaultSessionTitle {
+		t.Fatalf("revert did not restore the empty history: %+v, %v", state, err)
+	}
+}
 
 func TestRevertTurnRestoresDraftAndRemovesLaterTurnsFromContext(t *testing.T) {
 	ctx := t.Context()
