@@ -91,6 +91,9 @@ func (r *Repository) RemoveProject(ctx context.Context, ownerID, id string) erro
 		if err := tx.Delete(&projectSandboxRow{}, "owner_id = ? AND project_id = ?", ownerID, id).Error; err != nil {
 			return err
 		}
+		if err := tx.Delete(&workspaceRootRow{}, "owner_id = ? AND project_id = ?", ownerID, id).Error; err != nil {
+			return err
+		}
 		return tx.Model(&sessionRow{}).Where("owner_id = ? AND project_id = ?", ownerID, id).
 			UpdateColumn("project_id", "").Error
 	})

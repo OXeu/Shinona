@@ -622,6 +622,7 @@ onUnmounted(() => {
           <template #end>
             <RightSidePanel
               :session-id="id"
+              :project-id="session?.projectId"
               :active="!!session?.active"
               :running-turn-id="runningTurnId"
               :visible="showPanel"

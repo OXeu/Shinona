@@ -28,24 +28,15 @@ func (r *handler) SetWorkspaceRoot(ctx context.Context, args struct {
 	Root      string
 }) (string, error) {
 	owner := auth.CurrentUser(ctx).ID
-	root := args.Root
-	// Validate the directory inside the live lease before saving the choice.
-	if root != "" && root != "." {
-		err := r.service.InspectWorkspace(ctx, owner, args.SessionID, func(ctx context.Context, ws sandbox.Workspace) error {
+	root, err := r.service.SetWorkspaceRoot(ctx, owner, args.SessionID, args.Root, func(ctx context.Context, root string) error {
+		return r.service.InspectWorkspace(ctx, owner, args.SessionID, func(ctx context.Context, ws sandbox.Workspace) error {
 			return workspace.New(ws).ResolveRoot(ctx, root)
 		})
-		if err != nil {
-			if errors.Is(err, workspace.ErrPath) {
-				return "", codedError{run.ErrWorkspaceRoot, "WORKSPACE_INVALID_ROOT"}
-			}
-			return "", r.workspaceError(err)
-		}
+	})
+	if errors.Is(err, workspace.ErrPath) || errors.Is(err, run.ErrWorkspaceRoot) {
+		return "", codedError{run.ErrWorkspaceRoot, "WORKSPACE_INVALID_ROOT"}
 	}
-	root, err := r.service.SetWorkspaceRoot(ctx, owner, args.SessionID, root)
-	if err != nil {
-		return "", r.apiError(err)
-	}
-	return root, nil
+	return root, r.workspaceError(err)
 }
 
 func (r *handler) WorkspaceChanges(ctx context.Context, args workspaceArgs) (workspace.Changes, error) {
@@ -99,8 +90,8 @@ func (r *handler) CommitWorkspace(ctx context.Context, args struct {
 
 type openWorkspace func(context.Context, string, string, func(context.Context, sandbox.Workspace) error) error
 
-// inWorkspace opens the session workspace scoped to the account's selected
-// directory, so changes, history, files, and commits stay within it.
+// inWorkspace opens the session workspace with the project's working directory
+// for Git operations. File browsing can use the underlying workspace directly.
 func inWorkspace[T any](ctx context.Context, r *handler, open openWorkspace, id string, use func(workspace.Repository, context.Context) (T, error)) (result T, err error) {
 	owner := auth.CurrentUser(ctx).ID
 	root, err := r.service.WorkspaceRoot(ctx, owner, id)

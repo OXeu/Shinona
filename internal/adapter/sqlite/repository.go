@@ -87,6 +87,9 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 			return nil, errors.Join(fmt.Errorf("SQLite journal mode is %q, expected WAL", journal), pool.Close())
 		}
 	}
+	if err := migrateWorkspaceRoots(db.WithContext(ctx)); err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
 	models := []any{&userRow{}, &instanceSettingsRow{}, &deletedAccountRow{}}
 	for _, table := range ownedAccountTables {
 		models = append(models, table)

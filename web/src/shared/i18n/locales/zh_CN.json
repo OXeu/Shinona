@@ -205,7 +205,7 @@
   "repository.commitFailed": "无法提交选中的变更。",
   "repository.committed": "已提交变更。",
   "repository.setRoot": "设为工作目录",
-  "repository.setRootHint": "将此目录用于变更、历史与提交。",
+  "repository.setRootHint": "将此目录用于本项目的变更、历史与提交。",
   "repository.currentRoot": "工作目录：{path}",
   "repository.rootSet": "工作目录已设为 {path}。",
   "repository.rootFailed": "无法设置工作目录。",

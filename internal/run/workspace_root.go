@@ -14,23 +14,31 @@ var ErrWorkspaceRoot = errors.New("select a folder inside the workspace")
 // maxWorkspaceRoot bounds the stored directory so the preference stays small.
 const maxWorkspaceRoot = 1024
 
-// WorkspaceRoot returns the directory a session uses for workspace changes and
-// history. An empty result selects the project workspace root.
+// WorkspaceRoot returns the working directory shared by the session's project.
+// An empty result selects the project workspace root.
 func (s *Service) WorkspaceRoot(ctx context.Context, owner, sessionID string) (string, error) {
 	return s.repo.WorkspaceRoot(ctx, owner, sessionID)
 }
 
 // SetWorkspaceRoot records the directory that changes, history, and commits use
-// for a session. An empty directory restores the project workspace root.
-func (s *Service) SetWorkspaceRoot(ctx context.Context, owner, sessionID, root string) (string, error) {
-	root = strings.TrimSpace(root)
+// for the session's project. An empty directory restores the workspace root.
+func (s *Service) SetWorkspaceRoot(ctx context.Context, owner, sessionID, root string, validate func(context.Context, string) error) (string, error) {
 	if root == "." {
 		root = ""
 	}
 	if root != "" && !validWorkspaceRoot(root) {
 		return "", ErrWorkspaceRoot
 	}
-	if err := s.repo.SetWorkspaceRoot(ctx, owner, sessionID, root); err != nil {
+	projectID, err := s.repo.SessionProject(ctx, owner, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if root != "" {
+		if err := validate(ctx, root); err != nil {
+			return "", err
+		}
+	}
+	if err := s.repo.SetWorkspaceRoot(ctx, owner, sessionID, projectID, root); err != nil {
 		return "", err
 	}
 	return root, nil

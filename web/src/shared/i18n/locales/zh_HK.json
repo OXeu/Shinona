@@ -205,7 +205,7 @@
   "repository.commitFailed": "未能提交已選取的變更。",
   "repository.committed": "已提交變更。",
   "repository.setRoot": "設為工作目錄",
-  "repository.setRootHint": "將此資料夾用於變更、記錄及提交。",
+  "repository.setRootHint": "將此資料夾用於本專案的變更、記錄及提交。",
   "repository.currentRoot": "工作目錄：{path}",
   "repository.rootSet": "工作目錄已設為 {path}。",
   "repository.rootFailed": "未能設定工作目錄。",

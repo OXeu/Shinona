@@ -120,8 +120,12 @@ func (r *Repository) LatestWorkspaceRun(ctx context.Context, ownerID, sessionID 
 }
 
 func (r *Repository) SessionProject(ctx context.Context, ownerID, sessionID string) (string, error) {
+	return sessionProject(r.read.WithContext(ctx), ownerID, sessionID)
+}
+
+func sessionProject(db *gorm.DB, ownerID, sessionID string) (string, error) {
 	var record sessionRow
-	err := sessionScope(r.read.WithContext(ctx), ownerID).Select("project_id").Take(&record, "id = ?", sessionID).Error
+	err := sessionScope(db, ownerID).Select("project_id").Take(&record, "id = ?", sessionID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", run.ErrSession
 	}

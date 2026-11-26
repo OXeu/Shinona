@@ -205,7 +205,7 @@
   "repository.commitFailed": "Could not commit the selected changes.",
   "repository.committed": "Changes committed.",
   "repository.setRoot": "Set as working directory",
-  "repository.setRootHint": "Use this folder for changes, history, and commits.",
+  "repository.setRootHint": "Use this folder for changes, history, and commits in this project.",
   "repository.currentRoot": "Working directory: {path}",
   "repository.rootSet": "Working directory set to {path}.",
   "repository.rootFailed": "Could not set the working directory.",

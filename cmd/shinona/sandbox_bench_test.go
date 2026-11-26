@@ -223,7 +223,7 @@ func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
 	if err != nil || result.ExitCode != 0 {
 		b.Fatalf("seed sandbox repository: %+v, %v", result, err)
 	}
-	if err := s.repo.SetWorkspaceRoot(ctx, s.owner, session, "benchmark-repo"); err != nil {
+	if err := s.repo.SetWorkspaceRoot(ctx, s.owner, session, s.spec.ProjectID, "benchmark-repo"); err != nil {
 		b.Fatal(err)
 	}
 	return session

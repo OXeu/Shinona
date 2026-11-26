@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 
 import { messageFor } from '../../shared/errors'
 import { HttpError } from '../../shared/http'
@@ -15,7 +15,7 @@ import WorkspaceChangesPanel from './WorkspaceChanges.vue'
 import { workspaceApi } from './workspaceApi'
 import type { GitCommit, WorkspaceChanges, WorkspaceEntry, WorkspaceList, WorkspacePreview } from './workspaceApi'
 
-const props = defineProps<{ sessionId?: string; active: boolean; runningTurnId?: string; visible: boolean }>()
+const props = defineProps<{ sessionId?: string; projectId?: string | null; active: boolean; runningTurnId?: string; visible: boolean }>()
 const tab = ref<'changes' | 'history' | 'files'>('changes')
 const tabs = computed(() => [
   { id: 'changes' as const, label: t('repository.changes'), icon: 'git-branch-line' },
@@ -28,8 +28,6 @@ const history = ref<WorkspaceList<GitCommit> | null>(null)
 const files = ref<WorkspaceList<WorkspaceEntry> | null>(null)
 const folder = ref('.')
 const root = ref('')
-// The saved root only changes from this panel, so one read per session suffices.
-const rootSession = ref('')
 const settingRoot = ref(false)
 const filter = ref('')
 const loading = ref(false)
@@ -80,29 +78,12 @@ async function load() {
   const { signal } = reading
   loading.value = true
   try {
-    if (rootSession.value !== session) {
-      const savedRoot = await workspaceApi.root(session, signal)
-      if (signal.aborted) return
-      root.value = savedRoot
-      rootSession.value = session
-    }
-    switch (tab.value) {
-      case 'changes': {
-        const result = await workspaceApi.changes(session, signal)
-        if (!signal.aborted) changes.value = result
-        break
-      }
-      case 'history': {
-        const result = await workspaceApi.history(session, signal)
-        if (!signal.aborted) history.value = result
-        break
-      }
-      case 'files': {
-        const result = await workspaceApi.directory(session, folder.value, signal)
-        if (!signal.aborted) files.value = result
-        break
-      }
-    }
+    await Promise.all([
+      workspaceApi.root(session, signal).then((savedRoot) => {
+        if (!signal.aborted) root.value = savedRoot
+      }),
+      loadTab(session, signal),
+    ])
   } catch (error) {
     if (signal.aborted) return
     if (error instanceof HttpError &&
@@ -114,6 +95,26 @@ async function load() {
     }
   } finally {
     if (!signal.aborted) loading.value = false
+  }
+}
+
+async function loadTab(session: string, signal: AbortSignal) {
+  switch (tab.value) {
+    case 'changes': {
+      const result = await workspaceApi.changes(session, signal)
+      if (!signal.aborted) changes.value = result
+      break
+    }
+    case 'history': {
+      const result = await workspaceApi.history(session, signal)
+      if (!signal.aborted) history.value = result
+      break
+    }
+    case 'files': {
+      const result = await workspaceApi.directory(session, folder.value, signal)
+      if (!signal.aborted) files.value = result
+      break
+    }
   }
 }
 
@@ -146,7 +147,7 @@ function openEntry(entry: WorkspaceEntry) {
 
 async function setAsWorkspace() {
   const session = props.sessionId
-  if (!session || props.active || mutating.value || loading.value || settingRoot.value) return
+  if (!session || folder.value === currentRoot.value || mutating.value || settingRoot.value) return
   const target = folder.value === '.' ? '' : folder.value
   settingRootRequest?.abort()
   settingRootRequest = new AbortController()
@@ -156,7 +157,6 @@ async function setAsWorkspace() {
     const result = await workspaceApi.setRoot(session, target, signal)
     if (signal.aborted) return
     root.value = result
-    rootSession.value = session
     notify.success(t('repository.rootSet', { path: rootLabel.value }))
     await load()
   } catch (error) {
@@ -185,7 +185,7 @@ async function commit(message: string, paths: string[]) {
   }
 }
 
-watch(() => props.sessionId, () => {
+watch([() => props.sessionId, () => props.projectId], () => {
   writing?.abort()
   settingRootRequest?.abort()
   settingRoot.value = false
@@ -197,14 +197,19 @@ watch(() => props.sessionId, () => {
   files.value = null
   folder.value = '.'
   root.value = ''
-  rootSession.value = ''
   filter.value = ''
 })
-watch([() => props.sessionId, () => props.active, () => props.runningTurnId, () => props.visible, tab, folder], load, { immediate: true })
+watch([() => props.sessionId, () => props.projectId, () => props.active, () => props.runningTurnId, () => props.visible, tab, folder], load, { immediate: true })
 watch(previewOpen, (value) => {
   if (!value) readingPreview?.abort()
 })
+function refreshOnFocus() {
+  if (props.visible && !mutating.value && !settingRoot.value) void load()
+}
+
+onMounted(() => window.addEventListener('focus', refreshOnFocus))
 onUnmounted(() => {
+  window.removeEventListener('focus', refreshOnFocus)
   clearTimeout(retry)
   reading?.abort()
   writing?.abort()
@@ -284,7 +289,7 @@ onUnmounted(() => {
           <UiButton
             class="repo-set-root"
             :hidden="folder === currentRoot"
-            :disabled="active || loading || mutating || settingRoot"
+            :disabled="mutating || settingRoot"
             :title="t('repository.setRootHint')"
             @click="setAsWorkspace"
           >
