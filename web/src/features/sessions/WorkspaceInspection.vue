@@ -17,10 +17,7 @@ const panel = useTemplateRef<{ $el: HTMLElement }>('panel')
 const preview = ref<WorkspacePreview | null>(null)
 const loading = ref(false)
 const error = ref('')
-const lines = computed(() => {
-  const text = preview.value?.text ?? ''
-  return props.inspection.diff && text.startsWith('diff --git ') ? diffLines(text) : []
-})
+const lines = computed(() => props.inspection.diff ? diffLines(preview.value?.text ?? '') : [])
 let reading: AbortController | undefined
 
 async function refresh() {

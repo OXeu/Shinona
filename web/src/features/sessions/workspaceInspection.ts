@@ -6,21 +6,23 @@ export interface WorkspaceInspection {
   revision?: string
 }
 
+const fileHeader = /^diff --(?:git|cc|combined) /u
+
 export function diffLines(text: string) {
+  if (!fileHeader.test(text)) return []
   const lines = text.split('\n')
   if (lines.at(-1) === '') lines.pop()
-  let inHunk = false
+  let parentCount = 0
   return lines.map((line) => {
-    let kind = ''
-    if (line.startsWith('diff --git ')) inHunk = false
-    if (line.startsWith('@@')) {
-      inHunk = true
-      kind = 'hunk'
-    } else if (inHunk && line.startsWith('+')) {
-      kind = 'addition'
-    } else if (inHunk && line.startsWith('-')) {
-      kind = 'deletion'
+    if (fileHeader.test(line)) parentCount = 0
+    const hunk = /^@{2,}(?= )/u.exec(line)
+    if (hunk) {
+      parentCount = hunk[0].length - 1
+      return { line, kind: 'hunk' }
     }
-    return { line, kind }
+    const markers = line.slice(0, parentCount)
+    if (markers.includes('+')) return { line, kind: 'addition' }
+    if (markers.includes('-')) return { line, kind: 'deletion' }
+    return { line, kind: '' }
   })
 }
