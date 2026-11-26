@@ -210,6 +210,7 @@
   "repository.rootSet": "Working directory set to {path}.",
   "repository.rootFailed": "Could not set the working directory.",
   "repository.rootOutside": "This folder is not inside the workspace.",
+  "chat.activateRichContent": "Load interactive view",
   "chat.conversation": "Conversation",
   "chat.firstPrompt": "Send the first prompt",
   "chat.start": "Start a conversation",

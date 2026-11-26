@@ -1,7 +1,13 @@
 let compiled: Promise<WebAssembly.Module> | undefined
 
 export function initializeArrowWasm(bytes: ArrayBuffer | undefined) {
-  if (bytes && !compiled) compiled = WebAssembly.compile(bytes)
+  if (bytes && !compiled) {
+    const pending = WebAssembly.compile(bytes)
+    compiled = pending
+    void pending.catch(() => {
+      if (compiled === pending) compiled = undefined
+    })
+  }
 }
 
 export function arrowWasmModule(): Promise<WebAssembly.Module> {

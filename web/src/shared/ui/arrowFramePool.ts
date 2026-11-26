@@ -4,7 +4,6 @@ import { request } from '../http'
 const maxFrames = 3
 const idleTimeout = 20_000
 const frames = new Set<Frame>()
-const waiting = new Set<() => void>()
 let parking: HTMLDivElement | undefined
 let sources: Promise<[string, ArrayBuffer]> | undefined
 
@@ -19,16 +18,20 @@ interface Frame {
   initialized: boolean
   busy: boolean
   timer?: number
+  revoke?: () => void
 }
 
 function loadSources() {
   return sources ??= Promise.all([
     request(assets.document).then(response => response.text()),
-    request(assets.wasm).then(response => {
-      // Some static servers mark .gz assets as encoded, so fetch decompresses them.
-      if (response.headers.get('Content-Encoding') === 'gzip') return response.arrayBuffer()
-      if (!response.body) throw new Error('Missing ArrowJS WebAssembly response.')
-      return new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()
+    request(assets.wasm).then(async response => {
+      const bytes = await response.arrayBuffer()
+      const header = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength))
+      // Static servers may send the asset as raw gzip or decode it at fetch.
+      if (header[0] === 0 && header[1] === 0x61 && header[2] === 0x73 && header[3] === 0x6d) return bytes
+      if (header[0] !== 0x1f || header[1] !== 0x8b) throw new Error('Invalid ArrowJS WebAssembly response.')
+      const body = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))
+      return new Response(body).arrayBuffer()
     }),
   ]).catch((error: unknown) => {
     sources = undefined
@@ -53,71 +56,77 @@ function createFrame(source: string) {
 }
 
 function discard(frame: Frame) {
+  window.clearTimeout(frame.timer)
+  frame.revoke = undefined
   frame.element.remove()
   frame.readyNow()
   frames.delete(frame)
 }
 
 function lease(frame: Frame, wasm: ArrayBuffer) {
+  let released = false
   function release(reuse: boolean) {
+    if (released) return
+    released = true
     const element = frame.element
     const slot = element.parentElement as FrameSlot | null
-    if (reuse && slot?.moveBefore && element.isConnected && frame.initialized) {
+    const target = element.contentWindow
+    if (reuse && slot?.moveBefore && element.isConnected && frame.initialized && target) {
       if (!parking) {
         parking = document.createElement('div')
         parking.hidden = true
         document.body.append(parking)
       }
-      element.contentWindow?.postMessage({ type: 'clear' }, '*')
+      target.postMessage({ type: 'clear' }, '*')
       const destination: FrameSlot = parking
       destination.moveBefore?.(element, null)
       frame.busy = false
+      frame.revoke = undefined
       frame.timer = window.setTimeout(() => discard(frame), idleTimeout)
     } else {
       discard(frame)
     }
-    waiting.values().next().value?.()
   }
   return {
     element: frame.element,
     ready: frame.ready,
     render(input: { source: Record<string, string>; theme: Record<string, string>; lang: string }, port: MessagePort) {
-      frame.element.contentWindow?.postMessage({ ...input, type: 'render', wasm: frame.initialized ? undefined : wasm }, '*', [port])
+      const target = frame.element.contentWindow
+      if (released || !target) {
+        port.close()
+        throw new Error('The ArrowJS frame is unavailable.')
+      }
+      target.postMessage({ ...input, type: 'render', wasm: frame.initialized ? undefined : wasm }, '*', [port])
       frame.initialized = true
     },
     release,
   }
 }
 
-export async function borrowArrowFrame(slot: FrameSlot, title: string, signal: AbortSignal) {
+export async function borrowArrowFrame(slot: FrameSlot, title: string, signal: AbortSignal, revoke: () => void, replace: boolean) {
   const [source, wasm] = await loadSources()
-  while (!signal.aborted) {
-    const idle = [...frames].find(frame => !frame.busy)
-    if (idle && slot.moveBefore) {
-      window.clearTimeout(idle.timer)
-      idle.busy = true
-      idle.element.title = title
-      slot.moveBefore(idle.element, null)
-      return lease(idle, wasm)
-    }
-    if (idle) {
-      window.clearTimeout(idle.timer)
-      discard(idle)
-    }
-    if (frames.size < maxFrames) {
-      const frame = createFrame(source)
-      frame.element.title = title
-      slot.append(frame.element)
-      return lease(frame, wasm)
-    }
-    await new Promise<void>(resolve => {
-      function wake() {
-        waiting.delete(wake)
-        signal.removeEventListener('abort', wake)
-        resolve()
-      }
-      signal.addEventListener('abort', wake, { once: true })
-      waiting.add(wake)
-    })
+  if (signal.aborted) return
+  let idle = [...frames].find(frame => !frame.busy)
+  if (!idle && frames.size >= maxFrames) {
+    if (!replace) return
+    frames.values().next().value?.revoke?.()
+    idle = [...frames].find(frame => !frame.busy)
   }
+  let frame: Frame
+  if (idle && slot.moveBefore) {
+    window.clearTimeout(idle.timer)
+    frames.delete(idle)
+    frames.add(idle)
+    frame = idle
+    slot.moveBefore(frame.element, null)
+  } else {
+    if (idle) discard(idle)
+    if (frames.size >= maxFrames) return
+    frame = createFrame(source)
+    slot.append(frame.element)
+  }
+  frame.busy = true
+  frame.element.title = title
+  frame.revoke = revoke
+  return lease(frame, wasm)
 }

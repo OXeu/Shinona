@@ -33,6 +33,9 @@ export function arrowFrame(): Plugin {
       const size = gzipSync(runtime).length + gzipSync(document).length + compressedWasm.length
       if (size > gzipBudget) throw new Error(`ArrowJS frame requires ${size} compressed bytes. Budget is ${gzipBudget}.`)
       return { runtime, document, wasm: compressedWasm }
+    }).catch((error: unknown) => {
+      assets = undefined
+      throw error
     })
   }
   return {
@@ -101,14 +104,20 @@ async function bundleRuntime() {
             'newQuickJSAsyncWASMModule(newVariant(RELEASE_ASYNC, { wasmModule: arrowWasmModule }))')
           // An uninterrupted guest evaluation or job queue must yield the UI thread.
           code = replaceOnce(code, 'runtime.setMaxStackSize(512 * 1024)',
-            'runtime.setMaxStackSize(512 * 1024)\n  runtime.setInterruptHandler(() => performance.now() > deadline)')
+            'runtime.setMaxStackSize(512 * 1024)\n  runtime.setInterruptHandler(() => performance.now() > (deadlines.get(runtime) ?? Infinity))')
+          code = replaceOnce(code, 'function flushPendingJobs(runtime: any, context: any) {',
+            'function flushPendingJobs(runtime: any, context: any) {\n  beginExecution(runtime)')
           code = replaceOnce(code, 'context.unwrapResult(runtime.executePendingJobs())',
-            'if (performance.now() > deadline) throw new Error("ArrowJS execution limit exceeded")\n    context.unwrapResult(runtime.executePendingJobs(1))')
+            'if (performance.now() > deadlines.get(runtime)) throw new Error("ArrowJS execution limit exceeded")\n    context.unwrapResult(runtime.executePendingJobs(1))')
+          code = replaceOnce(code, 'const result = await context.evalCodeAsync(code, fileName, { type: \'module\' })',
+            'beginExecution(runtime)\n  const result = await context.evalCodeAsync(code, fileName, { type: \'module\' })')
+          code = replaceOnce(code, 'const result = context.callFunction(callback, context.undefined, args)',
+            'beginExecution(runtime)\n      const result = context.callFunction(callback, context.undefined, args)')
           const setup = [
             'import { newVariant } from "quickjs-emscripten"',
             `import { arrowWasmModule } from ${JSON.stringify(wasmState)}`,
-            'let deadline = performance.now() + 750',
-            'setInterval(() => { deadline = performance.now() + 750 }, 100)',
+            'const deadlines = new WeakMap<object, number>()',
+            'function beginExecution(runtime: object) { deadlines.set(runtime, performance.now() + 750) }',
           ].join('\n')
           patched.add('execution')
           return { contents: setup + '\n' + code, loader: 'ts' }

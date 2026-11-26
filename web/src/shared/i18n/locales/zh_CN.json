@@ -210,6 +210,7 @@
   "repository.rootSet": "工作目录已设为 {path}。",
   "repository.rootFailed": "无法设置工作目录。",
   "repository.rootOutside": "此目录不在工作区内。",
+  "chat.activateRichContent": "加载交互视图",
   "chat.conversation": "对话",
   "chat.firstPrompt": "发送第一条提示",
   "chat.start": "开始对话",
