@@ -34,9 +34,14 @@ const groups: Partial<Record<string, { label: MessageKey; fields: Record<string,
 }
 const e2bFields: Record<string, MessageKey> = {
   e2bApiKey: 'settings.e2bKey', e2bTemplate: 'settings.e2bTemplate', e2bBaseUrl: 'settings.e2bBaseUrl',
+  e2bTimeout: 'sandbox.timeout',
 }
 const connectionFields: Record<string, MessageKey> = {
   e2bProxyUrl: 'settings.e2bProxy', e2bDomain: 'settings.e2bDomain',
+}
+const sshFields: Record<string, MessageKey> = {
+  sshAddress: 'settings.sshAddress', sshUser: 'settings.sshUser', sshKeyPath: 'settings.sshKeyPath',
+  sshHostFingerprint: 'settings.sshHostFingerprint', sshTemplate: 'sandbox.image',
 }
 const group = computed(() => groups[props.section])
 const drafts = reactive<Record<string, string | null>>({})
@@ -49,7 +54,13 @@ function labeledFields(labels: Record<string, MessageKey>) {
 }
 const displayedFields = computed(() => labeledFields(group.value?.fields ?? {}))
 const e2b = computed(() => props.section === 'sandbox' ? labeledFields(e2bFields) : [])
+const ssh = computed(() => props.section === 'sandbox' ? labeledFields(sshFields) : [])
 const connection = computed(() => props.section === 'sandbox' ? labeledFields(connectionFields) : [])
+const timeoutField = computed(() => props.fields.find((field) => field.key === 'e2bOnTimeout'))
+const timeoutOptions = computed(() => [
+  { value: 'pause', label: t('sandbox.pause') },
+  { value: 'kill', label: t('sandbox.kill') },
+])
 const modelsField = computed(() => props.fields.find((field) => field.key === 'modelId'))
 const selectedModel = computed(() => drafts.modelId === undefined ? modelsField.value?.value ?? '' : drafts.modelId ?? '')
 const fetching = ref(false)
@@ -121,7 +132,7 @@ function save() {
         @clear="updateDraft(field.key, '')"
         @reset="updateDraft(field.key, null)"
       />
-      <UiSection class="e2b-fields" :hidden="!e2b.length" :aria-label="t('sandbox.e2b')">
+      <UiSection class="provider-fields" :hidden="!e2b.length" :aria-label="t('sandbox.e2b')">
         <UiSubheading>{{ t('sandbox.e2b') }}</UiSubheading>
         <InstanceSettingField
           v-for="{ field, label } in e2b"
@@ -134,6 +145,22 @@ function save() {
           @clear="drafts[field.key] = ''"
           @reset="drafts[field.key] = null"
         />
+        <UiChoiceDropdown
+          :label="t('sandbox.onTimeout')"
+          :options="timeoutOptions"
+          :model-value="drafts.e2bOnTimeout === null ? '' : drafts.e2bOnTimeout || timeoutField?.value || 'pause'"
+          :placeholder="t('settings.useStartup')"
+          :disabled="saving || fetching"
+          @update:model-value="timeoutField && edit(timeoutField, $event)"
+        />
+        <UiButton
+          class="secondary-button"
+          :hidden="!timeoutField?.overridden || drafts.e2bOnTimeout === null"
+          :disabled="saving || fetching"
+          @click="updateDraft('e2bOnTimeout', null)"
+        >
+          {{ t('settings.useStartup') }}
+        </UiButton>
         <UiDisclosure class="connection-details">
           <template #summary>
             <UiIcon name="arrow-right-s-line" /> {{ t('settings.e2bConnection') }}
@@ -149,6 +176,19 @@ function save() {
             @reset="drafts[field.key] = null"
           />
         </UiDisclosure>
+      </UiSection>
+      <UiSection class="provider-fields" :hidden="!ssh.length" :aria-label="t('sandbox.ssh')">
+        <UiSubheading>{{ t('sandbox.ssh') }}</UiSubheading>
+        <InstanceSettingField
+          v-for="{ field, label } in ssh"
+          :key="field.key"
+          :field="field"
+          :label="t(label)"
+          :draft="drafts[field.key]"
+          :disabled="saving || fetching"
+          @edit="edit(field, $event)"
+          @reset="updateDraft(field.key, null)"
+        />
       </UiSection>
       <UiBox class="model-discovery" :hidden="section !== 'model'">
         <UiChoiceDropdown
@@ -181,8 +221,8 @@ function save() {
 </template>
 
 <style lang="less" scoped>
-.e2b-fields { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px; }
-.e2b-fields h2 { margin-bottom: 12px; }
+.provider-fields { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px; }
+.provider-fields h2 { margin-bottom: 12px; }
 .settings-field + .settings-field { margin-top: 12px; }
 .model-discovery:not([hidden]) { display: grid; gap: 8px; justify-items: start; margin-top: 12px; }
 .model-discovery :deep(.field) { width: 100%; }

@@ -11,6 +11,12 @@ export const router = createRouter({
     { path: '/login', name: 'login', component: () => import('../features/auth/LoginView.vue') },
     { path: '/', name: 'sessions', component: agent },
     { path: '/sessions/:id', name: 'session', props: true, component: agent },
+    {
+      path: '/projects/sandbox/:projectId?',
+      name: 'project-sandbox',
+      props: true,
+      component: () => import('../features/sessions/ProjectSandboxView.vue'),
+    },
     { path: '/pinned/:id', redirect: (to) => ({ name: 'session', params: { id: to.params.id } }) },
     { path: '/settings', name: 'settings', component: () => import('../features/sessions/SettingsView.vue') },
     { path: '/account', name: 'account', component: () => import('../features/auth/AccountView.vue') },

@@ -149,6 +149,10 @@ type Repository interface {
 	RecentSessions(ctx context.Context, ownerID string, projectID *string, limit int) ([]Session, error)
 	CreateProject(context.Context, Project) error
 	Projects(ctx context.Context, ownerID string) ([]Project, error)
+	Project(ctx context.Context, ownerID, id string) (Project, error)
+	ProjectSandboxConfig(ctx context.Context, ownerID, projectID string) (*ProjectSandboxConfig, error)
+	RememberProjectSandboxProvider(ctx context.Context, ownerID, projectID, provider string) error
+	SaveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config ProjectSandboxConfig) error
 	RenameProject(ctx context.Context, ownerID, id, name string) (Project, error)
 	RemoveProject(ctx context.Context, ownerID, id string) error
 	Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*Transcript, error)
@@ -187,6 +191,7 @@ type Target struct {
 	Name         string
 	Provider     sandbox.Provider
 	ResolveAgent func(context.Context, string) (Agent, error)
+	Defaults     ProjectSandboxConfig
 }
 
 type ResolveTarget func(name string) Target

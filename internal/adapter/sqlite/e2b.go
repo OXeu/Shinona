@@ -47,3 +47,8 @@ func (r *Repository) UpdateE2BCredentials(ctx context.Context, ownerID, projectI
 		Where("owner_id = ? AND project_id = ? AND endpoint = ? AND sandbox_id = ?", ownerID, projectID, endpoint, sandboxID).
 		UpdateColumn("credentials", credentials).Error
 }
+
+func (r *Repository) DeleteE2BSandbox(ctx context.Context, ownerID, projectID, endpoint, sandboxID string) error {
+	return r.db.WithContext(ctx).Delete(&e2bWorkspaceRow{},
+		"owner_id = ? AND project_id = ? AND endpoint = ? AND sandbox_id = ?", ownerID, projectID, endpoint, sandboxID).Error
+}

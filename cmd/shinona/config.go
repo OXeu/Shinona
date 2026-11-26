@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,8 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/e2b"
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/oidc"
+	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
+	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
@@ -46,19 +49,57 @@ func (e environment) value(key, fallback string) string {
 	return fallback
 }
 
-func sandboxProvider(values settings.Values, client *http.Client, store e2b.WorkspaceStore) (sandbox.Provider, error) {
+func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfig, client *http.Client, store e2b.WorkspaceStore) (sandbox.Provider, error) {
 	key := values[settings.E2BAPIKey]
 	if key == "" {
 		return nil, nil
 	}
 	boxes, err := e2b.New(e2b.Config{
-		APIKey: key, Template: values[settings.E2BTemplate], BaseURL: values[settings.E2BBaseURL],
+		APIKey: key, Template: defaults.Template, BaseURL: values[settings.E2BBaseURL],
 		ProxyURL: values[settings.E2BProxyURL], Domain: values[settings.E2BDomain],
+		Timeout: time.Duration(defaults.TimeoutSeconds) * time.Second, OnTimeout: defaults.OnTimeout,
 	}, client, store)
 	if err != nil {
 		return nil, settings.Invalid("INVALID_E2B_CONFIG", err.Error())
 	}
 	return boxes, nil
+}
+
+func e2bSandboxDefaults(values settings.Values) (run.ProjectSandboxConfig, error) {
+	config := run.ProjectSandboxConfig{Template: values[settings.E2BTemplate],
+		TimeoutSeconds: 300, OnTimeout: sandbox.TimeoutPause}
+	if config.Template == "" {
+		config.Template = "base"
+	}
+	if value := values[settings.E2BTimeout]; value != "" {
+		seconds, err := strconv.Atoi(value)
+		if err != nil || seconds < 1 || seconds > sandbox.MaxTimeoutSeconds {
+			return config, settings.Invalid("INVALID_E2B_TIMEOUT", "enter an E2B timeout between 1 and 86400 seconds")
+		}
+		config.TimeoutSeconds = seconds
+	}
+	if value := values[settings.E2BOnTimeout]; value != "" {
+		if value != sandbox.TimeoutPause && value != sandbox.TimeoutKill {
+			return config, settings.Invalid("INVALID_E2B_TIMEOUT", "the E2B timeout action must be pause or kill")
+		}
+		config.OnTimeout = value
+	}
+	return config, nil
+}
+
+func sshSandboxProvider(values settings.Values) (sandbox.Provider, error) {
+	if values[settings.SSHAddress] == "" {
+		return nil, nil
+	}
+	provider, err := sshsandbox.New(sshsandbox.Config{
+		Address: values[settings.SSHAddress], User: values[settings.SSHUser],
+		KeyPath: values[settings.SSHKeyPath], HostFingerprint: values[settings.SSHHostFingerprint],
+		Template: values[settings.SSHTemplate],
+	})
+	if err != nil {
+		return nil, settings.Invalid("INVALID_SSH_CONFIG", err.Error())
+	}
+	return provider, nil
 }
 
 func webOrigin(value string) (*url.URL, error) {

@@ -11,10 +11,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	sdk "github.com/eric642/e2b-go-sdk"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/OXeu/shinona/internal/adapter/envd"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -27,11 +27,13 @@ const (
 )
 
 type Config struct {
-	APIKey   string
-	Template string
-	BaseURL  string
-	ProxyURL string
-	Domain   string
+	APIKey    string
+	Template  string
+	BaseURL   string
+	ProxyURL  string
+	Domain    string
+	Timeout   time.Duration
+	OnTimeout string
 }
 
 type Provider struct {
@@ -41,7 +43,7 @@ type Provider struct {
 	dataScheme string
 	endpoint   string
 	store      WorkspaceStore
-	provision  sync.Mutex
+	provision  *semaphore.Weighted
 }
 
 // WorkspaceStore persists sandbox IDs and private data-plane credentials.
@@ -51,6 +53,7 @@ type WorkspaceStore interface {
 	// previousID is empty and the project has no workspace.
 	SaveE2BSandbox(ctx context.Context, ownerID, projectID, endpoint, previousID, sandboxID string, credentials []byte) (bool, error)
 	UpdateE2BCredentials(ctx context.Context, ownerID, projectID, endpoint, sandboxID string, credentials []byte) error
+	DeleteE2BSandbox(ctx context.Context, ownerID, projectID, endpoint, sandboxID string) error
 }
 
 type credentials struct {
@@ -73,6 +76,12 @@ func New(config Config, data *http.Client, store WorkspaceStore) (*Provider, err
 	}
 	if store == nil {
 		return nil, errors.New("E2B requires a project workspace store")
+	}
+	if config.Timeout == 0 {
+		config.Timeout = awakeWindow
+	}
+	if config.OnTimeout == "" {
+		config.OnTimeout = sandbox.TimeoutPause
 	}
 	scheme := "https"
 	if config.BaseURL != "" {
@@ -108,7 +117,10 @@ func New(config Config, data *http.Client, store WorkspaceStore) (*Provider, err
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{api: api, data: data, config: config, dataScheme: scheme, endpoint: strings.TrimRight(apiURL, "/"), store: store}, nil
+	return &Provider{
+		api: api, data: data, config: config, dataScheme: scheme,
+		endpoint: strings.TrimRight(apiURL, "/"), store: store, provision: semaphore.NewWeighted(1),
+	}, nil
 }
 
 func parseEndpoint(value string) (*url.URL, error) {
@@ -126,13 +138,15 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	if spec.Policy != sandbox.Shared {
 		return nil, sandbox.ErrPolicy
 	}
-	p.provision.Lock()
-	defer p.provision.Unlock()
+	if err := p.provision.Acquire(ctx, 1); err != nil {
+		return nil, err
+	}
+	defer p.provision.Release(1)
 	workspace, err := p.acquireProject(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
-	workspace.keepAwake(ctx, max(awakeWindow, spec.TTL))
+	workspace.keepAwake(ctx, p.timeout(spec))
 	return workspace, nil
 }
 
@@ -148,7 +162,24 @@ func (p *Provider) acquireProject(ctx context.Context, spec sandbox.Spec) (*proj
 	if !errors.Is(err, sandbox.ErrWorkspaceMissing) {
 		return workspace, err
 	}
+	if p.onTimeout(spec) == sandbox.TimeoutKill {
+		return p.createProject(ctx, spec, previous.id, "")
+	}
 	return p.recoverProject(ctx, spec, previous)
+}
+
+func (p *Provider) timeout(spec sandbox.Spec) time.Duration {
+	if spec.Timeout > 0 {
+		return spec.Timeout
+	}
+	return max(p.config.Timeout, spec.TTL)
+}
+
+func (p *Provider) onTimeout(spec sandbox.Spec) string {
+	if spec.OnTimeout != "" {
+		return spec.OnTimeout
+	}
+	return p.config.OnTimeout
 }
 
 func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
@@ -186,7 +217,7 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 	if p.config.BaseURL != "" {
 		connect = p.api.ConnectV1
 	}
-	box, err := connect(ctx, id, sdk.ConnectOptions{Timeout: max(awakeWindow, spec.TTL)})
+	box, err := connect(ctx, id, sdk.ConnectOptions{Timeout: p.timeout(spec)})
 	if err != nil {
 		if isGone(err) {
 			return nil, fmt.Errorf("%w: %w", sandbox.ErrWorkspaceMissing, err)
@@ -218,13 +249,16 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previousID, snapshot string) (*projectWorkspace, error) {
 	options := sdk.CreateOptions{
 		Template:               p.config.Template,
-		Timeout:                max(awakeWindow, spec.TTL),
+		Timeout:                p.timeout(spec),
 		IdempotencyKey:         spec.RunID,
-		Lifecycle:              &sdk.LifecycleOptions{OnTimeout: "pause"},
+		Lifecycle:              &sdk.LifecycleOptions{OnTimeout: p.onTimeout(spec)},
 		AllowInternetAccess:    true,
 		AllowInternetAccessSet: true,
 		// Some self-hosted runtimes issue the traffic token only for private ingress.
 		Network: &sdk.NetworkOptions{AllowPublicTraffic: new(false)},
+	}
+	if spec.Template != "" {
+		options.Template = spec.Template
 	}
 	if snapshot != "" {
 		options.Template = snapshot
@@ -326,4 +360,4 @@ func (p *Provider) dataPlane(box *sdk.Sandbox, tokens credentials) (*projectWork
 	return &projectWorkspace{Workspace: workspace, terminal: workspace, sandboxID: box.ID, refresh: box.RefreshTimeout}, nil
 }
 
-var _ sandbox.ProjectProvider = (*Provider)(nil)
+var _ sandbox.ManagedProjectProvider = (*Provider)(nil)

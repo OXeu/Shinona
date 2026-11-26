@@ -44,6 +44,15 @@ func (r *Repository) Projects(ctx context.Context, ownerID string) ([]run.Projec
 	return projects, nil
 }
 
+func (r *Repository) Project(ctx context.Context, ownerID, id string) (run.Project, error) {
+	var record projectRow
+	err := r.db.WithContext(ctx).Take(&record, "owner_id = ? AND id = ?", ownerID, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return run.Project{}, run.ErrProject
+	}
+	return run.Project(record), err
+}
+
 func (r *Repository) RenameProject(ctx context.Context, ownerID, id, name string) (run.Project, error) {
 	var project projectRow
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -78,6 +87,9 @@ func (r *Repository) RemoveProject(ctx context.Context, ownerID, id string) erro
 		}
 		if result.RowsAffected == 0 {
 			return run.ErrProject
+		}
+		if err := tx.Delete(&projectSandboxRow{}, "owner_id = ? AND project_id = ?", ownerID, id).Error; err != nil {
+			return err
 		}
 		return tx.Model(&sessionRow{}).Where("owner_id = ? AND project_id = ?", ownerID, id).
 			UpdateColumn("project_id", "").Error

@@ -10,6 +10,7 @@ type Query {
   modelSettings: [SettingField!]!
   mcpSettings: McpSettings!
   projects: [Project!]!
+  projectSandbox(projectId: ID!): ProjectSandbox!
   # Omit projectId for all projects. An empty ID selects the default project.
   sessions(projectId: ID): [SessionSummary!]!
   session(id: ID!): AgentSession
@@ -30,6 +31,10 @@ type Mutation {
   createProject(name: String!): Project!
   renameProject(id: ID!, name: String!): Project!
   removeProject(id: ID!): Boolean!
+  saveProjectSandbox(projectId: ID!, input: ProjectSandboxInput!): Boolean!
+  createProjectSandbox(projectId: ID!): Boolean!
+  destroyProjectSandbox(projectId: ID!): Boolean!
+  recreateProjectSandbox(projectId: ID!): Boolean!
   createSession(projectId: ID): SessionSummary!
   updateSession(id: ID!, title: String, pinned: Boolean): SessionSummary!
   archiveSession(id: ID!): Boolean!
@@ -108,6 +113,29 @@ type SandboxSettings {
 type Project {
   id: ID!
   name: String!
+}
+
+type ProjectSandbox {
+  project: Project!
+  config: ProjectSandboxConfig!
+  effective: ProjectSandboxConfig!
+  providers: [ProjectSandboxConfig!]!
+  sandboxId: String!
+  state: String!
+}
+
+type ProjectSandboxConfig {
+  provider: String!
+  template: String!
+  timeoutSeconds: Int!
+  onTimeout: String!
+}
+
+input ProjectSandboxInput {
+  provider: String!
+  template: String!
+  timeoutSeconds: Int!
+  onTimeout: String!
 }
 
 type SessionSummary {

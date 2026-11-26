@@ -15,8 +15,10 @@ import (
 
 type graphqlHTTP struct{ schema *gql.Schema }
 
+type responseControllerKey struct{}
+
 func (h graphqlHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := context.WithValue(r.Context(), responseControllerKey{}, http.NewResponseController(w))
 	var input struct {
 		Query         string         `json:"query"`
 		OperationName string         `json:"operationName"`

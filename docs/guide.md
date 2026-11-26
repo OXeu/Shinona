@@ -57,7 +57,9 @@ Drag the dividers or focus them and use the arrow keys to resize the navigation,
 
 Use the project selector to add a project or filter sessions. **All projects** includes recent sessions from every project in your account. Send a message from the welcome composer to create a session in the selected project, or in the default project when **All projects** is selected. Project names can contain up to 80 characters and must be unique within your account. Session search matches titles and project names.
 
-Use the menu next to a saved project to rename or remove it. Removing a project moves its sessions into the default project.
+Use the More menu beside a project to open **Manage sandbox**. The page shows the provider, the current status, and the sandbox ID when available. From there you can create, destroy, or recreate the workspace and set a provider and template for the project. E2B projects can also override their timeout and timeout action. Empty fields inherit the instance defaults. Changing the effective configuration destroys the current workspace, and the next use provisions a new one. Destroying or recreating a sandbox also closes its terminal shells. Conversation history stays in Shinona.
+
+Removing a named project moves its sessions into the default project. Use **Destroy sandbox** before removing a project if you want to clean up its provider workspace.
 
 The workspace panel has **Changes & Commit**, **Git History**, and **Files**. Workspace inspection is available between turns. The agent or terminal provisions the project workspace on first use. Files supports folders and read-only UTF-8 previews. The Git panels use a repository at the selected workspace folder and support diffs, the latest 40 commits, and a local commit of selected paths. Unrelated staged changes stay staged.
 
@@ -96,13 +98,13 @@ To attach the configured OAuth provider to an existing password account, sign in
 
 Grant the first super administrator role with `shinona grant-admin USER_ID`. Super administrators can open **User management** from the avatar menu to search accounts, create password users, grant or revoke administrator access, and disable or re-enable other users. A disabled account loses its login sessions and keeps its projects and conversation history.
 
-An administrator can permanently delete another account from the same menu. This removes its projects, conversations, settings, and sign-in credentials from Shinona and stops its active turn and terminal shells. Sandboxes and snapshots retained by E2B are managed on E2B. When OAuth account creation is available, a deleted or disconnected OAuth identity can sign in again as a new account.
+An administrator can permanently delete another account from the same menu. This removes its projects, conversations, settings, and sign-in credentials from Shinona and stops its active turn and terminal shells. Retained workspaces and snapshots can be cleaned up through their provider. When OAuth account creation is available, a deleted or disconnected OAuth identity can sign in again as a new account.
 
 ## Sandboxes
 
-E2B shares one sandbox per account and project across sessions and turns. The optional **Terminal** panel sits below the chat. Drag the divider or focus it and use the arrow keys to resize. Each tab runs an independent interactive Bash shell in the project workspace. A conversation supports up to eight tabs, and an account supports up to 32. Shinona keeps shells detached when the panel is hidden or the browser disconnects.
+E2B and SSH share one sandbox per account and project across sessions and turns. Shinona uses E2B as the instance default when both providers are configured. A project keeps its assigned provider until you switch it from **Manage sandbox**. The optional **Terminal** panel sits below the chat. Drag the divider or focus it and use the arrow keys to resize. Each tab runs an independent interactive Bash shell in the project workspace. A conversation supports up to eight tabs, and an account supports up to 32. Shinona keeps shells detached when the panel is hidden or the browser disconnects.
 
-Each browser remembers the active tab and panel visibility by conversation and restores up to 256 KiB of recent output per tab. Closing a tab ends its shell. Archiving a conversation closes its tabs. Tabs live in the Shinona process and depend on the current E2B sandbox.
+Each browser remembers the active tab and panel visibility by conversation and restores up to 256 KiB of recent output per tab. Closing a tab ends its shell. Archiving a conversation closes its tabs. Tabs live in the Shinona process and depend on the current project sandbox.
 
 Forward `/api/terminal/v1/` and `/api/terminal/v1` through the reverse proxy. Preserve the WebSocket upgrade and browser `Origin` for `/api/terminal/v1/connect`.
 
@@ -133,11 +135,9 @@ Each account can configure up to 16 MCP servers. Server URLs must omit embedded 
 
 Configure the E2B API key in **Settings → Sandbox**. The E2B template defaults to `base`. The template must contain the `user` account and `/home/user`. Outbound access follows the E2B project or self-hosted network configuration. Shinona requests private ingress to obtain a traffic access token on self-hosted runtimes that issue credentials for private sandbox URLs. [E2B network controls](https://e2b.dev/resources/run-ai-generated-code-safely)
 
-Shinona saves the sandbox ID and its private data-plane tokens in SQLite for each account, project, and E2B control plane. Sessions without a named project use the account's default workspace. Every turn or workspace inspection reconnects to the saved ID and requests a five-minute active window. During a turn or while the terminal is open, Shinona renews the window once a minute, subject to the provider's runtime limits. When the window expires, E2B pauses the sandbox with its filesystem and memory preserved. [E2B sandbox persistence](https://e2b.dev/docs/sandbox/persistence)
+Shinona saves the sandbox ID and its private data-plane tokens in SQLite for each account, project, and E2B control plane. Sessions without a named project use the account's default workspace. Configure the fallback active window and expiration action under **Settings → Sandbox** with **Timeout in seconds** and **On timeout**. Their startup values are `SHINONA_E2B_TIMEOUT` (300 seconds) and `SHINONA_E2B_ON_TIMEOUT` (`pause`). Each project can override either value. Shinona requests this window when connecting or creating a sandbox and renews it during turns and active terminal sessions. E2B runtime limits still apply. On expiration, **Pause** preserves the filesystem and memory, and **Kill** terminates the sandbox. The action is set when the sandbox is created. [E2B sandbox persistence](https://e2b.dev/docs/sandbox/persistence)
 
-Self-hosted deployments need to support auto-pause and the sandbox connect endpoint. If E2B reports a saved sandbox is gone, the next turn tries to restore an existing snapshot of that sandbox. If no usable snapshot exists or snapshot listing is unsupported, Shinona provisions a clean workspace from the configured template. Recovery uses snapshots already stored by E2B and can only restore files captured in them. Temporary outages and authentication errors leave the saved workspace association in place. [E2B snapshots](https://e2b.dev/docs/sandbox/snapshots)
-
-Removing a project in Shinona leaves its sandbox in E2B for manual cleanup. The project's sessions then use the default project workspace. Changing the template applies to newly provisioned sandboxes.
+Self-hosted deployments need to support the sandbox connect endpoint and auto-pause if **Pause** is selected. With **Pause**, when E2B reports that a saved sandbox is gone, the next turn tries to restore an existing snapshot. If none is usable or snapshot listing is unsupported, Shinona provisions a clean workspace from the configured template. With **Kill**, the next turn after expiration provisions directly from the template. Temporary outages and authentication errors leave the saved workspace association in place. [E2B snapshots](https://e2b.dev/docs/sandbox/snapshots)
 
 For a self-hosted deployment, configure the endpoints as follows.
 
@@ -146,6 +146,12 @@ For a self-hosted deployment, configure the endpoints as follows.
 - For a separate header-routed envd proxy, set `SHINONA_E2B_PROXY_URL`, for example `http://127.0.0.1:3002`.
 
 Shinona authenticates data-plane calls with the sandbox credentials returned by E2B, including the traffic token for private ingress. The E2B SDK equivalents `E2B_API_URL`, `E2B_SANDBOX_URL`, and `E2B_DOMAIN` also work. [E2B self-hosted runtime configuration](https://github.com/e2b-dev/runtime/blob/main/DEV-LOCAL.md)
+
+### SSH
+
+Use a dedicated Linux SSH host with Docker and a user that can run the Docker CLI there. In **Settings → Sandbox → SSH**, enter the host and port, SSH user, private key path on the Shinona server, and the verified SHA256 fingerprint of the SSH host key. The private key must be readable by Shinona and usable without a passphrase. The corresponding startup variables are listed in [.env.example](../.env.example).
+
+The SSH provider creates one container per account and project and starts commands in `/workspace`. It keeps the container when a run or SSH connection ends. The default Docker image is `buildpack-deps:bookworm-scm`. Custom images need `/bin/sh`, `sleep`, `setsid`, and standard file utilities. Install Bash for terminals and Bash tools, and Git for the repository panel.
 
 ## Session transfer
 

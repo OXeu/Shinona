@@ -20,7 +20,6 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/mcp"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
-	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
@@ -51,7 +50,8 @@ type runtimeConfig struct {
 	values    settings.Values
 	oauth     httpauth.OAuthProvider
 	mailer    auth.VerificationMailer
-	provider  sandbox.Provider
+	e2b       run.Target
+	ssh       run.Target
 }
 
 func newRuntime(ctx context.Context, repo runtimeRepository, environment environment) (*runtime, error) {
@@ -107,12 +107,33 @@ func (r *runtime) prepare(ctx context.Context, overrides settings.Values, previo
 			mailer = email.Resend{APIKey: mailKey, From: from, Client: r.accountHTTP}
 		}
 	}
-	provider, err := sandboxProvider(values, r.client, r.repo)
+	e2bDefaults, err := e2bSandboxDefaults(values)
 	if err != nil {
 		return nil, err
 	}
+	e2bTarget := run.Target{Name: "e2b", Defaults: e2bDefaults, ResolveAgent: r.resolveAgent}
+	sshTarget := run.Target{Name: "ssh", ResolveAgent: r.resolveAgent,
+		Defaults: run.ProjectSandboxConfig{Template: values[settings.SSHTemplate]}}
+	if previous != nil && sameSettings(previous.values, values, settings.E2BAPIKey, settings.E2BTemplate,
+		settings.E2BBaseURL, settings.E2BProxyURL, settings.E2BDomain, settings.E2BTimeout, settings.E2BOnTimeout) {
+		e2bTarget.Provider = previous.e2b.Provider
+	} else {
+		e2bTarget.Provider, err = e2bSandboxProvider(values, e2bDefaults, r.client, r.repo)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if previous != nil && sameSettings(previous.values, values, settings.SSHAddress, settings.SSHUser,
+		settings.SSHKeyPath, settings.SSHHostFingerprint, settings.SSHTemplate) {
+		sshTarget.Provider = previous.ssh.Provider
+	} else {
+		sshTarget.Provider, err = sshSandboxProvider(values)
+		if err != nil {
+			return nil, err
+		}
+	}
 	var oauth httpauth.OAuthProvider
-	if previous != nil && sameOAuth(previous.values, values) {
+	if previous != nil && sameSettings(previous.values, values, settings.OAuthIssuer, settings.OAuthClientID, settings.OAuthSecret) {
 		oauth = previous.oauth
 	} else {
 		oauth, err = oauthProvider(ctx, values, r.origin)
@@ -121,11 +142,11 @@ func (r *runtime) prepare(ctx context.Context, overrides settings.Values, previo
 		}
 	}
 	return &runtimeConfig{overrides: overrides, values: values,
-		provider: provider, oauth: oauth, mailer: mailer}, nil
+		e2b: e2bTarget, ssh: sshTarget, oauth: oauth, mailer: mailer}, nil
 }
 
-func sameOAuth(a, b settings.Values) bool {
-	for _, key := range []settings.Key{settings.OAuthIssuer, settings.OAuthClientID, settings.OAuthSecret} {
+func sameSettings(a, b settings.Values, keys ...settings.Key) bool {
+	for _, key := range keys {
 		if a[key] != b[key] {
 			return false
 		}
@@ -134,14 +155,23 @@ func sameOAuth(a, b settings.Values) bool {
 }
 
 func (r *runtime) Resolve(name string) run.Target {
-	if name != "" && name != "e2b" {
+	config := r.current.Load()
+	switch name {
+	case "":
+		if config.e2b.Provider == nil && config.ssh.Provider != nil {
+			return config.ssh
+		}
+		return config.e2b
+	case "e2b":
+		return config.e2b
+	case "ssh":
+		return config.ssh
+	default:
 		return run.Target{Name: name}
 	}
-	config := r.current.Load()
-	return run.Target{Name: "e2b", Provider: config.provider, ResolveAgent: r.resolveAgent}
 }
 
-func (*runtime) Mode() string { return "e2b" }
+func (r *runtime) Mode() string { return r.Resolve("").Name }
 
 func (r *runtime) Host() string { return r.origin.Host }
 

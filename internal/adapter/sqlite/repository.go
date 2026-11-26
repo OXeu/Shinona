@@ -77,6 +77,9 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 	if err := protectDeletedAccounts(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
+	if err := retainE2BProjectProviders(db.WithContext(ctx)); err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
 	// Existing queued E2B turns should start with the project workspace after upgrade.
 	if err := db.WithContext(ctx).Model(&row{}).Where("backend = ? AND policy = ? AND status = ?", "e2b", sandbox.Fresh, run.Queued).
 		UpdateColumn("policy", sandbox.Shared).Error; err != nil {

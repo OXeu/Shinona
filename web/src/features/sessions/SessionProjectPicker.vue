@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, useId } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { messageFor } from '../../shared/errors'
 import { t } from '../../shared/i18n'
@@ -15,6 +16,7 @@ import { useSessionStore } from './sessionStore'
 
 const props = defineProps<{ hideAll?: boolean; compact?: boolean }>()
 const store = useSessionStore()
+const router = useRouter()
 const inputId = useId()
 const request = new AbortController()
 const dialogOpen = ref(false)
@@ -92,17 +94,30 @@ onUnmounted(() => request.abort())
             <UiIcon class="menu-tail" name="check-line" :hidden="item.id !== selectedId" />
           </UiButton>
           <UiMoreMenu
-            v-for="project in item.project ? [item.project] : []"
-            :key="project.id"
-            :label="t('projects.actionsFor', { name: project.name })"
+            :hidden="item.id === null"
+            :label="t('projects.actionsFor', { name: item.name })"
             boundary=".project-options"
             :disabled="saving"
           >
             <template #default="{ close: closeActions }">
-              <UiButton class="menu-item" @click="closeActions(); close(true); openDialog('rename', project)">
+              <UiButton
+                class="menu-item"
+                @click="closeActions(); close(); router.push({ name: 'project-sandbox', params: { projectId: item.id ?? '' } })"
+              >
+                <UiIcon name="terminal-box-line" /> {{ t('sandbox.manage') }}
+              </UiButton>
+              <UiButton
+                class="menu-item"
+                :hidden="!item.project"
+                @click="closeActions(); close(true); openDialog('rename', item.project)"
+              >
                 <UiIcon name="edit-line" /> {{ t('projects.rename') }}
               </UiButton>
-              <UiButton class="menu-item danger" @click="closeActions(); close(true); openDialog('remove', project)">
+              <UiButton
+                class="menu-item danger"
+                :hidden="!item.project"
+                @click="closeActions(); close(true); openDialog('remove', item.project)"
+              >
                 <UiIcon name="delete-bin-line" /> {{ t('projects.remove') }}
               </UiButton>
             </template>

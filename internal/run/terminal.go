@@ -41,8 +41,10 @@ const (
 // TerminalSession owns a shell independently of any browser connection.
 type TerminalSession struct {
 	tab     TerminalTab
+	project string
 	ctx     context.Context
 	cancel  context.CancelFunc
+	done    chan struct{}
 	mu      sync.Mutex
 	shell   sandbox.Terminal
 	state   TerminalState
@@ -52,10 +54,11 @@ type TerminalSession struct {
 }
 
 type terminalRegistry struct {
-	mu     sync.Mutex
-	tabs   map[sessionKey][]*TerminalSession
-	closed bool
-	active sync.WaitGroup
+	mu      sync.Mutex
+	tabs    map[sessionKey][]*TerminalSession
+	running map[*TerminalSession]string
+	closed  bool
+	active  sync.WaitGroup
 }
 
 func (s *Service) Terminals(ctx context.Context, owner, id string) ([]TerminalTab, error) {
@@ -73,6 +76,10 @@ func (s *Service) Terminals(ctx context.Context, owner, id string) ([]TerminalTa
 }
 
 func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string) (TerminalTab, error) {
+	if !s.projectMu.TryLock() {
+		return TerminalTab{}, ErrWorkspaceBusy
+	}
+	defer s.projectMu.Unlock()
 	pool := &s.terminals
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
@@ -80,11 +87,11 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 		return TerminalTab{}, ErrTerminalUnavailable
 	}
 	// Archive commits before it removes the tabs under this same mutex.
-	projectID, err := s.repo.SessionProject(ctx, owner, id)
+	spec, target, err := sessionSandbox(ctx, s.repo, s.resolve, owner, id, "", true)
 	if err != nil {
 		return TerminalTab{}, err
 	}
-	provider, ok := s.resolve("").Provider.(sandbox.ProjectProvider)
+	provider, ok := target.Provider.(sandbox.ProjectProvider)
 	if !ok {
 		return TerminalTab{}, ErrTerminalUnavailable
 	}
@@ -106,19 +113,26 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 	shellCtx, cancel := context.WithCancel(lifetime)
 	entry := &TerminalSession{
 		tab: TerminalTab{ID: s.newID(), Number: number}, ctx: shellCtx, cancel: cancel,
-		state: TerminalStarting, changed: make(chan struct{}),
+		project: spec.ProjectID, state: TerminalStarting, changed: make(chan struct{}), done: make(chan struct{}),
 	}
 	if pool.tabs == nil {
 		pool.tabs = make(map[sessionKey][]*TerminalSession)
+		pool.running = make(map[*TerminalSession]string)
 	}
 	pool.tabs[key] = append(tabs, entry)
+	pool.running[entry] = owner
 	pool.active.Add(1)
+	spec.RunID = entry.tab.ID
 	go func() {
 		defer pool.active.Done()
+		defer func() {
+			pool.mu.Lock()
+			defer pool.mu.Unlock()
+			delete(pool.running, entry)
+			close(entry.done)
+		}()
 		defer cancel()
-		err := entry.run(provider, sandbox.Spec{
-			RunID: entry.tab.ID, OwnerID: owner, SessionID: id, ProjectID: projectID, Policy: sandbox.Shared,
-		})
+		err := entry.run(provider, spec)
 		entry.mu.Lock()
 		defer entry.mu.Unlock()
 		entry.state = TerminalExited
@@ -130,6 +144,26 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 		entry.signal()
 	}()
 	return entry.tab, nil
+}
+
+func (p *terminalRegistry) stopProject(ctx context.Context, owner, project string) error {
+	p.mu.Lock()
+	var closing []*TerminalSession
+	for entry, account := range p.running {
+		if account == owner && entry.project == project {
+			entry.cancel()
+			closing = append(closing, entry)
+		}
+	}
+	p.mu.Unlock()
+	for _, entry := range closing {
+		select {
+		case <-entry.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func (s *Service) Terminal(ctx context.Context, owner, id, terminalID string) (*TerminalSession, error) {

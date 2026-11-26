@@ -137,6 +137,9 @@ func (h handler) respondError(w http.ResponseWriter, err error) {
 	case errors.Is(err, run.ErrTerminalLimit):
 		w.Header().Set("X-Shinona-Error-Code", "TERMINAL_LIMIT")
 		http.Error(w, "Terminal limit reached", http.StatusConflict)
+	case errors.Is(err, run.ErrWorkspaceBusy):
+		w.Header().Set("X-Shinona-Error-Code", "WORKSPACE_BUSY")
+		http.Error(w, "Workspace is busy", http.StatusConflict)
 	case errors.Is(err, run.ErrTerminalUnavailable):
 		http.Error(w, "Terminal unavailable", http.StatusServiceUnavailable)
 	default:

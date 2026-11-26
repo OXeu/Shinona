@@ -30,7 +30,7 @@ func (w *projectWorkspace) keepAwake(ctx context.Context, window time.Duration) 
 	w.done = make(chan struct{})
 	go func() {
 		defer close(w.done)
-		ticker := time.NewTicker(renewEvery)
+		ticker := time.NewTicker(min(renewEvery, window/3))
 		defer ticker.Stop()
 		for {
 			select {

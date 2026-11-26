@@ -123,8 +123,15 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 		return Result{}, err
 	}
 	item := active.item
-	target := w.resolve(item.Backend)
-	if !slices.Contains(target.policies(item.OwnerID), item.Policy) {
+	spec, target, err := sessionSandbox(ctx, w.repo, w.resolve, item.OwnerID, item.SessionID, item.Backend, true)
+	if err != nil {
+		return Result{}, fmt.Errorf("load workspace project: %w", err)
+	}
+	spec.RunID = item.ID
+	if _, ok := target.Provider.(sandbox.ProjectProvider); !ok {
+		spec.Policy = item.Policy
+	}
+	if !slices.Contains(target.policies(item.OwnerID), spec.Policy) {
 		return Result{}, ErrPolicy
 	}
 	agent, err := target.ResolveAgent(ctx, item.OwnerID)
@@ -134,15 +141,6 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 	history, err := w.repo.History(ctx, item, 0)
 	if err != nil {
 		return Result{}, fmt.Errorf("load conversation: %w", err)
-	}
-	spec := sandbox.Spec{
-		RunID: item.ID, OwnerID: item.OwnerID, SessionID: item.SessionID, Policy: item.Policy,
-	}
-	if _, ok := target.Provider.(sandbox.ProjectProvider); ok {
-		spec.ProjectID, err = w.repo.SessionProject(ctx, item.OwnerID, item.SessionID)
-		if err != nil {
-			return Result{}, fmt.Errorf("load workspace project: %w", err)
-		}
 	}
 	workspace, err := target.Provider.Acquire(ctx, spec)
 	if err != nil {

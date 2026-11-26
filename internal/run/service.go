@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -15,6 +16,7 @@ type Service struct {
 	resolve   ResolveTarget
 	newID     func() string
 	controls  *Controls
+	projectMu sync.Mutex
 	terminals terminalRegistry
 }
 
@@ -74,7 +76,10 @@ func (s *Service) RetryTurn(ctx context.Context, owner, sessionID, turnID string
 }
 
 func (s *Service) enqueue(ctx context.Context, item Run, firstTitle string, queue bool, retry *RetryOptions) (Run, error) {
-	target := s.resolve("")
+	_, target, err := sessionSandbox(ctx, s.repo, s.resolve, item.OwnerID, item.SessionID, "", false)
+	if err != nil {
+		return Run{}, err
+	}
 	settings, err := s.settingsFor(ctx, item.OwnerID, target)
 	if err != nil {
 		return Run{}, err

@@ -27,6 +27,9 @@ type Spec struct {
 	ProjectID string
 	Policy    Policy
 	TTL       time.Duration
+	Template  string
+	Timeout   time.Duration
+	OnTimeout string
 }
 
 // Provider acquires a workspace for a run. It owns cleanup if acquisition fails.
@@ -49,6 +52,34 @@ type ProjectProvider interface {
 	Provider
 	OpenProject(ctx context.Context, spec Spec) (Workspace, error)
 }
+
+type ProjectState string
+
+const (
+	ProjectNone        ProjectState = "NONE"
+	ProjectRunning     ProjectState = "RUNNING"
+	ProjectPaused      ProjectState = "PAUSED"
+	ProjectStopped     ProjectState = "STOPPED"
+	ProjectMissing     ProjectState = "MISSING"
+	ProjectUnavailable ProjectState = "UNAVAILABLE"
+)
+
+type ProjectStatus struct {
+	ID    string
+	State ProjectState
+}
+
+type ManagedProjectProvider interface {
+	ProjectProvider
+	ProjectStatus(context.Context, Spec) (ProjectStatus, error)
+	DestroyProject(context.Context, Spec) error
+}
+
+const (
+	TimeoutPause      = "pause"
+	TimeoutKill       = "kill"
+	MaxTimeoutSeconds = 86400
+)
 
 // Workspace owns the lease until Close. Paths are relative to its working
 // directory. A workspace directory is a convenience, not an isolation boundary.

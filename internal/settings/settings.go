@@ -12,20 +12,27 @@ import (
 type Key string
 
 const (
-	OAuthIssuer   Key = "oauthIssuer"
-	OAuthClientID Key = "oauthClientId"
-	OAuthSecret   Key = "oauthClientSecret"
-	MailAPIKey    Key = "mailApiKey"
-	MailFrom      Key = "mailFrom"
-	ModelBaseURL  Key = "modelBaseUrl"
-	MCPServers    Key = "mcpServers"
-	ModelID       Key = "modelId"
-	ModelAPIKey   Key = "modelApiKey"
-	E2BAPIKey     Key = "e2bApiKey"
-	E2BTemplate   Key = "e2bTemplate"
-	E2BBaseURL    Key = "e2bBaseUrl"
-	E2BProxyURL   Key = "e2bProxyUrl"
-	E2BDomain     Key = "e2bDomain"
+	OAuthIssuer        Key = "oauthIssuer"
+	OAuthClientID      Key = "oauthClientId"
+	OAuthSecret        Key = "oauthClientSecret"
+	MailAPIKey         Key = "mailApiKey"
+	MailFrom           Key = "mailFrom"
+	ModelBaseURL       Key = "modelBaseUrl"
+	MCPServers         Key = "mcpServers"
+	ModelID            Key = "modelId"
+	ModelAPIKey        Key = "modelApiKey"
+	E2BAPIKey          Key = "e2bApiKey"
+	E2BTemplate        Key = "e2bTemplate"
+	E2BBaseURL         Key = "e2bBaseUrl"
+	E2BProxyURL        Key = "e2bProxyUrl"
+	E2BDomain          Key = "e2bDomain"
+	E2BTimeout         Key = "e2bTimeout"
+	E2BOnTimeout       Key = "e2bOnTimeout"
+	SSHAddress         Key = "sshAddress"
+	SSHUser            Key = "sshUser"
+	SSHKeyPath         Key = "sshKeyPath"
+	SSHHostFingerprint Key = "sshHostFingerprint"
+	SSHTemplate        Key = "sshTemplate"
 )
 
 type definition struct {
@@ -52,6 +59,13 @@ var definitions = []definition{
 	{key: E2BBaseURL, env: "SHINONA_E2B_BASE_URL", alias: "E2B_API_URL"},
 	{key: E2BProxyURL, env: "SHINONA_E2B_PROXY_URL", alias: "E2B_SANDBOX_URL"},
 	{key: E2BDomain, env: "SHINONA_E2B_DOMAIN", alias: "E2B_DOMAIN"},
+	{key: E2BTimeout, env: "SHINONA_E2B_TIMEOUT", fallback: "300"},
+	{key: E2BOnTimeout, env: "SHINONA_E2B_ON_TIMEOUT", fallback: "pause"},
+	{key: SSHAddress, env: "SHINONA_SSH_ADDRESS"},
+	{key: SSHUser, env: "SHINONA_SSH_USER"},
+	{key: SSHKeyPath, env: "SHINONA_SSH_KEY_PATH"},
+	{key: SSHHostFingerprint, env: "SHINONA_SSH_HOST_FINGERPRINT"},
+	{key: SSHTemplate, env: "SHINONA_SSH_TEMPLATE", fallback: "buildpack-deps:bookworm-scm"},
 }
 
 type Values map[Key]string

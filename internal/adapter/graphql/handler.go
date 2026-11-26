@@ -147,6 +147,8 @@ func (e codedError) Extensions() map[string]any {
 
 func (r *resolver) apiError(err error) error {
 	switch {
+	case err == nil:
+		return nil
 	case errors.Is(err, run.ErrInvalidPrompt):
 		return codedError{err, "INVALID_PROMPT"}
 	case errors.Is(err, run.ErrImages):
@@ -167,6 +169,12 @@ func (r *resolver) apiError(err error) error {
 		return codedError{err, "PROJECT_NAME_EXISTS"}
 	case errors.Is(err, run.ErrProject):
 		return codedError{err, "PROJECT_NOT_FOUND"}
+	case errors.Is(err, run.ErrProjectSandboxConfig):
+		return codedError{err, "INVALID_PROJECT_SANDBOX"}
+	case errors.Is(err, run.ErrSandboxProvider):
+		return codedError{err, "SANDBOX_PROVIDER_UNAVAILABLE"}
+	case errors.Is(err, run.ErrWorkspaceBusy):
+		return codedError{err, "WORKSPACE_BUSY"}
 	case errors.Is(err, run.ErrActiveRun):
 		return codedError{err, "ACTIVE_TURN"}
 	case errors.Is(err, run.ErrHistoryChanged):

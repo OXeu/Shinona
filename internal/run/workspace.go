@@ -80,12 +80,8 @@ func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(
 	defer s.controls.leaseMu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
 	defer cancel()
-	turn, err := s.repo.LatestWorkspaceRun(ctx, owner, id)
-	if err != nil {
-		return err
-	}
 	open := timing.Start(ctx, "workspace_acquire")
-	ws, err := s.openWorkspace(ctx, owner, id, turn)
+	ws, err := s.openWorkspace(ctx, owner, id)
 	open()
 	if err != nil {
 		return err
@@ -104,33 +100,31 @@ func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(
 	return use(ctx, ws)
 }
 
-func (s *Service) openWorkspace(ctx context.Context, owner, id string, turn *Run) (sandbox.Workspace, error) {
-	spec := sandbox.Spec{RunID: s.newID(), OwnerID: owner, SessionID: id, Policy: sandbox.Shared, TTL: 30 * time.Second}
-	backend := ""
-	if turn != nil {
-		backend = turn.Backend
+func (s *Service) openWorkspace(ctx context.Context, owner, id string) (sandbox.Workspace, error) {
+	spec, target, err := sessionSandbox(ctx, s.repo, s.resolve, owner, id, "", false)
+	if errors.Is(err, ErrSession) {
+		return nil, ErrWorkspaceUnavailable
 	}
-	provider := s.resolve(backend).Provider
-	if provider == nil {
-		provider = s.resolve("").Provider
+	if err != nil {
+		return nil, err
 	}
-	if project, ok := provider.(sandbox.ProjectProvider); ok {
-		projectID, err := s.repo.SessionProject(ctx, owner, id)
-		if errors.Is(err, ErrSession) {
-			return nil, ErrWorkspaceUnavailable
-		}
-		if err != nil {
-			return nil, err
-		}
-		spec.ProjectID = projectID
+	spec.RunID = s.newID()
+	if project, ok := target.Provider.(sandbox.ProjectProvider); ok {
 		ws, err := project.OpenProject(ctx, spec)
 		if errors.Is(err, sandbox.ErrWorkspaceMissing) {
 			return nil, ErrWorkspaceUnavailable
 		}
 		return ws, err
 	}
-	retained, ok := provider.(sandbox.RetainedProvider)
-	if !ok || turn == nil || backend == "" || turn.Policy != sandbox.Shared {
+	turn, err := s.repo.LatestWorkspaceRun(ctx, owner, id)
+	if err != nil {
+		return nil, err
+	}
+	if turn == nil || turn.Backend == "" || turn.Policy != sandbox.Shared {
+		return nil, ErrWorkspaceUnavailable
+	}
+	retained, ok := s.resolve(turn.Backend).Provider.(sandbox.RetainedProvider)
+	if !ok {
 		return nil, ErrWorkspaceUnavailable
 	}
 	return retained.OpenRetained(ctx, spec)
