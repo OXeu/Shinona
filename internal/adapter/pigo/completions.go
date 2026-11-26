@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sky-valley/pi/ai"
@@ -27,10 +28,18 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 ) *ai.AssistantMessageEventStream {
 	request, cancel := context.WithCancelCause(ctx)
 	timer := time.AfterFunc(e.completionIdle, func() { cancel(run.ErrModelIdle) })
+	var idleMu sync.Mutex
 	resetIdle := func() {
+		idleMu.Lock()
+		defer idleMu.Unlock()
 		if timer.Stop() {
 			timer.Reset(e.completionIdle)
 		}
+	}
+	stopIdle := func() {
+		idleMu.Lock()
+		defer idleMu.Unlock()
+		timer.Stop()
 	}
 
 	opts := *options
@@ -64,7 +73,7 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 	output := ai.NewAssistantMessageEventStream()
 	go func() {
 		defer cancel(nil)
-		defer timer.Stop()
+		defer stopIdle()
 		defer output.End()
 		for event := range source.Events() {
 			switch event.Type {
