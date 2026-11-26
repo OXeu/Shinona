@@ -88,18 +88,31 @@ func (r Repository) Workspace() sandbox.Workspace { return r.workspace }
 // scoped joins a path relative to the scoped directory.
 func (r Repository) scoped(name string) string { return path.Join(r.root, name) }
 
-// prefix is Git's --show-prefix for the scoped directory.
-func (r Repository) prefix() string {
-	if r.root == "" {
-		return ""
+// workTree reports the scoped directory relative to the top of its Git work
+// tree. The prefix is empty when the selected directory is the work tree top,
+// which happens when a project keeps its repository in a workspace subfolder.
+// ErrRepository reports a directory outside every work tree.
+func (r Repository) workTree(ctx context.Context) (string, error) {
+	result, err := r.git(ctx, "rev-parse", "--is-inside-work-tree", "--show-prefix")
+	if err != nil {
+		return "", err
 	}
-	return r.root + "/"
+	if result.ExitCode != 0 {
+		return "", ErrRepository
+	}
+	lines := strings.Split(strings.TrimRight(result.Stdout, "\n"), "\n")
+	if strings.TrimSpace(lines[0]) != "true" {
+		return "", ErrRepository
+	}
+	if len(lines) < 2 {
+		return "", nil
+	}
+	return strings.TrimSpace(lines[1]), nil
 }
 
-// relative converts a repository-root path to the scoped directory. The second
-// result is false when the path falls outside the scope.
-func (r Repository) relative(name string) (string, bool) {
-	prefix := r.prefix()
+// relative converts a work-tree path to the scoped directory. The second result
+// is false when the path falls outside the scope.
+func relative(prefix, name string) (string, bool) {
 	if prefix == "" {
 		return name, true
 	}
@@ -116,18 +129,13 @@ func (r Repository) git(ctx context.Context, args ...string) (sandbox.Result, er
 }
 
 func (r Repository) requireGit(ctx context.Context) error {
-	result, err := r.git(ctx, "rev-parse", "--show-prefix")
-	if err != nil {
-		return err
-	}
-	if result.ExitCode != 0 || strings.TrimSpace(result.Stdout) != r.prefix() {
-		return ErrRepository
-	}
-	return nil
+	_, err := r.workTree(ctx)
+	return err
 }
 
 func (r Repository) Changes(ctx context.Context) (Changes, error) {
-	if err := r.requireGit(ctx); err != nil {
+	prefix, err := r.workTree(ctx)
+	if err != nil {
 		return Changes{}, err
 	}
 	branch, err := r.git(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
@@ -163,11 +171,11 @@ func (r Repository) Changes(ctx context.Context) (Changes, error) {
 		// Status reports paths from the repository root. Convert them to the
 		// scoped directory and drop anything the pathspec let through anyway.
 		var ok bool
-		if entry.Path, ok = r.relative(entry.Path); !ok {
+		if entry.Path, ok = relative(prefix, entry.Path); !ok {
 			continue
 		}
 		if entry.Original != "" {
-			if entry.Original, ok = r.relative(entry.Original); !ok {
+			if entry.Original, ok = relative(prefix, entry.Original); !ok {
 				entry.Original = ""
 			}
 		}
