@@ -50,8 +50,10 @@ func sshFixtureProvider(t *testing.T, cleanup time.Duration, handle func(ssh.Cha
 			if err != nil {
 				return
 			}
-			handle(channel, requests)
-			_ = channel.Close()
+			go func() {
+				defer func() { _ = channel.Close() }()
+				handle(channel, requests)
+			}()
 		}
 	}()
 	return &Provider{address: listener.Addr().String(), cleanup: cleanup, dial: (&net.Dialer{}).DialContext, client: &ssh.ClientConfig{

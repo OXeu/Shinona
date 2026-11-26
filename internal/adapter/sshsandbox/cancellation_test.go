@@ -2,8 +2,11 @@ package sshsandbox
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,12 +18,12 @@ import (
 )
 
 func TestSSHCommandsAndTerminalsStopWhenTransportStalls(t *testing.T) {
-	for _, name := range []string{"command", "watchdog command", "terminal cancellation", "terminal close deadline"} {
+	for _, name := range []string{"command", "watchdog command", "terminal cancellation", "terminal close", "terminal close deadline"} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 			defer cancel()
 			const cleanup = 100 * time.Millisecond
-			workspace, transport, started := sshCancellationWorkspace(t, ctx, cleanup)
+			workspace, transport, started, guardExited := sshCancellationWorkspace(t, ctx, cleanup)
 			result := make(chan error, 1)
 			turn, stop := context.WithCancel(ctx)
 			defer stop()
@@ -48,12 +51,15 @@ func TestSSHCommandsAndTerminalsStopWhenTransportStalls(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("SSH command did not start")
 			}
-			transport.stalled.Store(true)
-			if name == "terminal close deadline" {
+			transport.stalled.Store(name != "terminal close")
+			switch name {
+			case "terminal close":
+				go func() { result <- terminal.Close(ctx) }()
+			case "terminal close deadline":
 				closeCtx, stopClose := context.WithTimeout(ctx, cleanup/2)
 				defer stopClose()
 				go func() { result <- terminal.Close(closeCtx) }()
-			} else {
+			default:
 				if terminal != nil {
 					go func() {
 						_, err := terminal.Read(make([]byte, 8))
@@ -70,6 +76,9 @@ func TestSSHCommandsAndTerminalsStopWhenTransportStalls(t *testing.T) {
 				if name == "terminal close deadline" && !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("terminal close returned %v", err)
 				}
+				if name == "terminal close" && err != nil {
+					t.Fatalf("terminal close returned %v", err)
+				}
 				if name == "terminal cancellation" && err == nil {
 					t.Fatal("stalled terminal read returned without an error")
 				}
@@ -79,6 +88,13 @@ func TestSSHCommandsAndTerminalsStopWhenTransportStalls(t *testing.T) {
 			if !workspace.discard.Load() {
 				t.Fatal("stalled transport could be returned to the idle pool")
 			}
+			if terminal != nil {
+				select {
+				case <-guardExited:
+				case <-ctx.Done():
+					t.Fatal("terminal watchdog channel was not closed")
+				}
+			}
 		})
 	}
 }
@@ -86,7 +102,7 @@ func TestSSHCommandsAndTerminalsStopWhenTransportStalls(t *testing.T) {
 func TestSSHReadCancellationKeepsResponsiveSharedTransport(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	workspace, _, started := sshCancellationWorkspace(t, ctx, time.Second)
+	workspace, _, started, _ := sshCancellationWorkspace(t, ctx, time.Second)
 	workspace.shared = true
 	request, stop := context.WithCancel(ctx)
 	defer stop()
@@ -116,10 +132,54 @@ func TestSSHReadCancellationKeepsResponsiveSharedTransport(t *testing.T) {
 	}
 }
 
+func TestSSHTerminalSetupPreservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	requested := make(chan struct{})
+	provider := sshFixtureProvider(t, 50*time.Millisecond, func(_ ssh.Channel, requests <-chan *ssh.Request) {
+		for request := range requests {
+			if request.Type == "pty-req" {
+				close(requested)
+				continue
+			}
+			_ = request.Reply(false, nil)
+		}
+	})
+	workspace, err := provider.connect(ctx, sandbox.Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = workspace.Close(t.Context()) })
+	lifetime, stop := context.WithCancel(ctx)
+	defer stop()
+	result := make(chan error, 1)
+	go func() {
+		terminal, err := workspace.OpenTerminal(lifetime, sandbox.TerminalSize{Cols: 80, Rows: 24})
+		if terminal != nil {
+			_ = terminal.Close(ctx)
+		}
+		result <- err
+	}()
+	select {
+	case <-requested:
+	case <-ctx.Done():
+		t.Fatal("terminal setup did not request a PTY")
+	}
+	stop()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled terminal setup returned %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("terminal setup did not stop after cancellation")
+	}
+}
+
 func TestSSHSharedSessionOpenStopsAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	workspace, transport, _ := sshCancellationWorkspace(t, ctx, 50*time.Millisecond)
+	workspace, transport, _, _ := sshCancellationWorkspace(t, ctx, 50*time.Millisecond)
 	workspace.shared = true
 	transport.stalled.Store(true)
 	request, stop := context.WithCancel(ctx)
@@ -170,16 +230,23 @@ func (c *stalledSSHTransport) Close() error {
 	return c.Conn.Close()
 }
 
-func sshCancellationWorkspace(t *testing.T, ctx context.Context, cleanup time.Duration) (*workspace, *stalledSSHTransport, <-chan struct{}) {
+func sshCancellationWorkspace(t *testing.T, ctx context.Context, cleanup time.Duration) (*workspace, *stalledSSHTransport, <-chan struct{}, <-chan struct{}) {
 	t.Helper()
-	started := make(chan struct{})
-	provider := sshFixtureProvider(t, cleanup, func(_ ssh.Channel, requests <-chan *ssh.Request) {
+	started, guardExited := make(chan struct{}), make(chan struct{})
+	guardScript := base64.StdEncoding.EncodeToString([]byte(terminalGuardCommand))
+	provider := sshFixtureProvider(t, cleanup, func(channel ssh.Channel, requests <-chan *ssh.Request) {
 		for request := range requests {
 			switch request.Type {
 			case "pty-req":
 				_ = request.Reply(true, nil)
 			case "exec":
 				_ = request.Reply(true, nil)
+				if strings.Contains(string(request.Payload), guardScript) {
+					_, _ = io.WriteString(channel, "123 456\n")
+					_, _ = io.Copy(io.Discard, channel)
+					close(guardExited)
+					return
+				}
 				close(started)
 			default:
 				_ = request.Reply(false, nil)
@@ -200,5 +267,5 @@ func sshCancellationWorkspace(t *testing.T, ctx context.Context, cleanup time.Du
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = workspace.Close(t.Context()) })
-	return workspace, transport, started
+	return workspace, transport, started, guardExited
 }

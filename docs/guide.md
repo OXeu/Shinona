@@ -170,7 +170,7 @@ User-configured SSH hosts use public network addresses by default. An operator c
 
 The SSH provider keeps one container per account and project across runs and SSH connections. It creates new containers with UID and GID 65534, an owned home and workspace, all Linux capabilities dropped, and no-new-privileges enabled. The default limits are 2 CPUs, 4 GiB of memory with no additional swap, and 512 processes. Operators can override these settings for shared and personal SSH providers using the `SHINONA_SSH_CONTAINER_*` startup variables.
 
-The default Docker image is `buildpack-deps:bookworm-scm` and the default working directory is `/workspace`. Custom images need `sh`, `sleep`, `setsid`, and standard file utilities. They should contain a user entry for the configured UID if tools need to resolve its name. Terminals use Bash when installed and fall back to `sh`. The repository panel requires Git.
+The default Docker image is `buildpack-deps:bookworm-scm` and the default working directory is `/workspace`. Custom images need `sh`, `sleep`, `setsid`, and standard file utilities. They should contain a user entry for the configured UID if tools need to resolve its name. Terminals use Bash when installed and fall back to `sh`. SSH must allow two session channels on a terminal connection so its watchdog can stop jobs in the terminal's process session when the connection closes. The repository panel requires Git.
 
 Shinona applies resource limits to existing containers when they next run. Their original user and capabilities remain in effect until the project sandbox is recreated. Export any workspace files you want to retain before using **Recreate sandbox**.
 

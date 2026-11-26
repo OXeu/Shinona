@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -32,17 +31,17 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	shell := sandbox.Shell("-i")
-	command, err := dockerCommand(append([]string{"exec", "-it", w.name, shell.Program}, shell.Args...))
-	if err != nil {
-		return nil, err
-	}
 	// A terminal can own a channel until the workspace closes.
 	w.discard.Store(true)
 	setup, cancelSetup := context.WithTimeout(ctx, connectTimeout)
 	defer cancelSetup()
-	timer := time.AfterFunc(connectTimeout, w.abortTransport)
-	defer timer.Stop()
+	stopSetup := context.AfterFunc(setup, w.abortTransport)
+	defer stopSetup()
+	defer func() {
+		if cause := setup.Err(); err != nil && cause != nil {
+			err = cause
+		}
+	}()
 	session, err := w.openSession(setup)
 	if err != nil {
 		return nil, err
@@ -65,11 +64,22 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	if err != nil {
 		return nil, err
 	}
+	guard, err := w.startTerminalGuard(setup)
+	if err != nil {
+		return nil, err
+	}
+	shell := sandbox.Shell("-i")
+	args := []string{"exec", "-it", w.name, "sh", "-c", terminalCommand, "sh", guard[0], guard[1], shell.Program}
+	command, err := dockerCommand(append(args, shell.Args...))
+	if err != nil {
+		return nil, err
+	}
 	if err := session.Start(command); err != nil {
 		return nil, err
 	}
-	if !timer.Stop() || setup.Err() != nil {
-		return nil, context.DeadlineExceeded
+	stopSetup()
+	if err := setup.Err(); err != nil {
+		return nil, err
 	}
 	terminal.Reader, terminal.input = output, input
 	return terminal, nil
