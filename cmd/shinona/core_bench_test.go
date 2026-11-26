@@ -48,10 +48,18 @@ var benchmarkZstdDecoders = sync.Pool{New: func() any {
 
 func BenchmarkCoreAPI(b *testing.B) {
 	b.Run("SessionsList", benchmarkSessionsList)
+	b.Run("SessionsListFiltered", benchmarkSessionsListFiltered)
 	b.Run("SessionListPoll", benchmarkSessionListPoll)
 	b.Run("WorkerScheduling", benchmarkWorkerScheduling)
 	b.Run("Transcript", benchmarkTranscript)
 	b.Run("TranscriptServer", benchmarkTranscriptServer)
+	b.Run("TranscriptCold", func(b *testing.B) { benchmarkTranscriptCold(b, false) })
+	b.Run("TranscriptWithImages", func(b *testing.B) { benchmarkTranscriptCold(b, true) })
+	b.Run("TranscriptFullStream", benchmarkTranscriptFullStream)
+	b.Run("Attachment", benchmarkAttachment)
+	b.Run("AuthSession", benchmarkAuthSession)
+	b.Run("LiveSync", benchmarkLiveSync)
+	b.Run("LiveStream", benchmarkLiveStream)
 	b.Run("Send", func(b *testing.B) { benchmarkSubmitRun(b, false) })
 	b.Run("Queue", func(b *testing.B) { benchmarkSubmitRun(b, true) })
 	b.Run("Steering", benchmarkSteering)
@@ -60,12 +68,14 @@ func BenchmarkCoreAPI(b *testing.B) {
 
 type benchmarkAPI struct {
 	*httptest.Server
-	repo     *sqlite.Repository
-	service  *run.Service
-	controls *run.Controls
-	resolve  run.ResolveTarget
-	logger   *slog.Logger
-	owner    string
+	repo       *sqlite.Repository
+	service    *run.Service
+	controls   *run.Controls
+	resolve    run.ResolveTarget
+	logger     *slog.Logger
+	owner      string
+	newHandler func() http.Handler
+	accounts   *auth.Service
 }
 
 func benchmarkRepository(b testing.TB) *sqlite.Repository {
@@ -109,15 +119,22 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Repository, target run.Target) *
 	}
 	authHandler := httpauth.New(accounts, nil, false, logger)
 	server := httptest.NewUnstartedServer(nil)
-	router := newAPIRouter(ctx, "http://"+server.Listener.Addr().String(), service, nil, authHandler, logger)
-	server.Config.Handler = httpserver.ServerTiming(allowedHost(router, func() string { return "" }))
+	origin := "http://" + server.Listener.Addr().String()
+	newHandler := func() http.Handler {
+		router := newAPIRouter(ctx, origin, service, nil, authHandler, logger)
+		return httpserver.ServerTiming(allowedHost(router, func() string { return "" }))
+	}
+	server.Config.Handler = newHandler()
 	server.Start()
 	b.Cleanup(server.Close)
 	server.Client().Jar, err = cookiejar.New(nil)
 	if err != nil {
 		b.Fatal(err)
 	}
-	fixture := &benchmarkAPI{server, repo, service, controls, resolve, logger, owner.ID}
+	fixture := &benchmarkAPI{
+		Server: server, repo: repo, service: service, controls: controls, resolve: resolve,
+		logger: logger, owner: owner.ID, newHandler: newHandler, accounts: accounts,
+	}
 	fixture.post(b, "/auth/password", fixture.requestBody(b, map[string]string{"email": email, "password": secret}), http.StatusOK)
 	return fixture
 }
@@ -143,25 +160,44 @@ func (*benchmarkAPI) requestBody(b testing.TB, value any) []byte {
 	return body
 }
 
-func (a *benchmarkAPI) post(b testing.TB, path string, body []byte, status int) ([]byte, http.Header) {
+func (a *benchmarkAPI) post(b testing.TB, path string, body []byte, status int) benchmarkResponse {
 	b.Helper()
 	ctx, cancel := context.WithTimeout(b.Context(), run.ProjectSandboxTimeout+5*time.Second)
 	defer cancel()
-	data, headers, err := a.request(ctx, a.Client(), http.MethodPost, path, body, status)
+	response, err := a.measuredRequest(ctx, a.Client(), http.MethodPost, path, body, status, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
-	return data, headers
+	return response
 }
 
 func (a *benchmarkAPI) request(ctx context.Context, client *http.Client, method, path string, body []byte, status int) ([]byte, http.Header, error) {
-	return a.requestWithHeaders(ctx, client, method, path, body, status, nil)
+	response, err := a.measuredRequest(ctx, client, method, path, body, status, nil)
+	return response.body, response.header, err
 }
 
-func (a *benchmarkAPI) requestWithHeaders(ctx context.Context, client *http.Client, method, path string, body []byte, status int, headers http.Header) ([]byte, http.Header, error) {
+type benchmarkResponse struct {
+	body            []byte
+	header, trailer http.Header
+	wireBytes       int
+}
+
+type benchmarkPayloadSize struct{ wire, body int64 }
+
+func (s *benchmarkPayloadSize) add(response benchmarkResponse) {
+	s.wire += int64(response.wireBytes)
+	s.body += int64(len(response.body))
+}
+
+func (s benchmarkPayloadSize) report(b *testing.B) {
+	b.ReportMetric(float64(s.wire)/float64(b.N), "wire-B/op")
+	b.ReportMetric(float64(s.body)/float64(b.N), "body-B/op")
+}
+
+func (a *benchmarkAPI) measuredRequest(ctx context.Context, client *http.Client, method, path string, body []byte, status int, headers http.Header) (benchmarkResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, method, a.URL+path, bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, err
+		return benchmarkResponse{}, err
 	}
 	if len(body) != 0 {
 		req.Header.Set("Content-Type", "application/json")
@@ -175,48 +211,50 @@ func (a *benchmarkAPI) requestWithHeaders(ctx context.Context, client *http.Clie
 	req.Header.Set("Accept-Encoding", "zstd")
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, nil, err
+		return benchmarkResponse{}, err
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, nil, err
+		return benchmarkResponse{}, err
 	}
+	wireBytes := len(data)
 	if response.Header.Get("Content-Encoding") == "zstd" {
 		decoder := benchmarkZstdDecoders.Get().(*zstd.Decoder)
 		data, err = decoder.DecodeAll(data, nil)
 		benchmarkZstdDecoders.Put(decoder)
 		if err != nil {
-			return nil, nil, err
+			return benchmarkResponse{}, err
 		}
 	}
 	if response.StatusCode != status {
-		return nil, nil, fmt.Errorf("%s returned %d, want %d: %s", path, response.StatusCode, status, data)
+		return benchmarkResponse{}, fmt.Errorf("%s returned %d, want %d: %s", path, response.StatusCode, status, data)
 	}
-	return data, response.Header, nil
+	return benchmarkResponse{data, response.Header, response.Trailer, wireBytes}, nil
 }
 
-func (a *benchmarkAPI) rest(b *testing.B, method, path string, body []byte, status int, result any) http.Header {
+func (a *benchmarkAPI) rest(b *testing.B, method, path string, body []byte, status int, result any) benchmarkResponse {
 	b.Helper()
 	ctx, cancel := context.WithTimeout(b.Context(), run.ProjectSandboxTimeout+5*time.Second)
 	defer cancel()
-	data, headers, err := a.request(ctx, a.Client(), method, path, body, status)
+	response, err := a.measuredRequest(ctx, a.Client(), method, path, body, status, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
 	if result != nil {
-		if err := json.Unmarshal(data, result); err != nil {
+		if err := json.Unmarshal(response.body, result); err != nil {
 			b.Fatalf("decode %s: %v", path, err)
 		}
 	}
-	return headers
+	return response
 }
 
 func benchmarkSessionPath(session string) string {
 	return rest.Prefix + "/sessions/" + url.PathEscape(session)
 }
 
-func (a *benchmarkAPI) websocket(b testing.TB, path string) *websocket.Conn {
+// The caller owns the connection so timed reconnects can release it each iteration.
+func (a *benchmarkAPI) dialBenchmarkSocket(b testing.TB, path string, dialer websocket.Dialer) *websocket.Conn {
 	b.Helper()
 	endpoint, err := url.Parse(a.URL)
 	if err != nil {
@@ -226,7 +264,7 @@ func (a *benchmarkAPI) websocket(b testing.TB, path string) *websocket.Conn {
 	for _, cookie := range a.Client().Jar.Cookies(endpoint) {
 		headers.Add("Cookie", cookie.String())
 	}
-	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	dialer.HandshakeTimeout = 5 * time.Second
 	conn, response, err := dialer.DialContext(b.Context(), "ws://"+endpoint.Host+path, headers)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
@@ -234,7 +272,6 @@ func (a *benchmarkAPI) websocket(b testing.TB, path string) *websocket.Conn {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 
@@ -259,8 +296,13 @@ func (a *benchmarkAPI) session(b testing.TB, project string) string {
 
 func (a *benchmarkAPI) completedTurn(b testing.TB, session, prompt string, result run.Result) run.Run {
 	b.Helper()
+	return a.completedTurnWithPayload(b, session, prompt, run.Payload{}, result)
+}
+
+func (a *benchmarkAPI) completedTurnWithPayload(b testing.TB, session, prompt string, payload run.Payload, result run.Result) run.Run {
+	b.Helper()
 	ctx := b.Context()
-	queued, err := a.service.Submit(ctx, a.owner, session, prompt, run.Payload{}, false)
+	queued, err := a.service.Submit(ctx, a.owner, session, prompt, payload, false)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -278,14 +320,7 @@ func benchmarkSessionsList(b *testing.B) {
 	a := newCoreBenchmarkAPI(b, demo.Agent{})
 	projectCount := a.seedBenchmarkSessions(b, 256)
 	request := a.recentBenchmarkClient(b, projectCount)
-	if err := request(b.Context()); err != nil {
-		b.Fatal(err)
-	}
-	for b.Loop() {
-		if err := request(b.Context()); err != nil {
-			b.Fatal(err)
-		}
-	}
+	benchmarkReadRequests(b, request)
 }
 
 func (a *benchmarkAPI) seedBenchmarkSessions(b testing.TB, count int) int {
@@ -305,31 +340,44 @@ func (a *benchmarkAPI) seedBenchmarkSessions(b testing.TB, count int) int {
 	return len(projects)
 }
 
-type benchmarkRead func(context.Context) error
+type benchmarkRead func(context.Context) (benchmarkResponse, error)
+
+func benchmarkReadRequests(b *testing.B, request benchmarkRead) {
+	b.Helper()
+	if _, err := request(b.Context()); err != nil {
+		b.Fatal(err)
+	}
+	var size benchmarkPayloadSize
+	for b.Loop() {
+		response, err := request(b.Context())
+		if err != nil {
+			b.Fatal(err)
+		}
+		size.add(response)
+	}
+	size.report(b)
+}
 
 func (a *benchmarkAPI) recentBenchmarkClient(b testing.TB, projectCount int) benchmarkRead {
 	b.Helper()
-	return func(ctx context.Context) error {
+	return func(ctx context.Context) (benchmarkResponse, error) {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		data, _, err := a.request(ctx, a.Client(), http.MethodGet, rest.Prefix+"/sessions", nil, http.StatusOK)
+		response, err := a.measuredRequest(ctx, a.Client(), http.MethodGet, rest.Prefix+"/sessions", nil, http.StatusOK, nil)
 		if err != nil {
-			return err
+			return response, err
 		}
 		var page struct {
 			Projects []run.Project
-			Sessions []struct {
-				ID, Title string
-				TurnCount int
-			}
+			Sessions []struct{ ID string }
 		}
-		if err := fastjson.Unmarshal(data, &page); err != nil {
-			return err
+		if err := fastjson.Unmarshal(response.body, &page); err != nil {
+			return response, err
 		}
-		if len(page.Projects) != projectCount || len(page.Sessions) != 30 || page.Sessions[0].TurnCount != 1 {
-			return fmt.Errorf("unexpected recent response: %d projects, %d sessions", len(page.Projects), len(page.Sessions))
+		if len(page.Projects) != projectCount || len(page.Sessions) != 30 || page.Sessions[0].ID == "" {
+			return response, fmt.Errorf("unexpected recent response: %d projects, %d sessions", len(page.Projects), len(page.Sessions))
 		}
-		return nil
+		return response, nil
 	}
 }
 
@@ -338,14 +386,7 @@ func benchmarkTranscript(b *testing.B) {
 	const turnCount = 120
 	session := a.seedBenchmarkTranscript(b, turnCount, 48)
 	request := a.transcriptBenchmarkClient(b, a.Client(), session, turnCount, true)
-	if err := request(b.Context()); err != nil {
-		b.Fatal(err)
-	}
-	for b.Loop() {
-		if err := request(b.Context()); err != nil {
-			b.Fatal(err)
-		}
-	}
+	benchmarkReadRequests(b, request)
 }
 
 type benchmarkResponseWriter struct {
@@ -366,17 +407,7 @@ func (w *benchmarkResponseWriter) Write(body []byte) (int, error) {
 func benchmarkTranscriptServer(b *testing.B) {
 	a := newCoreBenchmarkAPI(b, demo.Agent{})
 	session := a.seedBenchmarkTranscript(b, 120, 48)
-	endpoint, err := url.Parse(a.URL)
-	if err != nil {
-		b.Fatal(err)
-	}
-	path := a.URL + benchmarkSessionPath(session) + "/transcript"
-	request := httptest.NewRequestWithContext(b.Context(), http.MethodGet, path, nil)
-	request.Header.Set("Origin", a.URL)
-	request.Header.Set("Accept-Encoding", "zstd")
-	for _, cookie := range a.Client().Jar.Cookies(endpoint) {
-		request.AddCookie(cookie)
-	}
+	request := a.authenticatedBenchmarkRequest(b, benchmarkSessionPath(session)+"/transcript")
 	response := benchmarkResponseWriter{header: make(http.Header)}
 	serve := func() {
 		clear(response.header)
@@ -427,25 +458,25 @@ func (a *benchmarkAPI) transcriptBenchmarkClient(b testing.TB, client *http.Clie
 	} else if turnCount > run.TranscriptPageSize {
 		wantCount, wantCursor = run.TranscriptPageSize, turnCount-run.TranscriptPageSize+1
 	}
-	return func(ctx context.Context) error {
+	return func(ctx context.Context) (benchmarkResponse, error) {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		data, headers, err := a.request(ctx, client, http.MethodGet, path, nil, http.StatusOK)
+		response, err := a.measuredRequest(ctx, client, http.MethodGet, path, nil, http.StatusOK, nil)
 		if err != nil {
-			return err
+			return response, err
 		}
-		if headers.Get("Content-Type") != httpserver.ProtobufMediaType {
-			return fmt.Errorf("unexpected transcript content type: %s", headers.Get("Content-Type"))
+		if response.header.Get("Content-Type") != httpserver.ProtobufMediaType {
+			return response, fmt.Errorf("unexpected transcript content type: %s", response.header.Get("Content-Type"))
 		}
 		var page sessionpb.TranscriptPage
-		if err := proto.Unmarshal(data, &page); err != nil {
-			return err
+		if err := proto.Unmarshal(response.body, &page); err != nil {
+			return response, err
 		}
 		if !page.Complete || page.SandboxSettings == nil || page.GetSession().GetId() != session || page.GetSession().GetTurnCount() != int32(turnCount) ||
 			len(page.Turns) != wantCount || page.NextBeforeSequence != int32(wantCursor) {
-			return fmt.Errorf("unexpected transcript page: turns=%d, cursor=%d, complete=%t", len(page.Turns), page.NextBeforeSequence, page.Complete)
+			return response, fmt.Errorf("unexpected transcript page: turns=%d, cursor=%d, complete=%t", len(page.Turns), page.NextBeforeSequence, page.Complete)
 		}
-		return nil
+		return response, nil
 	}
 }
 
@@ -470,7 +501,7 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 		if queue {
 			started = time.Now()
 		}
-		headers := a.rest(b, http.MethodPost, path, body, http.StatusAccepted, &result)
+		response := a.rest(b, http.MethodPost, path, body, http.StatusAccepted, &result)
 		if queue {
 			elapsed = time.Since(started)
 		}
@@ -482,7 +513,7 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 			latencies = append(latencies, elapsed)
 			if elapsed > slowest {
 				slowest = elapsed
-				slowestServerTiming = headers.Values("Server-Timing")
+				slowestServerTiming = response.header.Values("Server-Timing")
 			}
 		}
 		if err := a.repo.StopQueued(b.Context(), a.owner, session, result.ID, time.Now()); err != nil {
@@ -493,6 +524,8 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 	if queue && len(latencies) > 0 {
 		slices.Sort(latencies)
 		count := len(latencies)
+		b.ReportMetric(float64(latencies[(count+1)/2-1])/float64(time.Microsecond), "p50-us/op")
+		b.ReportMetric(float64(latencies[(99*count+99)/100-1])/float64(time.Microsecond), "p99-us/op")
 		b.Logf("queue latency across %d requests: p50 %s, p99 %s, max %s; slowest Server-Timing: %s",
 			count, latencies[(count+1)/2-1], latencies[(99*count+99)/100-1], slowest,
 			strings.Join(slowestServerTiming, ", "))

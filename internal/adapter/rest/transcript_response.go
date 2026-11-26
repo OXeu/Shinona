@@ -58,8 +58,9 @@ func (r *handler) transcriptResponseKey(c *gin.Context, owner, session string, b
 
 func (r *handler) serveCachedTranscript(c *gin.Context, key transcriptPageKey) bool {
 	if r.transcriptPages != nil {
+		lookup := timing.Start(c.Request.Context(), "transcript_response_cache_hit")
 		if hit, ok := r.transcriptPages.Get(key); ok {
-			defer timing.Start(c.Request.Context(), "transcript_response_cache_hit")()
+			lookup()
 			c.Header("Content-Encoding", hit.encoding)
 			c.Header("Cache-Control", "private, no-store")
 			c.Data(http.StatusOK, httpserver.ProtobufMediaType, hit.data)

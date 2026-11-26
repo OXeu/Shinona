@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,11 +41,14 @@ func BenchmarkSandboxAPI(b *testing.B) {
 			}{
 				{"GitChanges", benchmarkGitChanges},
 				{"FileList", benchmarkFileList},
+				{"WorkspacePreview", benchmarkWorkspacePreview},
+				{"WorkspaceCommit", benchmarkWorkspaceCommit},
 				{"GitHistory", benchmarkGitHistory},
 				{"Initialize", benchmarkSandboxInitialize},
 				{"Recreate", benchmarkSandboxRecreate},
 				{"Destroy", benchmarkSandboxDestroy},
 				{"PTYRoundTrip", benchmarkPTY},
+				{"TerminalCreate", benchmarkTerminalCreate},
 			} {
 				b.Run(operation.name, func(b *testing.B) {
 					repo := benchmarkRepository(b)
@@ -190,10 +195,8 @@ func benchmarkSandboxDestroy(b *testing.B, s *benchmarkSandbox) {
 	}
 }
 
-func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
+func (s *benchmarkSandbox) execProject(b *testing.B, script string) string {
 	b.Helper()
-	s.lifecycle(b, http.MethodPost, "")()
-	session := s.session(b, s.spec.ProjectID)
 	ctx, cancel := context.WithTimeout(b.Context(), 45*time.Second)
 	defer cancel()
 	ws, err := s.provider.OpenProject(ctx, s.spec)
@@ -205,7 +208,18 @@ func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
 			b.Error(err)
 		}
 	}()
-	result, err := ws.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{"-ec", `
+	result, err := ws.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{"-ec", script}})
+	if err != nil || result.ExitCode != 0 {
+		b.Fatalf("run sandbox fixture command: %+v, %v", result, err)
+	}
+	return result.Stdout
+}
+
+func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
+	b.Helper()
+	s.lifecycle(b, http.MethodPost, "")()
+	session := s.session(b, s.spec.ProjectID)
+	s.execProject(b, `
 		mkdir benchmark-repo
 		cd benchmark-repo
 		git init -q -b main --template=
@@ -213,6 +227,7 @@ func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
 		git config user.email benchmark@example.invalid
 		mkdir src
 		for i in {1..40}; do printf 'fixture %s\n' "$i" > "src/file-$i.txt"; done
+		for i in {1..1024}; do printf 'preview fixture %04d\n' "$i"; done > src/file-2.txt
 		git add src
 		git commit -qm 'Fixture tree'
 		for i in {1..11}; do
@@ -221,11 +236,8 @@ func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
 		done
 		printf 'modified\n' >> src/file-1.txt
 		printf 'untracked\n' > src/local.txt
-	`}})
-	if err != nil || result.ExitCode != 0 {
-		b.Fatalf("seed sandbox repository: %+v, %v", result, err)
-	}
-	if err := s.repo.SetWorkspaceRoot(ctx, s.owner, session, s.spec.ProjectID, "benchmark-repo"); err != nil {
+	`)
+	if err := s.repo.SetWorkspaceRoot(b.Context(), s.owner, session, s.spec.ProjectID, "benchmark-repo"); err != nil {
 		b.Fatal(err)
 	}
 	return session
@@ -242,13 +254,15 @@ func benchmarkGitChanges(b *testing.B, s *benchmarkSandbox) {
 			Untracked    bool
 		}
 	}
+	var size benchmarkPayloadSize
 	for b.Loop() {
-		s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result)
+		size.add(s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result))
 		if result.Branch != "main" || result.Truncated || len(result.Entries) != 2 ||
 			result.Entries[0].Path != "src/file-1.txt" || result.Entries[1].Path != "src/local.txt" || !result.Entries[1].Untracked {
 			b.Fatalf("unexpected git changes: %+v", result)
 		}
 	}
+	size.report(b)
 }
 
 func benchmarkFileList(b *testing.B, s *benchmarkSandbox) {
@@ -261,12 +275,14 @@ func benchmarkFileList(b *testing.B, s *benchmarkSandbox) {
 			Directory  bool
 		}
 	}
+	var size benchmarkPayloadSize
 	for b.Loop() {
-		s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result)
+		size.add(s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result))
 		if result.Truncated || len(result.Entries) != 41 {
 			b.Fatalf("unexpected directory listing: %+v", result)
 		}
 	}
+	size.report(b)
 }
 
 func benchmarkGitHistory(b *testing.B, s *benchmarkSandbox) {
@@ -278,24 +294,70 @@ func benchmarkGitHistory(b *testing.B, s *benchmarkSandbox) {
 			Hash, Short, Author, Date, Subject string
 		}
 	}
+	var size benchmarkPayloadSize
 	for b.Loop() {
-		s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result)
+		size.add(s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result))
 		if result.Truncated || len(result.Entries) != 12 || result.Entries[0].Subject != "Fixture version 11" {
 			b.Fatalf("unexpected git history: %+v", result)
 		}
 	}
+	size.report(b)
 }
 
-func benchmarkPTY(b *testing.B, s *benchmarkSandbox) {
-	s.lifecycle(b, http.MethodPost, "")()
-	session := s.session(b, s.spec.ProjectID)
-	body, _ := s.post(b, terminal.Path+"/create", s.requestBody(b, map[string]string{"session": session}), http.StatusCreated)
+func benchmarkWorkspacePreview(b *testing.B, s *benchmarkSandbox) {
+	session := s.gitFixture(b)
+	path := benchmarkSessionPath(session) + "/workspace/preview?path=benchmark-repo%2Fsrc%2Ffile-2.txt"
+	var result struct {
+		Text      string
+		Truncated bool
+	}
+	var size benchmarkPayloadSize
+	for b.Loop() {
+		size.add(s.rest(b, http.MethodGet, path, nil, http.StatusOK, &result))
+		if !result.Truncated || len(result.Text) != 16<<10 || !strings.HasPrefix(result.Text, "preview fixture 0001\n") {
+			b.Fatalf("unexpected preview: %d bytes, truncated=%t", len(result.Text), result.Truncated)
+		}
+	}
+	size.report(b)
+}
+
+func benchmarkWorkspaceCommit(b *testing.B, s *benchmarkSandbox) {
+	session := s.gitFixture(b)
+	path := benchmarkSessionPath(session) + "/workspace/commits"
+	const message = "Benchmark workspace changes"
+	request := s.requestBody(b, map[string]any{"message": message, "paths": []string{"src/file-1.txt"}})
+	var size benchmarkPayloadSize
+	for b.Loop() {
+		var hash string
+		size.add(s.rest(b, http.MethodPost, path, request, http.StatusCreated, &hash))
+		b.StopTimer()
+		if _, err := strconv.ParseUint(hash, 16, 64); len(hash) < 7 || err != nil {
+			b.Fatalf("invalid short commit hash %q", hash)
+		}
+		output := s.execProject(b, "git -C benchmark-repo log -1 --format='%h %s' && git -C benchmark-repo reset --mixed HEAD^")
+		if !strings.HasPrefix(output, hash+" "+message+"\n") {
+			b.Fatalf("commit was not written: %q", output)
+		}
+		b.StartTimer()
+	}
+	size.report(b)
+}
+
+func (s *benchmarkSandbox) openBenchmarkTerminal(b *testing.B, session string) (*websocket.Conn, string) {
+	b.Helper()
+	response := s.post(b, terminal.Path+"/create", s.requestBody(b, map[string]string{"session": session}), http.StatusCreated)
 	var tab run.TerminalTab
-	if err := json.Unmarshal(body, &tab); err != nil || tab.ID == "" {
-		b.Fatalf("create terminal: %s, %v", body, err)
+	if err := json.Unmarshal(response.body, &tab); err != nil || tab.ID == "" {
+		b.Fatalf("create terminal: %s, %v", response.body, err)
 	}
 	query := url.Values{"session": {session}, "terminal": {tab.ID}}
-	conn := s.websocket(b, terminal.Path+"/connect?"+query.Encode())
+	conn := s.dialBenchmarkSocket(b, terminal.Path+"/connect?"+query.Encode(), websocket.Dialer{})
+	ok := false
+	defer func() {
+		if !ok {
+			_ = conn.Close()
+		}
+	}()
 	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		b.Fatal(err)
 	}
@@ -312,12 +374,37 @@ func benchmarkPTY(b *testing.B, s *benchmarkSandbox) {
 			b.Fatal(err)
 		}
 		if status.State == run.TerminalRunning {
-			break
+			ok = true
+			return conn, tab.ID
 		}
 		if status.State != run.TerminalStarting {
 			b.Fatalf("terminal failed before opening: %s", status.State)
 		}
 	}
+}
+
+func benchmarkTerminalCreate(b *testing.B, s *benchmarkSandbox) {
+	s.lifecycle(b, http.MethodPost, "")()
+	session := s.session(b, s.spec.ProjectID)
+	var total time.Duration
+	for b.Loop() {
+		start := time.Now()
+		conn, id := s.openBenchmarkTerminal(b, session)
+		total += time.Since(start)
+		b.StopTimer()
+		_ = conn.Close()
+		request := s.requestBody(b, map[string]string{"session": session, "terminal": id})
+		s.rest(b, http.MethodPost, terminal.Path+"/close", request, http.StatusNoContent, nil)
+		b.StartTimer()
+	}
+	b.ReportMetric(float64(total)/float64(b.N)/float64(time.Microsecond), "ttfb-us/op")
+}
+
+func benchmarkPTY(b *testing.B, s *benchmarkSandbox) {
+	s.lifecycle(b, http.MethodPost, "")()
+	session := s.session(b, s.spec.ProjectID)
+	conn, _ := s.openBenchmarkTerminal(b, session)
+	defer func() { _ = conn.Close() }()
 	// The two arguments become adjacent only when the shell prints them, so
 	// input echo cannot be mistaken for the actual PTY response.
 	const marker = "shinona-benchmark-ready"

@@ -26,7 +26,7 @@ func benchmarkSessionListPoll(b *testing.B) {
 	a := newCoreBenchmarkAPI(b, demo.Agent{})
 	projectCount := a.seedBenchmarkSessions(b, 256)
 	path := rest.Prefix + "/sessions?delta=true"
-	poll := func(b *testing.B, etag string, status int) (benchmarkSessionList, string, int) {
+	poll := func(b *testing.B, etag string, status int) (benchmarkSessionList, string, benchmarkResponse) {
 		b.Helper()
 		ctx, cancel := context.WithTimeout(b.Context(), 15*time.Second)
 		defer cancel()
@@ -34,23 +34,23 @@ func benchmarkSessionListPoll(b *testing.B) {
 		if etag != "" {
 			requestHeaders = http.Header{"If-None-Match": {etag}}
 		}
-		body, headers, err := a.requestWithHeaders(ctx, a.Client(), http.MethodGet, path, nil, status, requestHeaders)
+		response, err := a.measuredRequest(ctx, a.Client(), http.MethodGet, path, nil, status, requestHeaders)
 		if err != nil {
 			b.Fatal(err)
 		}
-		tag := headers.Get("ETag")
-		if tag == "" || (status == http.StatusNotModified && (tag != etag || len(body) != 0)) {
-			b.Fatalf("unexpected response: ETag %q, body %s", tag, body)
+		tag := response.header.Get("ETag")
+		if tag == "" || (status == http.StatusNotModified && (tag != etag || len(response.body) != 0)) {
+			b.Fatalf("unexpected response: ETag %q, body %s", tag, response.body)
 		}
 		var result benchmarkSessionList
 		if status == http.StatusOK {
-			if err := json.Unmarshal(body, &result); err != nil {
+			if err := json.Unmarshal(response.body, &result); err != nil {
 				b.Fatal(err)
 			}
 		}
-		return result, tag, len(body)
+		return result, tag, response
 	}
-	full := func(b *testing.B) (benchmarkSessionList, string, int) {
+	full := func(b *testing.B) (benchmarkSessionList, string, benchmarkResponse) {
 		b.Helper()
 		page, etag, size := poll(b, "", http.StatusOK)
 		if len(page.Projects) != projectCount || len(page.Sessions) != 30 {
@@ -59,24 +59,26 @@ func benchmarkSessionListPoll(b *testing.B) {
 		return page, etag, size
 	}
 	b.Run("Full", func(b *testing.B) {
-		var size int
+		var size benchmarkPayloadSize
 		for b.Loop() {
-			_, _, size = full(b)
+			_, _, response := full(b)
+			size.add(response)
 		}
-		b.ReportMetric(float64(size), "body-B/op")
+		size.report(b)
 	})
 	b.Run("NotModified", func(b *testing.B) {
 		_, etag, _ := full(b)
 		for b.Loop() {
 			poll(b, etag, http.StatusNotModified)
 		}
-		b.ReportMetric(0, "body-B/op")
+		(benchmarkPayloadSize{}).report(b)
 	})
 	b.Run("Delta", func(b *testing.B) {
 		page, etag, _ := full(b)
 		session := page.Sessions[0].ID
 		titles := [2]string{"Reviewed workspace A", "Reviewed workspace B"}
-		var bytes, iteration int
+		var size benchmarkPayloadSize
+		var iteration int
 		if page.Sessions[0].Title == titles[0] {
 			iteration = 1
 		}
@@ -87,7 +89,7 @@ func benchmarkSessionListPoll(b *testing.B) {
 				b.Fatal(err)
 			}
 			b.StartTimer()
-			patch, current, size := poll(b, etag, http.StatusOK)
+			patch, current, response := poll(b, etag, http.StatusOK)
 			if patch.Delta == nil || current == etag {
 				b.Fatal("expected a new incremental response")
 			}
@@ -96,9 +98,9 @@ func benchmarkSessionListPoll(b *testing.B) {
 				b.Fatalf("unexpected delta: %+v", upsert)
 			}
 			etag = current
-			bytes += size
+			size.add(response)
 			iteration++
 		}
-		b.ReportMetric(float64(bytes)/float64(b.N), "body-B/op")
+		size.report(b)
 	})
 }
