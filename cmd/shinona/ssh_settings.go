@@ -51,6 +51,7 @@ func (r *runtime) personalSSH(server settings.SSHServer) (*sshsandbox.Provider, 
 	config := sshsandbox.Config{
 		Address: server.Address, User: server.User, HostFingerprint: server.HostFingerprint,
 		Template: server.Template, PrivateKey: server.PrivateKey,
+		ProjectConnections: &r.sshProjects,
 	}
 	if !r.trustedSSH[server.Address] {
 		if err := httpclient.CheckEndpoint("https://" + server.Address); err != nil {

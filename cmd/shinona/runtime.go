@@ -18,6 +18,7 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/httpclient"
 	"github.com/OXeu/shinona/internal/adapter/mcp"
+	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
@@ -43,6 +44,7 @@ type runtime struct {
 	accountHTTP *http.Client
 	mcpMu       sync.Mutex
 	sshMu       sync.Mutex
+	sshProjects sshsandbox.ProjectConnections
 	trustedSSH  map[string]bool
 	mu          sync.Mutex
 	current     atomic.Pointer[runtimeConfig]

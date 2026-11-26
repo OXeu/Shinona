@@ -6,24 +6,44 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"path"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 type workspace struct {
-	client *ssh.Client
-	name   string
+	client  *ssh.Client
+	name    string
+	release func() error
+	inUse   sync.RWMutex
+	closed  atomic.Bool
+	discard atomic.Bool
 }
 
-func (w *workspace) Close(context.Context) error { return w.client.Close() }
+func (w *workspace) Close(context.Context) error {
+	if !w.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if w.release != nil && w.inUse.TryLock() {
+		defer w.inUse.Unlock()
+		if !w.discard.Load() {
+			return w.release()
+		}
+	}
+	return w.client.Close()
+}
 
 func (w *workspace) status(ctx context.Context) (sandbox.ProjectStatus, error) {
+	defer timing.Start(ctx, "ssh_project_status")()
 	result, err := w.command(ctx, nil, maxOutputBytes,
 		"ps", "--all", "--no-trunc", "--filter", "name=^/"+w.name+"$", "--format", "{{.ID}} {{.State}}")
 	if err = commandError(result, err); err != nil {
@@ -156,6 +176,11 @@ func dockerCommand(args []string) (string, error) {
 }
 
 func (w *workspace) command(ctx context.Context, input io.Reader, limit int, args ...string) (sandbox.Result, error) {
+	w.inUse.RLock()
+	defer w.inUse.RUnlock()
+	if w.closed.Load() {
+		return sandbox.Result{}, net.ErrClosed
+	}
 	if err := ctx.Err(); err != nil {
 		return sandbox.Result{}, err
 	}
@@ -165,6 +190,7 @@ func (w *workspace) command(ctx context.Context, input io.Reader, limit int, arg
 	}
 	session, err := w.client.NewSession()
 	if err != nil {
+		w.discard.Store(true)
 		return sandbox.Result{}, err
 	}
 	defer func() { _ = session.Close() }()
@@ -176,11 +202,15 @@ func (w *workspace) command(ctx context.Context, input io.Reader, limit int, arg
 	err = session.Run(command)
 	result := sandbox.Result{Stdout: out.buffer.String(), Stderr: stderr.buffer.String(), Truncated: out.truncated || stderr.truncated}
 	if ctx.Err() != nil {
+		w.discard.Store(true)
 		return result, ctx.Err()
 	}
 	if exit, ok := errors.AsType[*ssh.ExitError](err); ok {
 		result.ExitCode, result.ExitDetail = exit.ExitStatus(), exit.Signal()
 		return result, nil
+	}
+	if err != nil {
+		w.discard.Store(true)
 	}
 	return result, err
 }

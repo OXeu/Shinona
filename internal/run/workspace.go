@@ -101,7 +101,9 @@ func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(
 }
 
 func (s *Service) openWorkspace(ctx context.Context, owner, id string) (sandbox.Workspace, error) {
+	resolve := timing.Start(ctx, "workspace_resolve")
 	spec, target, err := sessionSandbox(ctx, s.repo, s.resolve, owner, id, "", false)
+	resolve()
 	if errors.Is(err, ErrSession) {
 		return nil, ErrWorkspaceUnavailable
 	}

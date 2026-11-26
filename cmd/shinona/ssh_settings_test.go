@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"maps"
 	"net"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,7 +18,9 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
@@ -194,6 +198,124 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	}
 }
 
+func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
+	hostKey, key := sshTestKey(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	t.Setenv("SHINONA_TRUSTED_SSH_ADDRESSES", listener.Addr().String())
+	app, repo, _ := settingsTestApp(t, nil)
+	server := settings.SSHServer{
+		ID: "test-host", Name: "Test host", Address: listener.Addr().String(), User: "worker",
+		Template: "alpine:3", HostFingerprint: ssh.FingerprintSHA256(hostKey.PublicKey()), PrivateKey: key,
+	}
+	for _, owner := range []string{"alice", "bob"} {
+		if err := repo.SaveSSHServer(t.Context(), owner, server, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, public ssh.PublicKey) (*ssh.Permissions, error) {
+		if !bytes.Equal(public.Marshal(), hostKey.PublicKey().Marshal()) {
+			return nil, errors.New("unexpected SSH key")
+		}
+		return nil, nil
+	}}
+	config.AddHostKey(hostKey)
+	var paused atomic.Bool
+	accepted := make(chan net.Conn, 8)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- conn
+			go serveSSHTestConnection(conn, config, func(command string) (string, uint32, bool) {
+				if !strings.HasPrefix(command, "exec docker 'ps' ") {
+					return "", 0, false
+				}
+				if paused.Load() {
+					return "container-id paused\n", 0, true
+				}
+				return "container-id running\n", 0, true
+			})
+		}
+	}()
+	nextConnection := func() net.Conn {
+		t.Helper()
+		select {
+		case conn := <-accepted:
+			t.Cleanup(func() { _ = conn.Close() })
+			return conn
+		default:
+			t.Fatal("expected a new SSH connection")
+			return nil
+		}
+	}
+	open := func(owner string) (sandbox.Workspace, []timing.Metric, error) {
+		t.Helper()
+		ctx, recorder := timing.WithRecorder(t.Context())
+		target, err := app.ResolveForAccount(ctx, owner, settings.SSHProviderPrefix+server.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		provider, ok := target.Provider.(sandbox.ProjectProvider)
+		if !ok {
+			t.Fatal("expected a project provider")
+		}
+		ws, err := provider.OpenProject(ctx, sandbox.Spec{OwnerID: owner})
+		return ws, recorder.Metrics(), err
+	}
+	release := func(owner string, wantConnect bool) sandbox.Workspace {
+		t.Helper()
+		ws, metrics, err := open(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ws.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		hasMetric := func(name string) bool {
+			return slices.ContainsFunc(metrics, func(metric timing.Metric) bool { return metric.Name == name })
+		}
+		if !hasMetric("ssh_project_status") || hasMetric("ssh_connect") != wantConnect {
+			t.Fatalf("unexpected SSH timings: %+v", metrics)
+		}
+		return ws
+	}
+
+	first := release("alice", true)
+	conn := nextConnection()
+	release("alice", false)
+	if _, err := first.ReadFile(t.Context(), "file"); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("released workspace could still open a channel: %v", err)
+	}
+	paused.Store(true)
+	if _, _, err := open("alice"); !errors.Is(err, sandbox.ErrWorkspaceMissing) {
+		t.Fatalf("did not recheck the container state: %v", err)
+	}
+	paused.Store(false)
+	if len(accepted) != 0 {
+		t.Fatal("opened another connection for the same account and credentials")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	release("alice", true)
+	nextConnection()
+
+	release("bob", true)
+	nextConnection()
+	server.User = "new-user"
+	if err := repo.SaveSSHServer(t.Context(), "alice", server, false); err != nil {
+		t.Fatal(err)
+	}
+	release("alice", true)
+	nextConnection()
+}
+
 func sshTestKey(t *testing.T) (ssh.Signer, string) {
 	t.Helper()
 	_, private, err := ed25519.GenerateKey(rand.Reader)
@@ -224,11 +346,17 @@ func serveSSHTestHost(listener net.Listener, key ssh.Signer, dockerAvailable *at
 		if err != nil {
 			return
 		}
-		serveSSHTestConnection(conn, config, dockerAvailable.Load())
+		serveSSHTestConnection(conn, config, func(command string) (string, uint32, bool) {
+			ok := command == "exec docker 'info' '--format' '{{.ServerVersion}}'"
+			if dockerAvailable.Load() {
+				return "", 0, ok
+			}
+			return "", 1, ok
+		})
 	}
 }
 
-func serveSSHTestConnection(conn net.Conn, config *ssh.ServerConfig, dockerAvailable bool) {
+func serveSSHTestConnection(conn net.Conn, config *ssh.ServerConfig, execute func(string) (string, uint32, bool)) {
 	defer func() { _ = conn.Close() }()
 	_, channels, requests, err := ssh.NewServerConn(conn, config)
 	if err != nil {
@@ -243,14 +371,15 @@ func serveSSHTestConnection(conn net.Conn, config *ssh.ServerConfig, dockerAvail
 		request, open := <-requests
 		if open {
 			var payload struct{ Command string }
-			ok := request.Type == "exec" && ssh.Unmarshal(request.Payload, &payload) == nil &&
-				payload.Command == "exec docker 'info' '--format' '{{.ServerVersion}}'"
+			var output string
+			var status struct{ Code uint32 }
+			var ok bool
+			if request.Type == "exec" && ssh.Unmarshal(request.Payload, &payload) == nil {
+				output, status.Code, ok = execute(payload.Command)
+			}
 			_ = request.Reply(ok, nil)
 			if ok {
-				var status struct{ Code uint32 }
-				if !dockerAvailable {
-					status.Code = 1
-				}
+				_, _ = io.WriteString(channel, output)
 				_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(status))
 			}
 		}

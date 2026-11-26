@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 const (
@@ -46,6 +47,8 @@ type Config struct {
 	Template        string
 	PrivateKey      string
 	DialContext     func(context.Context, string, string) (net.Conn, error)
+	// Providers sharing ProjectConnections must use the same dial policy.
+	ProjectConnections *ProjectConnections
 }
 
 type Provider struct {
@@ -53,6 +56,8 @@ type Provider struct {
 	client   *ssh.ClientConfig
 	template string
 	dial     func(context.Context, string, string) (net.Conn, error)
+	projects *ProjectConnections
+	identity [sha256.Size]byte
 }
 
 var provisionGates = func() [64]*semaphore.Weighted {
@@ -109,7 +114,17 @@ func New(config Config) (*Provider, error) {
 	if dial == nil {
 		dial = (&net.Dialer{}).DialContext
 	}
-	return &Provider{address: config.Address, client: client, template: config.Template, dial: dial}, nil
+	projects := config.ProjectConnections
+	if projects == nil {
+		projects = &ProjectConnections{}
+	}
+	identity := sha256.Sum256(ssh.Marshal(struct {
+		Address, User, HostKey, PublicKey string
+	}{config.Address, config.User, fingerprint, string(signer.PublicKey().Marshal())}))
+	return &Provider{
+		address: config.Address, client: client, template: config.Template, dial: dial,
+		projects: projects, identity: identity,
+	}, nil
 }
 
 func privateKey(config Config) ([]byte, error) {
@@ -131,6 +146,15 @@ func privateKey(config Config) ([]byte, error) {
 }
 
 func (p *Provider) connect(ctx context.Context, spec sandbox.Spec) (*workspace, error) {
+	client, err := p.connectClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return newWorkspace(client, spec), nil
+}
+
+func (p *Provider) connectClient(ctx context.Context) (*ssh.Client, error) {
+	defer timing.Start(ctx, "ssh_connect")()
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 	conn, err := p.dial(ctx, "tcp", p.address)
@@ -146,10 +170,11 @@ func (p *Provider) connect(ctx context.Context, spec sandbox.Spec) (*workspace, 
 		}
 		return nil, fmt.Errorf("%w: %w", ErrHandshake, err)
 	}
-	return &workspace{
-		client: ssh.NewClient(client, channels, requests),
-		name:   fmt.Sprintf("shinona-%x", projectHash(spec)),
-	}, nil
+	return ssh.NewClient(client, channels, requests), nil
+}
+
+func newWorkspace(client *ssh.Client, spec sandbox.Spec) *workspace {
+	return &workspace{client: client, name: fmt.Sprintf("shinona-%x", projectHash(spec))}
 }
 
 func (*Provider) Policies(string) []sandbox.Policy { return []sandbox.Policy{sandbox.Shared} }
@@ -233,19 +258,45 @@ func (p *Provider) ensureRunning(ctx context.Context, ws *workspace, spec sandbo
 }
 
 func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
-	ws, err := p.connect(ctx, spec)
-	if err != nil {
-		return nil, err
+	key := projectConnectionKey{owner: spec.OwnerID, identity: p.identity}
+	for conn := p.projects.take(key); ; conn = nil {
+		reused := conn != nil
+		if !reused {
+			client, err := p.connectClient(ctx)
+			if err != nil {
+				return nil, err
+			}
+			conn = &projectConnection{client: client, opened: time.Now()}
+		}
+		ws := newWorkspace(conn.client, spec)
+		ws.release = func() error { return p.projects.put(key, conn) }
+		status, err := ws.checkProject(ctx)
+		if err == nil && status.State == sandbox.ProjectRunning {
+			return ws, nil
+		}
+		_ = ws.Close(ctx)
+		if err == nil {
+			return nil, sandbox.ErrWorkspaceMissing
+		}
+		// Retry a lost idle transport before any workspace operation has run.
+		if !reused || !ws.discard.Load() || ctx.Err() != nil {
+			return nil, err
+		}
 	}
-	status, err := ws.status(ctx)
-	if err == nil && status.State == sandbox.ProjectRunning {
-		return ws, nil
+}
+
+func (w *workspace) checkProject(ctx context.Context) (sandbox.ProjectStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	// NewSession can block before a channel exists to cancel.
+	stop := context.AfterFunc(ctx, func() { _ = w.client.Close() })
+	status, err := w.status(ctx)
+	stop()
+	if ctx.Err() != nil {
+		w.discard.Store(true)
+		return sandbox.ProjectStatus{}, ctx.Err()
 	}
-	_ = ws.Close(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return nil, sandbox.ErrWorkspaceMissing
+	return status, err
 }
 
 func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbox.ProjectStatus, error) {
