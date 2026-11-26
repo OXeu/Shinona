@@ -193,6 +193,7 @@ type Repository interface {
 	TranscriptSnapshot(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*TranscriptSnapshot, error)
 	StreamTranscript(ctx context.Context, ownerID, sessionID string, write func(TranscriptStream) error) error
 	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Image, error)
+	AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error)
 	SessionProject(ctx context.Context, ownerID, sessionID string) (string, error)
 	WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error)
 	SetWorkspaceRoot(ctx context.Context, ownerID, sessionID, projectID, root string) error

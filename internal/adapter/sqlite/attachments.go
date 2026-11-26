@@ -15,11 +15,10 @@ func (r *Repository) Attachment(ctx context.Context, ownerID, sessionID, turnID 
 	db := r.read.WithContext(ctx)
 	// Keep image bytes out of the transcript and read only the requested attachment.
 	path := "$.images[" + strconv.Itoa(index) + "]"
-	session := sessionScope(db, ownerID).Select("id").Where("id = ?", sessionID)
 	var record struct{ Image *string }
-	err := conversationTurns(db, ownerID, sessionID).
+	err := attachmentTurn(db, ownerID, sessionID, turnID).
 		Select("json_extract(payload, ?) AS image", path).
-		Where("session_id IN (?)", session).Take(&record, "id = ?", turnID).Error
+		Take(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -31,4 +30,18 @@ func (r *Repository) Attachment(ctx context.Context, ownerID, sessionID, turnID 
 		return nil, err
 	}
 	return &image, nil
+}
+
+func (r *Repository) AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error) {
+	var found struct{ ID string }
+	err := attachmentTurn(r.read.WithContext(ctx), ownerID, sessionID, turnID).Select("id").Take(&found).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func attachmentTurn(db *gorm.DB, ownerID, sessionID, turnID string) *gorm.DB {
+	session := sessionScope(db, ownerID).Select("id").Where("id = ?", sessionID)
+	return conversationTurns(db, ownerID, sessionID).Where("id = ? AND session_id IN (?)", turnID, session)
 }

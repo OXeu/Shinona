@@ -215,6 +215,13 @@ func (s *Service) Attachment(ctx context.Context, owner, sessionID, turnID strin
 	return s.repo.Attachment(ctx, owner, sessionID, turnID, index)
 }
 
+func (s *Service) AttachmentTurnVisible(ctx context.Context, owner, sessionID, turnID string) (bool, error) {
+	if owner == "" {
+		return false, nil
+	}
+	return s.repo.AttachmentTurnVisible(ctx, owner, sessionID, turnID)
+}
+
 func (s *Service) UpdateSession(ctx context.Context, owner, id string, changes SessionChanges) (Session, error) {
 	if changes.Title != nil {
 		title := strings.Join(strings.Fields(*changes.Title), " ")
