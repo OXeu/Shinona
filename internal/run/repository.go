@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -84,6 +85,10 @@ type turnClaimer interface {
 	ClaimNext(ctx context.Context, now time.Time) (*Run, error)
 }
 
+// ErrTurnClaimed signals that a queued stop raced with the scheduler.
+var ErrTurnClaimed = errors.New("the turn has already been claimed")
+
 type queuedTurnStopper interface {
+	// StopQueued atomically stops a queued turn and distinguishes a running turn.
 	StopQueued(ctx context.Context, ownerID, sessionID, id string, now time.Time) error
 }

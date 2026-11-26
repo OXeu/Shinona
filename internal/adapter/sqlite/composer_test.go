@@ -277,6 +277,12 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 	}()
 
 	awaitInput(t, ctx, agent.inputs, "first")
+	if err := repository.Conversations.StopQueued(ctx, "owner", session.ID, first.ID, time.Now()); !errors.Is(err, run.ErrTurnClaimed) {
+		t.Fatalf("queued stop did not detect a claimed turn: %v", err)
+	}
+	if err := repository.Conversations.StopQueued(ctx, "other", session.ID, first.ID, time.Now()); !errors.Is(err, run.ErrNotRunning) {
+		t.Fatalf("queued stop exposed another account's claimed turn: %v", err)
+	}
 	second, err := service.Submit(ctx, "owner", session.ID, "second", run.Payload{}, true)
 	if err != nil {
 		t.Fatal(err)

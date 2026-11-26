@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -13,7 +14,7 @@ import (
 // Controls routes commands to the active turn of each session.
 type Controls struct {
 	mu           sync.Mutex
-	claiming     sync.Mutex
+	claiming     chan struct{}
 	leases       keylock.Locks[sandbox.ProjectKey]
 	active       map[sessionKey]*activeTurn
 	liveProjects map[sandbox.ProjectKey]*liveWorkspace
@@ -55,8 +56,10 @@ func (c *Controls) queueWake() chan struct{} {
 }
 
 func (c *Controls) claim(ctx context.Context, repo turnClaimer) (*activeTurn, error) {
-	c.claiming.Lock()
-	defer c.claiming.Unlock()
+	if err := c.beginClaim(ctx); err != nil {
+		return nil, err
+	}
+	defer c.endClaim()
 	item, err := repo.ClaimNext(ctx, time.Now().UTC())
 	if err != nil || item == nil {
 		return nil, err
@@ -79,6 +82,32 @@ func (c *Controls) claim(ctx context.Context, repo turnClaimer) (*activeTurn, er
 	c.active[key] = active
 	c.notifyLocked(key, true)
 	return active, nil
+}
+
+func (c *Controls) beginClaim(ctx context.Context) error {
+	for ctx.Err() == nil {
+		c.mu.Lock()
+		claiming := c.claiming
+		if claiming == nil {
+			c.claiming = make(chan struct{})
+			c.mu.Unlock()
+			return nil
+		}
+		c.mu.Unlock()
+		select {
+		case <-claiming:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return ctx.Err()
+}
+
+func (c *Controls) endClaim() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	close(c.claiming)
+	c.claiming = nil
 }
 
 func (c *Controls) updateSteering(owner, session, id string, durable bool, change func(*Steering) error) error {
@@ -106,20 +135,34 @@ func (c *Controls) stop(ctx context.Context, repo queuedTurnStopper, owner, sess
 	if c.cancelActive(key, id) {
 		return nil
 	}
-	// A database claim and its registration form one handoff. Protect the
-	// queued fallback until any in-flight claim has registered the active turn.
-	c.claiming.Lock()
-	if c.cancelActive(key, id) {
-		c.claiming.Unlock()
-		return nil
-	}
 	err := repo.StopQueued(ctx, owner, session, id, time.Now().UTC())
-	c.claiming.Unlock()
-	if err == nil {
+	switch {
+	case err == nil:
 		c.changed(owner, session)
 		c.wakeQueue()
+		return nil
+	case !errors.Is(err, ErrTurnClaimed):
+		return err
 	}
-	return err
+
+	// The durable status can become RUNNING before the worker registers it.
+	c.mu.Lock()
+	active, claiming := c.active[key], c.claiming
+	c.mu.Unlock()
+	if !active.matches(owner, session, id) && claiming != nil {
+		select {
+		case <-claiming:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.cancelActive(key, id) {
+		return nil
+	}
+	return ErrNotRunning
 }
 
 func (c *Controls) cancelActive(key sessionKey, id string) bool {

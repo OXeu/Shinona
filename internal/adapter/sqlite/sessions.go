@@ -357,14 +357,25 @@ func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitl
 
 func (r *ConversationStore) StopQueued(ctx context.Context, owner, sessionID, id string, now time.Time) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&row{}).
-			Where("owner_id = ? AND session_id = ? AND id = ? AND status = ?", owner, sessionID, id, run.Queued).
+		turn := func() *gorm.DB { return conversationTurns(tx, owner, sessionID).Where("id = ?", id) }
+		result := turn().Where("status = ?", run.Queued).
 			Updates(map[string]any{"status": run.Stopped, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			return run.ErrNotRunning
+			var record row
+			err := turn().Select("status").Take(&record).Error
+			switch {
+			case errors.Is(err, gorm.ErrRecordNotFound):
+				return run.ErrNotRunning
+			case err != nil:
+				return err
+			case record.Status == run.Running:
+				return run.ErrTurnClaimed
+			default:
+				return run.ErrNotRunning
+			}
 		}
 		return sessionScope(tx, owner).Where("id = ?", sessionID).UpdateColumn("updated_at", now).Error
 	})
