@@ -1,6 +1,6 @@
 <script setup lang="ts" generic="T">
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { computed, nextTick, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 
 const props = defineProps<{
   label: string
@@ -8,14 +8,15 @@ const props = defineProps<{
   itemKey: (item: T) => string
   bottomInset: number
   fitContent?: boolean
+  showStart?: boolean
 }>()
 defineSlots<{ default(props: { item: T }): unknown; start?(): unknown; empty(): unknown }>()
 
 const scroll = useTemplateRef('scroll')
 const start = useTemplateRef('start')
 const startHeight = ref(0)
-const prependPadding = ref(0)
-const startPadding = computed(() => 30 + startHeight.value)
+// Remove the start control's space in the same update that prepends the last page.
+const startPadding = computed(() => 30 + (props.showStart ? startHeight.value : 0))
 watch(start, (element, _, onCleanup) => {
   if (!element) return
   const measureStart = () => { startHeight.value = element.offsetHeight }
@@ -34,7 +35,6 @@ const virtualizer = useVirtualizer<HTMLElement, HTMLElement>(computed(() => {
     overscan: 6,
     gap: 14,
     paddingStart: startPadding.value,
-    scrollPaddingStart: prependPadding.value,
     paddingEnd: props.bottomInset,
     anchorTo: 'end',
     followOnAppend: true,
@@ -49,23 +49,6 @@ const height = computed(() => virtualizer.value.getTotalSize())
 const viewportHeight = computed(() => virtualizer.value.scrollRect?.height ?? 0)
 let initialScrollDone = false
 let frame: number | undefined
-
-watch(() => props.items, (items, previous) => {
-  const offset = scroll.value?.scrollTop
-  const first = previous[0]
-  if (!first || offset === undefined || !startHeight.value || offset >= startPadding.value) return
-  const anchor = props.itemKey(first)
-  const index = items.findIndex((item) => props.itemKey(item) === anchor)
-  if (index <= 0) return
-  // The start control is above the measured rows. Anchor to the first message
-  // explicitly when it is below the viewport's top edge during a prepend.
-  prependPadding.value = startPadding.value - offset
-  void nextTick(() => {
-    const currentIndex = props.items.findIndex((item) => props.itemKey(item) === anchor)
-    if (currentIndex > 0) virtualizer.value.scrollToIndex(currentIndex, { align: 'start' })
-    prependPadding.value = 0
-  })
-}, { flush: 'sync' })
 
 function measure(value: unknown) {
   if (value instanceof HTMLElement) virtualizer.value.measureElement(value)
@@ -97,7 +80,7 @@ onUnmounted(() => {
       <slot name="empty" />
     </div>
     <div class="virtual-column-list" :hidden="!items.length" :style="{ height: height + 'px' }">
-      <div ref="start" class="virtual-column-start">
+      <div v-if="showStart" ref="start" class="virtual-column-start">
         <slot name="start" />
       </div>
       <div

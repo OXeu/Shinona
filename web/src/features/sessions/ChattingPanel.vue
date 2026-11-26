@@ -162,9 +162,10 @@ const messages = computed(() => {
         :item-key="(item) => item.id"
         :bottom-inset="inset"
         :fit-content="centered"
+        :show-start="hasOlder"
       >
         <template #start>
-          <UiBox :hidden="!hasOlder" class="conversation-history">
+          <UiBox class="conversation-history">
             <UiButton class="secondary-button" :disabled="loadingOlder || reverting" @click="emit('loadOlder')">
               {{ t(loadingOlder ? 'chat.loadingOlder' : 'chat.loadOlder') }}
             </UiButton>
