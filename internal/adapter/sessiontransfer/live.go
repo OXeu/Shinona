@@ -233,7 +233,7 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 			}
 		case <-watch.Changes():
 			change := watch.Read()
-			if change.Transcript || change.Progress.TurnID != state.progress.TurnID {
+			if change.Transcript || change.Progress.TurnID != state.progress.TurnID || change.PartOffset > len(state.progress.Parts) {
 				if found, err := syncPage("live_resync"); err != nil || !found {
 					return err
 				}
@@ -243,7 +243,9 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 				continue
 			}
 			build := timing.Start(ctx, "live_build_delta")
-			delta := progressDelta(state.progress, change.Progress)
+			delta := progressDelta(state.progress, change.Progress, change.PartOffset)
+			clear(state.progress.Parts[change.PartOffset:])
+			change.Progress.Parts = append(state.progress.Parts[:change.PartOffset], change.Progress.Parts...)
 			build()
 			state.progress = change.Progress
 			if delta != nil {

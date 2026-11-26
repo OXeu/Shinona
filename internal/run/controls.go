@@ -198,12 +198,20 @@ func (c *Controls) addProgress(turn *Run) {
 	}
 }
 
-func (c *Controls) reportParts(active *activeTurn, parts []TurnPart) {
+func (c *Controls) reportParts(active *activeTurn, offset int, parts []TurnPart) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.active[active.key()] == active && !slices.Equal(active.parts, parts) {
-		active.parts = slices.Clone(parts)
-		c.notifyLocked(active.key(), false)
+	key := active.key()
+	if c.active[key] != active || slices.Equal(active.parts[offset:], parts) {
+		return
+	}
+	clear(active.parts[offset:])
+	active.parts = append(active.parts[:offset], parts...)
+	for watch := range c.watchers[key] {
+		if watch.firstChangedPart < 0 || offset < watch.firstChangedPart {
+			watch.firstChangedPart = offset
+		}
+		watch.notify(false)
 	}
 }
 

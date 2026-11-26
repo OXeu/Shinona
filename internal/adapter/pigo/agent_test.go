@@ -68,7 +68,7 @@ func TestAgentToolsUseProvidedWorkspace(t *testing.T) {
 	var liveTool bool
 	output, err := agent.Run(t.Context(), run.Input{
 		Prompt: "Create and read example.txt.",
-		ReportParts: func(parts []run.TurnPart) {
+		ReportParts: func(_ int, parts []run.TurnPart) {
 			for _, part := range parts {
 				if part.Tool == "read" && part.Status == string(run.Running) {
 					liveTool = true
@@ -137,10 +137,14 @@ func TestLongAgentLoopKeepsReportingNewToolActivity(t *testing.T) {
 	responses = append(responses, ai.AssistantMessage{Content: ai.ContentList{ai.TextContent{Text: "Final answer."}}})
 	fixture := scriptedAgent(t, responses...)
 	lastInput := fmt.Sprintf(`{"path":"step-%d"}`, calls-1)
-	var liveTools, endedTools int
+	var liveTools, endedTools, publishedParts int
+	var progress []run.TurnPart
 	result, err := fixture.Run(t.Context(), run.Input{
 		Prompt: "Run the inspection.",
-		ReportParts: func(parts []run.TurnPart) {
+		ReportParts: func(offset int, suffix []run.TurnPart) {
+			publishedParts += len(suffix)
+			progress = append(progress[:offset], suffix...)
+			parts := progress
 			if len(parts) == 0 || parts[len(parts)-1].Kind != "tool" {
 				return
 			}
@@ -170,6 +174,10 @@ func TestLongAgentLoopKeepsReportingNewToolActivity(t *testing.T) {
 	if err != nil || result.Output != "Final answer." || liveTools != calls || endedTools != calls || len(result.Parts) != 2*calls {
 		t.Fatalf("long turn did not preserve activity: output=%q, started=%d, ended=%d, saved=%d, error=%v", result.Output, liveTools, endedTools, len(result.Parts), err)
 	}
+	if publishedParts > 5*calls+1 {
+		t.Fatalf("published %d parts for %d tools, expected only the changed suffixes", publishedParts, calls)
+	}
+	t.Logf("published %d parts for %d tools", publishedParts, calls)
 	last := result.Parts[len(result.Parts)-1]
 	if last.Input != lastInput || last.Status != string(run.Succeeded) || last.Output != "hello" {
 		t.Fatalf("latest completed tool is missing: %+v", last)

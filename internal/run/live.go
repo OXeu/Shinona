@@ -20,16 +20,19 @@ type LiveProgress struct {
 type SessionChange struct {
 	// Transcript indicates that the persisted transcript or session summary changed.
 	Transcript bool
+	// Progress.Parts replaces the suffix beginning at PartOffset.
+	PartOffset int
 	Progress   LiveProgress
 }
 
 // SessionWatch coalesces notifications for one viewer. Slow viewers can read
 // the latest state without retaining every intermediate version in memory.
 type SessionWatch struct {
-	controls *Controls
-	key      sessionKey
-	changed  chan struct{}
-	dirty    bool
+	controls         *Controls
+	key              sessionKey
+	changed          chan struct{}
+	dirty            bool
+	firstChangedPart int // Negative until a part changes.
 }
 
 func (s *Service) WatchSession(ctx context.Context, owner, id string) (*SessionWatch, error) {
@@ -48,7 +51,7 @@ func (c *Controls) watch(key sessionKey) *SessionWatch {
 	if c.watchers[key] == nil {
 		c.watchers[key] = make(map[*SessionWatch]struct{})
 	}
-	watch := &SessionWatch{controls: c, key: key, changed: make(chan struct{}, 1)}
+	watch := &SessionWatch{controls: c, key: key, changed: make(chan struct{}, 1), firstChangedPart: -1}
 	c.watchers[key][watch] = struct{}{}
 	return watch
 }
@@ -61,9 +64,16 @@ func (w *SessionWatch) Read() SessionChange {
 	change := SessionChange{Transcript: w.dirty}
 	w.dirty = false
 	active := c.active[w.key]
-	change.Progress = active.progress()
+	if active != nil && !change.Transcript {
+		change.PartOffset = len(active.parts)
+		if w.firstChangedPart >= 0 {
+			change.PartOffset = w.firstChangedPart
+		}
+		change.Progress = active.progressFrom(change.PartOffset)
+	}
+	w.firstChangedPart = -1
 	c.mu.Unlock()
-	if active != nil {
+	if active != nil && !change.Transcript {
 		change.Progress.Steering = active.steering.snapshot()
 	}
 	return change
@@ -72,7 +82,7 @@ func (w *SessionWatch) Read() SessionChange {
 func (c *Controls) progress(key sessionKey) LiveProgress {
 	c.mu.Lock()
 	active := c.active[key]
-	progress := active.progress()
+	progress := active.progressFrom(0)
 	c.mu.Unlock()
 	if active != nil {
 		progress.Steering = active.steering.snapshot()
@@ -80,12 +90,12 @@ func (c *Controls) progress(key sessionKey) LiveProgress {
 	return progress
 }
 
-func (a *activeTurn) progress() LiveProgress {
+func (a *activeTurn) progressFrom(offset int) LiveProgress {
 	if a == nil {
 		return LiveProgress{}
 	}
 	return LiveProgress{
-		TurnID: a.item.ID, Parts: slices.Clone(a.parts), Context: a.usage,
+		TurnID: a.item.ID, Parts: slices.Clone(a.parts[offset:]), Context: a.usage,
 	}
 }
 
@@ -117,10 +127,14 @@ func (c *Controls) changedAccount(owner string) {
 
 func (c *Controls) notifyLocked(key sessionKey, durable bool) {
 	for watch := range c.watchers[key] {
-		watch.dirty = watch.dirty || durable
-		select {
-		case watch.changed <- struct{}{}:
-		default:
-		}
+		watch.notify(durable)
+	}
+}
+
+func (w *SessionWatch) notify(durable bool) {
+	w.dirty = w.dirty || durable
+	select {
+	case w.changed <- struct{}{}:
+	default:
 	}
 }

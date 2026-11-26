@@ -27,9 +27,11 @@ func TestArrowJSOnlyRunsWhenSelected(t *testing.T) {
 		}
 		var reportedDisplay bool
 		result, err := fixture.Run(t.Context(), run.Input{
-			Prompt:      "Show the total.",
-			Payload:     run.Payload{Options: run.Options{Permission: run.ReadOnly, ArrowJS: enabled}},
-			ReportParts: func(parts []run.TurnPart) { reportedDisplay = reportedDisplay || slices.ContainsFunc(parts, isDisplay) },
+			Prompt:  "Show the total.",
+			Payload: run.Payload{Options: run.Options{Permission: run.ReadOnly, ArrowJS: enabled}},
+			ReportParts: func(_ int, parts []run.TurnPart) {
+				reportedDisplay = reportedDisplay || slices.ContainsFunc(parts, isDisplay)
+			},
 		}, &recordingWorkspace{})
 		if err != nil {
 			t.Fatal(err)

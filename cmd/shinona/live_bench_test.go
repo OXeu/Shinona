@@ -188,7 +188,7 @@ func benchmarkLiveFanout(b *testing.B, viewers int) {
 	base := strings.Repeat("Initial agent output. ", 96)
 	text, output := base, base
 	report := func() {
-		input.ReportParts([]run.TurnPart{
+		input.ReportParts(0, []run.TurnPart{
 			{Kind: "text", Text: text},
 			{Kind: "tool", Tool: "test", Output: output, Status: string(run.Running)},
 		})

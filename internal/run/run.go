@@ -235,13 +235,15 @@ type Exchange struct {
 }
 
 type Input struct {
-	OwnerID       string
-	SessionID     string
-	Prompt        string
-	History       []Exchange
-	Payload       Payload
-	Steering      *Steering
-	ReportParts   func([]TurnPart)
+	OwnerID   string
+	SessionID string
+	Prompt    string
+	History   []Exchange
+	Payload   Payload
+	Steering  *Steering
+	// ReportParts replaces the displayed suffix starting at offset. The
+	// callback consumes the parts before returning.
+	ReportParts   func(offset int, parts []TurnPart)
 	ReportContext func(ContextUsage)
 }
 

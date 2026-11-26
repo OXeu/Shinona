@@ -43,7 +43,7 @@ func (logs timingLogs) Write(data []byte) (int, error) {
 }
 
 func (a stagedAgent) Run(ctx context.Context, input run.Input, _ sandbox.Workspace) (run.Result, error) {
-	input.ReportParts([]run.TurnPart{{Kind: "text", Text: "initial text"}})
+	input.ReportParts(0, []run.TurnPart{{Kind: "text", Text: "initial text"}})
 	for {
 		select {
 		case step := <-a.steps:
@@ -281,15 +281,14 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		return false
 	})
 	agent.steps <- func(input run.Input) {
-		input.ReportParts([]run.TurnPart{{Kind: "text", Text: "initial text and delta"}})
+		input.ReportParts(0, []run.TurnPart{{Kind: "text", Text: "initial text and delta"}})
 	}
 	progress := waitFor(conn, &seq, func(msg *sessionpb.LiveMessage) bool { return len(msg.GetProgress().GetParts()) != 0 }).GetProgress()
 	if progress.TurnId != current.ID || len(progress.Parts) != 1 || progress.Parts[0].GetAppend().GetText() != " and delta" {
 		t.Fatalf("expected suffix-only progress: %v", progress)
 	}
 	agent.steps <- func(input run.Input) {
-		input.ReportParts([]run.TurnPart{
-			{Kind: "text", Text: "initial text and delta"},
+		input.ReportParts(1, []run.TurnPart{
 			{Kind: "thinking", Text: "Earlier thought"},
 			{Kind: "tool", Tool: "read", Status: string(run.Succeeded)},
 			{Kind: "thinking", Text: "Current thought", Status: string(run.Running)},

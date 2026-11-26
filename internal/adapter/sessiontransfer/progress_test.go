@@ -18,7 +18,7 @@ func TestProgressDeltaReplacesChangedToolMetadataAndTrimsParts(t *testing.T) {
 	next := run.LiveProgress{TurnID: "turn", Parts: []run.TurnPart{
 		{Kind: "tool", Tool: "read", Output: "begin and end", Status: string(run.Succeeded)},
 	}}
-	delta := progressDelta(previous, next)
+	delta := progressDelta(previous, next, 0)
 	if delta == nil || delta.PartCount != 1 || len(delta.Parts) != 1 || delta.Steering == nil {
 		t.Fatalf("missing replace, trim or steering update: %v", delta)
 	}
@@ -26,7 +26,7 @@ func TestProgressDeltaReplacesChangedToolMetadataAndTrimsParts(t *testing.T) {
 	if edit.GetIndex() != 0 || edit.GetReplace().GetStatus() != string(run.Succeeded) || edit.GetReplace().GetOutput() != "begin and end" {
 		t.Fatalf("tool status change did not replace the part: %v", edit)
 	}
-	if progressDelta(next, next) != nil {
+	if progressDelta(next, next, 0) != nil {
 		t.Fatal("identical progress emitted an update")
 	}
 }
@@ -38,7 +38,7 @@ func TestProgressDeltaUpdatesThinkingEstimateWithoutRepeatingText(t *testing.T) 
 	current := run.LiveProgress{TurnID: "turn", Parts: []run.TurnPart{
 		{Kind: "thinking", Status: string(run.Running), Text: "clipped…", EstimatedTokens: 2100},
 	}}
-	delta := progressDelta(previous, current)
+	delta := progressDelta(previous, current, 0)
 	if delta == nil || len(delta.Parts) != 1 {
 		t.Fatalf("missing thinking progress: %v", delta)
 	}
@@ -52,12 +52,12 @@ func TestProgressDeltaCarriesContextWithoutTranscriptChanges(t *testing.T) {
 	previous := run.LiveProgress{TurnID: "turn", Context: run.ContextUsage{Tokens: 120, Window: 64000, Estimated: true}}
 	current := previous
 	current.Context.Tokens = 130
-	delta := progressDelta(previous, current)
+	delta := progressDelta(previous, current, 0)
 	if delta == nil || len(delta.Parts) != 0 || delta.Context.GetTokens() != 130 || !delta.Context.GetEstimated() {
 		t.Fatalf("expected a context-only progress update: %v", delta)
 	}
 	current.Context = run.ContextUsage{}
-	clear := progressDelta(previous, current)
+	clear := progressDelta(previous, current, 0)
 	if clear == nil || clear.Context == nil || clear.Context.Tokens != 0 {
 		t.Fatalf("expected a context reset: %v", clear)
 	}

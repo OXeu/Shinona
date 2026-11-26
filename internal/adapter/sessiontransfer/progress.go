@@ -8,9 +8,11 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
-func progressDelta(previous, current run.LiveProgress) *sessionpb.LiveProgress {
-	change := &sessionpb.LiveProgress{TurnId: current.TurnID, PartCount: uint32(len(current.Parts))}
-	for index, next := range current.Parts {
+func progressDelta(previous, current run.LiveProgress, offset int) *sessionpb.LiveProgress {
+	partCount := offset + len(current.Parts)
+	change := &sessionpb.LiveProgress{TurnId: current.TurnID, PartCount: uint32(partCount)}
+	for part, next := range current.Parts {
+		index := offset + part
 		if index < len(previous.Parts) {
 			last := previous.Parts[index]
 			if last == next {
@@ -37,7 +39,7 @@ func progressDelta(previous, current run.LiveProgress) *sessionpb.LiveProgress {
 	if previous.Context != current.Context {
 		change.Context = &sessionpb.ContextUsage{Tokens: current.Context.Tokens, Window: current.Context.Window, Estimated: current.Context.Estimated}
 	}
-	if len(change.Parts) == 0 && change.Steering == nil && change.Context == nil && len(previous.Parts) == len(current.Parts) {
+	if len(change.Parts) == 0 && change.Steering == nil && change.Context == nil && len(previous.Parts) == partCount {
 		return nil
 	}
 	return change

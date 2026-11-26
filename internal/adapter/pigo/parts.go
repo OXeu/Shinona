@@ -2,7 +2,6 @@ package pigo
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,15 +22,15 @@ type partProjection struct {
 	toolCalls map[string]int
 }
 
-// liveParts adds finalized Pi messages in order and overlays the streaming response.
-func liveParts(report func([]run.TurnPart)) func(agent.AgentEvent) {
+// liveParts keeps only the Pi turn still emitting messages or tool results.
+func liveParts(report func(int, []run.TurnPart)) func(agent.AgentEvent) {
 	var lastReport time.Time
+	var committed int
 	view := partProjection{toolCalls: make(map[string]int)}
 	return func(event agent.AgentEvent) {
 		if report == nil {
 			return
 		}
-		var parts []run.TurnPart
 		switch event.Type {
 		case agent.EvMessageUpdate, agent.EvToolExecutionUpdate:
 			if time.Since(lastReport) < 150*time.Millisecond {
@@ -44,15 +43,19 @@ func liveParts(report func([]run.TurnPart)) func(agent.AgentEvent) {
 			if message == nil {
 				return
 			}
+			var parts []run.TurnPart
 			for _, block := range message.Content {
 				if part, ok := textPart(block, true); ok {
 					parts = append(parts, part)
 				}
 			}
+			report(committed+len(view.parts), parts)
 		case agent.EvMessageEnd:
-			if !view.addMessage(event.Message, false) {
+			index, changed := view.addMessage(event.Message, false)
+			if !changed {
 				return
 			}
+			report(committed+index, view.parts[index:])
 		case agent.EvToolExecutionStart, agent.EvToolExecutionUpdate:
 			index, ok := view.toolCalls[event.ToolCallID]
 			if !ok {
@@ -63,10 +66,16 @@ func liveParts(report func([]run.TurnPart)) func(agent.AgentEvent) {
 			if result, ok := event.PartialResult.(agent.AgentToolResult); ok {
 				part.Output = toolOutput(result.Content)
 			}
+			report(committed+index, view.parts[index:])
+		case agent.EvTurnEnd:
+			committed += len(view.parts)
+			clear(view.parts)
+			view.parts = view.parts[:0]
+			clear(view.toolCalls)
+			return
 		default:
 			return
 		}
-		report(slices.Concat(view.parts, parts))
 		lastReport = time.Now()
 	}
 }
@@ -79,28 +88,29 @@ func transcriptParts(messages []agent.AgentMessage, omitFinalText bool) []run.Tu
 	return view.parts
 }
 
-func (p *partProjection) addMessage(entry agent.AgentMessage, omitText bool) bool {
+func (p *partProjection) addMessage(entry agent.AgentMessage, omitText bool) (int, bool) {
 	if result, ok := entry.(ai.ToolResultMessage); ok {
 		index, found := p.toolCalls[result.ToolCallID]
 		if !found {
-			return false
+			return 0, false
 		}
 		part := &p.parts[index]
 		if result.IsError {
 			part.Status = string(run.Failed)
 		} else if display, ok := result.Details.(renderedUI); ok {
 			*part = uiPart(display)
-			return true
+			return index, true
 		} else {
 			part.Status = string(run.Succeeded)
 		}
 		part.Output = toolOutput(result.Content)
-		return true
+		return index, true
 	}
 	message := assistantMessage(entry)
 	if message == nil {
-		return false
+		return 0, false
 	}
+	start := len(p.parts)
 	clear(p.toolCalls)
 	for _, block := range message.Content {
 		if call, ok := block.(ai.ToolCall); ok && call.Name != "" {
@@ -112,7 +122,7 @@ func (p *partProjection) addMessage(entry agent.AgentMessage, omitText bool) boo
 			p.parts = append(p.parts, part)
 		}
 	}
-	return true
+	return start, true
 }
 
 func textPart(block ai.Content, streaming bool) (run.TurnPart, bool) {

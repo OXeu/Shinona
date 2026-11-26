@@ -3,11 +3,47 @@ package run
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 )
+
+func TestSessionWatchCoalescesChangedPartSuffixes(t *testing.T) {
+	controls := &Controls{}
+	active, err := controls.claim(t.Context(), claimRepository{})
+	if err != nil || active == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	t.Cleanup(active.cancel)
+	finished := TurnPart{Kind: "thinking", Text: "finished"}
+	first := TurnPart{Kind: "tool", Tool: "read", Status: string(Running)}
+	second := TurnPart{Kind: "text", Text: "draft"}
+	controls.reportParts(active, 0, []TurnPart{finished, first, second})
+	watch := controls.watch(active.key())
+	t.Cleanup(watch.Close)
+
+	second.Text = "revised draft"
+	controls.reportParts(active, 2, []TurnPart{second})
+	first.Status = string(Succeeded)
+	controls.reportParts(active, 1, []TurnPart{first, second})
+	changes := watch.Read()
+	if changes.PartOffset != 1 || !slices.Equal(changes.Progress.Parts, []TurnPart{first, second}) {
+		t.Fatalf("unexpected coalesced progress: %+v", changes)
+	}
+	controls.reportParts(active, 2, nil)
+	if change := watch.Read(); change.PartOffset != 2 || len(change.Progress.Parts) != 0 {
+		t.Fatalf("truncation must replace the tail with no parts: %+v", change)
+	}
+	controls.reportContext(active, ContextUsage{Tokens: 100})
+	if change := watch.Read(); change.PartOffset != 2 || len(change.Progress.Parts) != 0 || change.Progress.Context.Tokens != 100 {
+		t.Fatalf("context-only update recopied completed parts: %+v", change)
+	}
+	if got := controls.progress(active.key()).Parts; !slices.Equal(got, []TurnPart{finished, first}) {
+		t.Fatalf("reconnect must include the full active transcript: %+v", got)
+	}
+}
 
 type claimRepository struct{}
 
