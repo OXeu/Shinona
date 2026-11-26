@@ -16,7 +16,6 @@ import (
 
 	sdk "github.com/eric642/e2b-go-sdk"
 
-	"github.com/OXeu/shinona/internal/keylock"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
@@ -38,6 +37,8 @@ type Config struct {
 	WorkspaceUser  string
 	WorkDirectory  string
 	CleanupTimeout time.Duration
+	// Share leases when rebuilding this provider after a settings change.
+	ProjectLeases *ProjectLeases
 }
 
 type Provider struct {
@@ -47,13 +48,8 @@ type Provider struct {
 	sdkProxyURL string
 	endpoint    string
 	store       WorkspaceStore
-	state       *providerState
-}
-
-// Project-specific provider copies share endpoint discovery and provisioning locks.
-type providerState struct {
-	apiVersion atomic.Int32
-	provision  keylock.Locks[sandbox.ProjectKey]
+	apiVersion  *atomic.Int32
+	leases      *ProjectLeases
 }
 
 // WorkspaceStore persists sandbox IDs and private data-plane credentials.
@@ -149,9 +145,13 @@ func New(config Config, data *http.Client, store WorkspaceStore) (*Provider, err
 	if err != nil {
 		return nil, err
 	}
+	leases := config.ProjectLeases
+	if leases == nil {
+		leases = &ProjectLeases{}
+	}
 	return &Provider{
 		api: api, config: config, dataScheme: scheme, sdkProxyURL: sdkConfig.SandboxURL,
-		endpoint: strings.TrimRight(apiURL, "/"), store: store, state: &providerState{},
+		endpoint: strings.TrimRight(apiURL, "/"), store: store, apiVersion: new(atomic.Int32), leases: leases,
 	}, nil
 }
 
@@ -185,7 +185,8 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	if spec.Policy != sandbox.Shared {
 		return nil, sandbox.ErrPolicy
 	}
-	release, err := p.state.provision.Acquire(ctx, spec.ProjectKey(), false)
+	key := p.leaseKey(spec)
+	release, err := p.leases.gates.Acquire(ctx, key, false)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +195,7 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	if err != nil {
 		return nil, err
 	}
-	workspace.keepAwake(ctx, p.config.Timeout)
+	p.leases.retain(ctx, key, workspace, p.config.Timeout)
 	return workspace, nil
 }
 
@@ -217,6 +218,11 @@ func (p *Provider) acquireProject(ctx context.Context, spec sandbox.Spec) (*proj
 }
 
 func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
+	release, err := p.leases.gates.Acquire(ctx, p.leaseKey(spec), false)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	project, err := p.loadProject(ctx, spec)
 	if err != nil {
 		return nil, err
@@ -226,6 +232,10 @@ func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.
 		return nil, err
 	}
 	return workspace, nil
+}
+
+func (p *Provider) leaseKey(spec sandbox.Spec) leaseKey {
+	return leaseKey{endpoint: p.endpoint, project: spec.ProjectKey()}
 }
 
 func (p *Provider) loadProject(ctx context.Context, spec sandbox.Spec) (projectSandbox, error) {
@@ -260,6 +270,7 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 	})
 	if err != nil {
 		if isGone(err) {
+			p.leases.update(p.leaseKey(spec), "", 0, nil)
 			return nil, fmt.Errorf("%w: %w", sandbox.ErrWorkspaceMissing, err)
 		}
 		return nil, fmt.Errorf("reconnect E2B project sandbox %s: %w", id, err)
@@ -274,6 +285,7 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 			return nil, fmt.Errorf("set E2B project sandbox timeout: %w", err)
 		}
 	}
+	p.leases.update(p.leaseKey(spec), id, p.config.Timeout, box.RefreshTimeout)
 	tokens := boxCredentials(box, project.tokens)
 	tokens.Timeout = p.config.Timeout
 	workspace, tokens, err := p.dataPlane(ctx, box, tokens, true)
@@ -339,6 +351,7 @@ func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previou
 		return p.reconcileCreatedProject(ctx, spec, box, err)
 	}
 	if saved {
+		p.leases.update(p.leaseKey(spec), box.ID, p.config.Timeout, box.RefreshTimeout)
 		return workspace, nil
 	}
 	return p.reconcileCreatedProject(ctx, spec, box, nil)
@@ -355,7 +368,7 @@ func (p *Provider) requestSandbox(ctx context.Context, request func(context.Cont
 	case "v2":
 		return request(ctx, false)
 	}
-	first := p.state.apiVersion.Load() == 1
+	first := p.apiVersion.Load() == 1
 	box, err := request(ctx, first)
 	if err == nil || !routeUnavailable(err) {
 		return box, err
@@ -363,9 +376,9 @@ func (p *Provider) requestSandbox(ctx context.Context, request func(context.Cont
 	box, fallback := request(ctx, !first)
 	if fallback == nil {
 		if first {
-			p.state.apiVersion.Store(2)
+			p.apiVersion.Store(2)
 		} else {
-			p.state.apiVersion.Store(1)
+			p.apiVersion.Store(1)
 		}
 		return box, nil
 	}

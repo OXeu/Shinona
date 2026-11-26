@@ -38,7 +38,8 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 }
 
 func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expectedID string) error {
-	release, err := p.state.provision.Acquire(ctx, spec.ProjectKey(), false)
+	key := p.leaseKey(spec)
+	release, err := p.leases.gates.Acquire(ctx, key, false)
 	if err != nil {
 		return err
 	}
@@ -51,11 +52,13 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expect
 		return sandbox.ErrProjectChanged
 	}
 	if id == "" {
+		p.leases.update(key, "", 0, nil)
 		return nil
 	}
 	if _, err := p.api.Kill(ctx, id); err != nil && !isGone(err) {
 		return err
 	}
+	p.leases.update(key, "", 0, nil)
 	save, stop := context.WithTimeout(context.WithoutCancel(ctx), apiTimeout)
 	defer stop()
 	return p.store.DeleteE2BSandbox(save, spec.OwnerID, spec.ProjectID, p.endpoint, id)

@@ -189,7 +189,9 @@ func trustedProxyNetworks(raw string) ([]netip.Prefix, error) {
 	return networks, nil
 }
 
-func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfig, client *http.Client, store e2b.WorkspaceStore, cleanup time.Duration) (sandbox.Provider, error) {
+func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfig, client *http.Client,
+	store e2b.WorkspaceStore, cleanup time.Duration, leases *e2b.ProjectLeases,
+) (sandbox.Provider, error) {
 	key := values[settings.E2BAPIKey]
 	if key == "" {
 		return nil, nil
@@ -199,7 +201,7 @@ func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfi
 		ProxyURL: values[settings.E2BProxyURL], Domain: values[settings.E2BDomain],
 		Timeout: time.Duration(defaults.TimeoutSeconds) * time.Second, OnTimeout: defaults.OnTimeout,
 		APIVersion: values[settings.E2BAPIVersion], WorkspaceUser: values[settings.E2BWorkspaceUser],
-		WorkDirectory: values[settings.E2BWorkDirectory], CleanupTimeout: cleanup,
+		WorkDirectory: values[settings.E2BWorkDirectory], CleanupTimeout: cleanup, ProjectLeases: leases,
 	}, client, store)
 	if err != nil {
 		return nil, settings.Invalid("INVALID_E2B_CONFIG", err.Error())
