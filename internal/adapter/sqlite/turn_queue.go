@@ -122,8 +122,26 @@ func (r *ConversationStore) Complete(ctx context.Context, id string, completion 
 }
 
 func (r *ConversationStore) FailInterrupted(ctx context.Context, now time.Time) error {
-	return r.db.WithContext(ctx).Model(&row{}).Where("status = ?", run.Running).
-		Updates(map[string]any{"status": run.Failed, "updated_at": now}).Error
+	failure, err := json.Marshal(run.TurnPart{Kind: "failure", Text: run.FailureInterrupted})
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		interruptedSessions := tx.Model(&row{}).Select("owner_id, session_id").
+			Where("status = ? AND reverted_at IS NULL", run.Running)
+		if err := tx.Model(&sessionRow{}).
+			Where("archived_at IS NULL AND updated_at < ? AND (owner_id, id) IN (?)", now, interruptedSessions).
+			UpdateColumn("updated_at", now).Error; err != nil {
+			return err
+		}
+		// Preserve existing parts. An unreadable value must not block startup.
+		parts := gorm.Expr(`json_insert(CASE
+			WHEN NOT json_valid(parts) THEN '[]'
+			WHEN json_type(parts) = 'array' THEN parts
+			ELSE '[]' END, '$[#]', json(?))`, string(failure))
+		return tx.Model(&row{}).Where("status = ?", run.Running).
+			Updates(map[string]any{"status": run.Failed, "updated_at": now, "parts": parts}).Error
+	})
 }
 
 var _ run.WorkerRepository = (*ConversationStore)(nil)

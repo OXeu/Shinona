@@ -286,6 +286,66 @@ func TestDelayedCompletionPreservesNewerSessionActivity(t *testing.T) {
 	}
 }
 
+func TestRecoverInterruptedTurns(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "alice", "bob")
+	started := time.Now().UTC()
+	recovered := started.Add(time.Second)
+	queuedAt := recovered.Add(time.Second)
+	for _, session := range []run.Session{
+		{ID: "one", OwnerID: "alice", CreatedAt: started, UpdatedAt: started},
+		{ID: "two", OwnerID: "bob", CreatedAt: started, UpdatedAt: started},
+	} {
+		if err := repo.Conversations.CreateSession(ctx, session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	partial := run.TurnPart{Kind: "thinking", Text: "working"}
+	for _, item := range []run.Run{
+		{ID: "lost", OwnerID: "alice", SessionID: "one", Status: run.Running, CreatedAt: started, UpdatedAt: started},
+		{ID: "partial", OwnerID: "bob", SessionID: "two", Status: run.Running, CreatedAt: started, UpdatedAt: started, Parts: []run.TurnPart{partial}},
+		{ID: "pending", OwnerID: "bob", SessionID: "two", Status: run.Queued, CreatedAt: queuedAt, UpdatedAt: queuedAt},
+	} {
+		if _, err := repo.Conversations.Enqueue(ctx, item, "", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.db.WithContext(ctx).Model(&row{}).Where("id = ?", "lost").UpdateColumn("parts", "[{broken").Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []time.Time{recovered, queuedAt.Add(time.Second)} {
+		if err := repo.Conversations.FailInterrupted(ctx, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertTranscript := func(owner, session string, updated time.Time, active bool, parts []run.TurnPart) *run.Transcript {
+		t.Helper()
+		transcript, err := repo.Conversations.Transcript(ctx, owner, session, 5)
+		if err != nil || transcript == nil || len(transcript.Turns) == 0 {
+			t.Fatalf("recovered transcript %s: %+v, %v", session, transcript, err)
+		}
+		if transcript.Session.Active != active || !transcript.Session.UpdatedAt.Equal(updated) {
+			t.Errorf("unexpected session activity: %+v", transcript.Session)
+		}
+		first := transcript.Turns[0]
+		if first.Status != run.Failed || !first.UpdatedAt.Equal(recovered) || !slices.Equal(first.Parts, parts) {
+			t.Errorf("unexpected recovered turn: %+v", first)
+		}
+		return transcript
+	}
+	failure := run.TurnPart{Kind: "failure", Text: "interrupted"}
+	assertTranscript("alice", "one", recovered, false, []run.TurnPart{failure})
+	transcript := assertTranscript("bob", "two", queuedAt, true, []run.TurnPart{partial, failure})
+	if len(transcript.Turns) != 2 || transcript.Turns[1].Status != run.Queued || !transcript.Turns[1].UpdatedAt.Equal(queuedAt) {
+		t.Fatalf("recovery changed the pending turn: %+v", transcript.Turns)
+	}
+}
+
 func TestHistoryStartsAtLatestEligibleCompaction(t *testing.T) {
 	ctx := t.Context()
 	repo, err := Open(ctx, ":memory:")

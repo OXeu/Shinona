@@ -19,6 +19,7 @@ const (
 	completionWriteTimeout   = 10 * time.Second
 	queueInterval            = 5 * time.Second
 	DefaultWorkerConcurrency = 4
+	FailureInterrupted       = "interrupted"
 )
 
 var errWorkspaceSetup = errors.New("could not prepare the sandbox")
@@ -119,7 +120,11 @@ func (w *Worker) execute(ctx context.Context, active *activeTurn, releaseExecuti
 		details := failureDetails(err)
 		w.logger.Error("execute run", "run_id", item.ID, "error", details)
 		status = Failed
-		result.Parts = append(result.Parts, TurnPart{Kind: "failure", Text: turnFailureReason(active.ctx, err), Output: details})
+		reason := turnFailureReason(active.ctx, err)
+		if errors.Is(ctx.Err(), context.Canceled) && errors.Is(err, context.Canceled) {
+			reason = FailureInterrupted
+		}
+		result.Parts = append(result.Parts, TurnPart{Kind: "failure", Text: reason, Output: details})
 	}
 
 	finished := time.Now().UTC()

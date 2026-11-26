@@ -225,6 +225,7 @@
   "chat.loadOlderFailed": "Could not load earlier messages.",
   "chat.failed": "This turn failed.",
   "chat.failedDeadline": "This turn reached its time limit before the assistant could finish.",
+  "chat.failedInterrupted": "The service stopped before this turn could finish.",
   "chat.failedModel": "The model endpoint did not return a complete answer.",
   "chat.failedModelIdle": "The model stopped sending data. This turn timed out while waiting for a response.",
   "chat.retryModel": "Model for retry",

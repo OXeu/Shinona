@@ -76,6 +76,23 @@ func TestWorkerRetriesCompletionAfterPanic(t *testing.T) {
 	})
 }
 
+func TestWorkerRecordsServerShutdown(t *testing.T) {
+	lifetime, stop := context.WithCancel(t.Context())
+	defer stop()
+	active := &activeTurn{item: Run{ID: "turn", OwnerID: "owner", SessionID: "session"}}
+	active.ctx, active.cancel = context.WithCancel(lifetime)
+	controls := &Controls{active: map[sessionKey]*activeTurn{active.key(): active}}
+	repo := completingRepository{writes: make(chan Completion, 1)}
+	worker := NewWorker(repo, nil, nil, slog.New(slog.DiscardHandler), controls, 1, DefaultWorkspaceTimeouts())
+
+	stop()
+	worker.execute(lifetime, active, func() {})
+	completion := <-repo.writes
+	if completion.Status != Failed || len(completion.Parts) != 1 || completion.Parts[0].Text != FailureInterrupted {
+		t.Fatalf("interrupted turn was not recorded: %+v", completion)
+	}
+}
+
 type pendingCompletionRepository struct {
 	completingRepository
 	queued chan Run
