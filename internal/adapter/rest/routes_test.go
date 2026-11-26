@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,6 +38,11 @@ func (fixtureApplication) ComposerOptions(context.Context) (ComposerOptions, err
 
 func restFixture(t *testing.T) (*sqlite.Database, *gin.Engine) {
 	t.Helper()
+	return restFixtureWithConfig(t, DefaultConfig())
+}
+
+func restFixtureWithConfig(t *testing.T, config Config) (*sqlite.Database, *gin.Engine) {
+	t.Helper()
 	repo, err := sqlite.Open(t.Context(), ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -48,8 +54,7 @@ func restFixture(t *testing.T) (*sqlite.Database, *gin.Engine) {
 		}
 	}
 	router := gin.New()
-	Register(router.Group(Prefix, httpserver.Compress), fixtureService(repo.RunStores()), fixtureApplication{}, slog.New(slog.DiscardHandler),
-		DefaultTranscriptConcurrency())
+	Register(router.Group(Prefix), fixtureService(repo.RunStores()), fixtureApplication{}, slog.New(slog.DiscardHandler), config)
 	return repo, router
 }
 
@@ -288,8 +293,8 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 		request := httptest.NewRequestWithContext(auth.WithUser(t.Context(), auth.User{ID: "alice"}), http.MethodGet, Prefix+path+"?paged=false", nil)
 		request.Header.Set("Accept-Encoding", encoding)
 		got := serve(t, router, request, 200)
-		if got.Header().Get("Vary") != "Accept-Encoding" {
-			t.Fatalf("missing Vary: %+v", got.Header())
+		if !slices.Equal(got.Header().Values("Vary"), []string{"Accept-Encoding"}) {
+			t.Fatalf("unexpected Vary: %+v", got.Header())
 		}
 		raw := got.Body.Bytes()
 		if encoding == "br, zstd" {
@@ -312,6 +317,17 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 			t.Fatal("compression changed the Protobuf representation")
 		}
 	}
+	// Neither another session's write nor project metadata changes affect this transcript.
+	perform(t, router, "alice", "POST", "/sessions", map[string]string{}, 201)
+	perform(t, router, "alice", "POST", "/projects", map[string]string{"name": "Unrelated"}, 201)
+
+	ctx, recorder = timing.WithRecorder(auth.WithUser(t.Context(), auth.User{ID: "alice"}))
+	request = httptest.NewRequestWithContext(ctx, http.MethodGet, Prefix+path, nil)
+	if page := decodeTranscript(t, serve(t, router, request, 200)); !proto.Equal(page, latest) ||
+		!slices.ContainsFunc(recorder.Metrics(), func(metric timing.Metric) bool { return metric.Name == "transcript_response_cache_hit" }) {
+		t.Fatalf("unrelated changes invalidated the paged transcript: %+v", recorder.Metrics())
+	}
+
 	ctx, recorder = timing.WithRecorder(auth.WithUser(t.Context(), auth.User{ID: "alice"}))
 	request = httptest.NewRequestWithContext(ctx, http.MethodGet, Prefix+path+"?paged=false", nil)
 	request.Header.Set("Accept-Encoding", "zstd")
@@ -320,13 +336,131 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 		!slices.ContainsFunc(recorder.Metrics(), func(metric timing.Metric) bool {
 			return metric.Name == "transcript_response_cache_hit"
 		}) {
-		t.Fatalf("stable export did not reuse compressed response: %+v", recorder.Metrics())
+		t.Fatalf("unrelated changes invalidated the compressed export: %+v", recorder.Metrics())
+	}
+
+	perform(t, router, "alice", "PATCH", "/sessions/history", map[string]string{"title": "Renamed history"}, 200)
+	renamed := decodeTranscript(t, perform(t, router, "alice", "GET", path, nil, 200))
+	if renamed.GetSession().GetTitle() != "Renamed history" {
+		t.Fatal("transcript cache served a stale title")
+	}
+	if _, err := repo.Conversations.RevertTurn(t.Context(), "alice", "history", "turn-31", "turn-31", now); err != nil {
+		t.Fatal(err)
+	}
+	replacement := run.Run{ID: "replacement", OwnerID: "alice", SessionID: "history", Status: run.Queued, CreatedAt: now, UpdatedAt: now}
+	if _, err := repo.Conversations.Enqueue(t.Context(), replacement, "History", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Conversations.ClaimNext(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Conversations.Complete(t.Context(), replacement.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	replaced := decodeTranscript(t, perform(t, router, "alice", "GET", path, nil, 200))
+	if !proto.Equal(replaced.GetSession(), renamed.GetSession()) || replaced.Turns[len(replaced.Turns)-1].GetId() != replacement.ID {
+		t.Fatal("transcript cache served the old head after a replacement with the same summary")
 	}
 	perform(t, router, "alice", "DELETE", "/sessions/history", nil, http.StatusNoContent)
 	archived := decodeTranscriptExport(t, perform(t, router, "alice", "GET", path+"?paged=false", nil, 200), sessionpb.TranscriptExportEnd_NONE)
 	if len(archived) != 2 || archived[0].GetHeader().GetSession() != nil {
 		t.Fatal("export cache served a transcript after archiving")
 	}
+}
+
+func TestTranscriptCacheUsesStateFromTheEncodedSnapshot(t *testing.T) {
+	repo, _ := restFixture(t)
+	now := time.Now().UTC()
+	const owner, id = "alice", "snapshot"
+	session := run.Session{ID: id, OwnerID: owner, Title: "Original", CustomTitle: true, CreatedAt: now, UpdatedAt: now}
+	if err := repo.Conversations.CreateSession(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+	rename := func(title string) {
+		t.Helper()
+		if _, err := repo.Conversations.UpdateSession(t.Context(), owner, id, run.SessionChanges{Title: &title}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stores := repo.RunStores()
+	// Change the summary after the preflight cache lookup, before loading the page.
+	stores.Transcripts = changingTranscript{stores.Transcripts, sync.OnceFunc(func() { rename("Changed") })}
+	router := gin.New()
+	Register(router.Group(Prefix), fixtureService(stores), fixtureApplication{}, slog.New(slog.DiscardHandler), DefaultConfig())
+	read := func(title string, wantHit bool) {
+		t.Helper()
+		ctx, recorder := timing.WithRecorder(auth.WithUser(t.Context(), auth.User{ID: owner}))
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, Prefix+"/sessions/"+id+"/transcript", nil)
+		page := decodeTranscript(t, serve(t, router, req, 200))
+		if got := page.GetSession().GetTitle(); got != title {
+			t.Fatalf("title = %q, want %q", got, title)
+		}
+		if hit := slices.ContainsFunc(recorder.Metrics(), func(metric timing.Metric) bool {
+			return metric.Name == "transcript_response_cache_hit"
+		}); hit != wantHit {
+			t.Fatalf("cache hit for %q = %t, want %t", title, hit, wantHit)
+		}
+	}
+	read("Changed", false)
+	read("Changed", true)
+	rename("Original")
+	read("Original", false)
+}
+
+func TestTranscriptResponsesWorkWithHTTPCachesDisabled(t *testing.T) {
+	config := DefaultConfig()
+	config.Transcript.ResponseCacheBytes, config.Transcript.TurnCacheBytes = 0, 0
+	repo, router := restFixtureWithConfig(t, config)
+	session := decode[sessionSummary](t, perform(t, router, "alice", http.MethodPost, "/sessions", map[string]string{}, 201))
+	path := "/sessions/" + session.ID
+	turn := decode[turnResponse](t, perform(t, router, "alice", http.MethodPost, path+"/turns", map[string]string{"prompt": "Run a turn."}, 202))
+	now := time.Now().UTC()
+	if _, err := repo.Conversations.ClaimNext(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Conversations.Complete(t.Context(), turn.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now,
+		Result: run.Result{Output: "Hello"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"/transcript", "/transcript?paged=false"} {
+		for range 2 {
+			ctx, recorder := timing.WithRecorder(auth.WithUser(t.Context(), auth.User{ID: "alice"}))
+			response := serve(t, router, httptest.NewRequestWithContext(ctx, http.MethodGet, Prefix+path+suffix, nil), 200)
+			var result *sessionpb.Turn
+			if suffix == "/transcript" {
+				page := decodeTranscript(t, response)
+				if len(page.Turns) != 1 {
+					t.Fatalf("disabled cache returned %d turns", len(page.Turns))
+				}
+				result = page.Turns[0]
+			} else {
+				frames := decodeTranscriptExport(t, response, sessionpb.TranscriptExportEnd_NONE)
+				if len(frames) != 3 {
+					t.Fatalf("disabled cache returned %d export frames", len(frames))
+				}
+				result = frames[1].GetTurn()
+			}
+			metrics := recorder.Metrics()
+			if result.GetOutput() != "Hello" || !slices.ContainsFunc(metrics, func(metric timing.Metric) bool {
+				return metric.Name == "transcript_turn_encode"
+			}) || slices.ContainsFunc(metrics, func(metric timing.Metric) bool {
+				return metric.Name == "transcript_response_cache_hit"
+			}) {
+				t.Fatalf("uncached response output=%q metrics=%+v", result.GetOutput(), metrics)
+			}
+		}
+	}
+}
+
+type changingTranscript struct {
+	run.TranscriptRepository
+	beforePage func()
+}
+
+func (r changingTranscript) TranscriptPage(ctx context.Context, owner, session string, before int) (*run.Transcript, error) {
+	r.beforePage()
+	return r.TranscriptRepository.TranscriptPage(ctx, owner, session, before)
 }
 
 type stalledExports struct {
@@ -347,7 +481,7 @@ func TestFullTranscriptQueueAllowsPagedReadsAndCancellation(t *testing.T) {
 	stores.Transcripts = stalledExports{stores.Transcripts, entered}
 	router := gin.New()
 	Register(router.Group(Prefix), fixtureService(stores), fixtureApplication{}, slog.New(slog.DiscardHandler),
-		TranscriptConcurrency{Exports: 1, Pages: 2})
+		Config{Transcript: TranscriptLimits{Exports: 1, Pages: 2}})
 	const path = "/sessions/history/transcript"
 	ctx, cancel := context.WithCancel(auth.WithUser(t.Context(), auth.User{ID: "alice"}))
 	defer cancel()

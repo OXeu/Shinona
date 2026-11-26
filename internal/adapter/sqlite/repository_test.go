@@ -28,11 +28,25 @@ func seedAccounts(t testing.TB, repo *Database, owners ...string) {
 func TestFileDatabaseReadsCommittedDataWhileWriting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	repo, err := Open(ctx, filepath.Join(t.TempDir(), "shinona.db"))
+	const maxReaders = 3
+	config := DefaultConfig()
+	config.ReadConnections = maxReaders
+	repo, err := OpenWithConfig(ctx, filepath.Join(t.TempDir(), "shinona.db"), config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	writer, err := repo.db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := repo.read.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.Stats().MaxOpenConnections != 1 || reader.Stats().MaxOpenConnections != maxReaders {
+		t.Fatalf("file database limits: writer %d, reader %d", writer.Stats().MaxOpenConnections, reader.Stats().MaxOpenConnections)
+	}
 	seedAccounts(t, repo, "owner")
 	if err := repo.Conversations.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", Title: "before"}); err != nil {
 		t.Fatal(err)
@@ -48,7 +62,8 @@ func TestFileDatabaseReadsCommittedDataWhileWriting(t *testing.T) {
 	}
 	assertTitle := func(want string) {
 		t.Helper()
-		sessions, err := repo.Conversations.RecentSessions(ctx, "owner", nil, 10)
+		list, err := repo.Conversations.SessionListSnapshot(ctx, "owner", nil, 10)
+		sessions := list.Sessions
 		if err != nil || len(sessions) != 1 || sessions[0].Title != want {
 			t.Fatalf("expected title %q: %+v, %v", want, sessions, err)
 		}
@@ -60,6 +75,50 @@ func TestFileDatabaseReadsCommittedDataWhileWriting(t *testing.T) {
 	assertTitle("after")
 	if err := repo.read.WithContext(ctx).Exec("UPDATE agent_sessions SET title = 'read pool write'").Error; err == nil {
 		t.Fatal("the read pool accepted a write")
+	}
+	for range maxReaders {
+		conn, err := reader.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		var queryOnly int
+		if err := conn.QueryRowContext(ctx, "PRAGMA query_only").Scan(&queryOnly); err != nil || queryOnly != 1 {
+			t.Fatalf("read connection query_only = %d, %v", queryOnly, err)
+		}
+	}
+	if got := reader.Stats().InUse; got != maxReaders {
+		t.Fatalf("simultaneous read connections = %d, want %d", got, maxReaders)
+	}
+}
+
+func TestMemoryDatabaseKeepsOneSharedConnection(t *testing.T) {
+	for _, dsn := range []string{":memory:", "file::memory:", "file:configured-memory?mode=memory"} {
+		t.Run(dsn, func(t *testing.T) {
+			config := DefaultConfig()
+			config.ReadConnections = MaxReadConnections
+			repo, err := OpenWithConfig(t.Context(), dsn, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = repo.Close() })
+			reader, err := repo.read.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stats := reader.Stats(); repo.db != repo.read || stats.MaxOpenConnections != 1 || repo.stopCheckpoint != nil {
+				t.Fatalf("in-memory database did not share a single connection: %+v", stats)
+			}
+			seedAccounts(t, repo, "owner")
+			if err := repo.Conversations.CreateSession(t.Context(), run.Session{ID: "session", OwnerID: "owner"}); err != nil {
+				t.Fatal(err)
+			}
+			list, err := repo.Conversations.SessionListSnapshot(t.Context(), "owner", nil, 1)
+			sessions := list.Sessions
+			if err != nil || len(sessions) != 1 || sessions[0].ID != "session" {
+				t.Fatalf("in-memory read did not see the write: %v, %v", sessions, err)
+			}
+		})
 	}
 }
 
@@ -261,8 +320,8 @@ func TestLegacyRunsStayPrivateAndCanBeAdopted(t *testing.T) {
 	if claimed, err := repo.Conversations.ClaimNext(ctx, time.Now().UTC()); err != nil || claimed != nil {
 		t.Fatalf("unowned run should stay off the queue: %+v, %v", claimed, err)
 	}
-	if items, err := repo.Conversations.RecentSessions(ctx, owner.ID, nil, 10); err != nil || len(items) != 0 {
-		t.Fatalf("unowned run should stay private: %+v, %v", items, err)
+	if list, err := repo.Conversations.SessionListSnapshot(ctx, owner.ID, nil, 10); err != nil || len(list.Sessions) != 0 {
+		t.Fatalf("unowned run should stay private: %+v, %v", list.Sessions, err)
 	}
 	if count, err := repo.Conversations.AdoptLegacy(ctx, owner.ID); err != nil || count != 2 {
 		t.Fatalf("adopt legacy runs: %d, %v", count, err)
@@ -323,7 +382,8 @@ func TestOpenMigratesSessionAndQueueIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	sessions, err := repo.Conversations.RecentSessions(ctx, "owner", nil, 30)
+	list, err := repo.Conversations.SessionListSnapshot(ctx, "owner", nil, 30)
+	sessions := list.Sessions
 	if err != nil || len(sessions) != 1 || sessions[0].ID != "stored" {
 		t.Fatalf("recent sessions after upgrade: %+v, %v", sessions, err)
 	}
@@ -435,7 +495,8 @@ func TestSessionActionsAndUnreadTransitions(t *testing.T) {
 
 func assertSessionFlags(t *testing.T, repo *Database, active, unread bool) {
 	t.Helper()
-	sessions, err := repo.Conversations.RecentSessions(t.Context(), "alice", nil, 10)
+	list, err := repo.Conversations.SessionListSnapshot(t.Context(), "alice", nil, 10)
+	sessions := list.Sessions
 	if err != nil || len(sessions) != 1 || !sessions[0].Pinned || sessions[0].Title != "Workbench" ||
 		sessions[0].Active != active || sessions[0].Unread != unread {
 		t.Fatalf("expected active=%v unread=%v, got %+v and %v", active, unread, sessions, err)

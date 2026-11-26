@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/run"
 )
 
 type projectResponse struct {
@@ -16,11 +17,15 @@ func (r *handler) Projects(ctx context.Context) ([]projectResponse, error) {
 	if err != nil {
 		return nil, r.apiError(err)
 	}
+	return publicProjects(items), nil
+}
+
+func publicProjects(items []run.Project) []projectResponse {
 	projects := make([]projectResponse, len(items))
 	for i, project := range items {
 		projects[i] = projectResponse{ID: project.ID, Name: project.Name}
 	}
-	return projects, nil
+	return projects
 }
 
 func (r *handler) CreateProject(ctx context.Context, args struct{ Name string }) (projectResponse, error) {

@@ -70,6 +70,12 @@ func (s Session) TitleAfterRemoval(remaining int) string {
 	return s.Title
 }
 
+type SessionListSnapshot struct {
+	Revision int64
+	Projects []Project
+	Sessions []Session
+}
+
 type SessionChanges struct {
 	Title  *string
 	Pinned *bool
@@ -93,8 +99,25 @@ const MaxTranscriptExportTurns = 5000
 
 var ErrTranscriptExportLimit = errors.New("the transcript is too large for an unpaged response")
 
+// TranscriptState identifies an inactive transcript and its session summary.
+// Completed turns are immutable, and a revert removes a suffix of them.
+type TranscriptState struct {
+	Session Session
+	HeadID  string
+}
+
+func (t TranscriptState) CheckRevert(expectedHeadID string) error {
+	if t.Session.Active {
+		return ErrActiveRun
+	}
+	if t.HeadID == "" || t.HeadID != expectedHeadID {
+		return ErrHistoryChanged
+	}
+	return nil
+}
+
 type Transcript struct {
-	Session            Session
+	TranscriptState
 	Turns              []Run
 	NextBeforeSequence int
 }
@@ -103,6 +126,7 @@ type Transcript struct {
 // for the duration of the repository callback and returns nil at the end.
 type TranscriptStream struct {
 	Session     *Session
+	HeadID      string
 	LastOptions *Options
 	TurnCount   int
 	Next        func() ([]Run, error)

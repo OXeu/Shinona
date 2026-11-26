@@ -19,35 +19,55 @@ import (
 
 const Prefix = "/api/v1"
 
-type TranscriptConcurrency struct {
-	Exports int
-	Pages   int
+type Config struct {
+	Transcript            TranscriptLimits
+	SessionListCacheBytes int
 }
 
-func DefaultTranscriptConcurrency() TranscriptConcurrency {
+type TranscriptLimits struct {
+	Exports            int
+	Pages              int
+	ResponseCacheBytes int
+	TurnCacheBytes     int
+}
+
+func DefaultConfig() Config {
 	cpus := runtime.GOMAXPROCS(0)
-	return TranscriptConcurrency{
-		Exports: min(max(cpus-1, 1), 4),
-		Pages:   2 * min(max(cpus, 4), 16),
+	return Config{
+		Transcript: TranscriptLimits{
+			Exports:            min(max(cpus-1, 1), 4),
+			Pages:              2 * min(max(cpus, 4), 16),
+			ResponseCacheBytes: 16 << 20,
+			TurnCacheBytes:     32 << 20,
+		},
+		SessionListCacheBytes: 16 << 20,
 	}
 }
 
 // Register installs resource routes on the authenticated API group.
-func Register(api *gin.RouterGroup, service *run.Service, app Application, logger *slog.Logger, concurrency TranscriptConcurrency) {
+func Register(api *gin.RouterGroup, service *run.Service, app Application, logger *slog.Logger, config Config) {
+	limits := config.Transcript
 	h := &handler{
 		service: service, app: app, logger: logger,
-		fullTranscript:  semaphore.NewWeighted(int64(concurrency.Exports)),
-		pagedTranscript: semaphore.NewWeighted(int64(concurrency.Pages)),
-		transcriptPages: responsecache.New[transcriptPageKey, transcriptPageBody](256, 16<<20),
+		fullTranscript:  semaphore.NewWeighted(int64(limits.Exports)),
+		pagedTranscript: semaphore.NewWeighted(int64(limits.Pages)),
+		transcriptTurns: newEncodedTranscriptTurns(limits.TurnCacheBytes),
+	}
+	if limits.ResponseCacheBytes > 0 {
+		h.transcriptPages = responsecache.New[transcriptPageKey, transcriptPageBody](256, limits.ResponseCacheBytes)
 	}
 	api.Use(protectWrites())
+	api.GET("/sessions", h.sessionList(config.SessionListCacheBytes))
+	api.GET("/sessions/:id/transcript", h.transcript)
+
+	// Session lists and transcripts negotiate their own representations so they
+	// can reuse compressed data and stream without another response wrapper.
+	api = api.Group("", httpserver.Compress)
 	api.GET("/mode", read(func(context.Context) (string, error) { return h.app.Mode(), nil }))
-	api.GET("/sessions", h.sessionList())
 	api.POST("/sessions", endpoint(http.StatusCreated, true, h.createSession))
 	api.PATCH("/sessions/:id", endpoint(http.StatusOK, true, h.updateSession))
 	api.DELETE("/sessions/:id", command(false, h.archiveSession))
 	api.PUT("/sessions/:id/read-marker", command(true, h.markSessionRead))
-	api.GET("/sessions/:id/transcript", h.transcript)
 	api.POST("/sessions/:id/turns", endpoint(http.StatusAccepted, true, h.SubmitRun))
 	api.POST("/sessions/:id/turns/:turnId/retry", endpoint(http.StatusAccepted, true, h.RetryTurn))
 	api.POST("/sessions/:id/turns/:turnId/revert", endpoint(http.StatusOK, true, h.RevertTurn))

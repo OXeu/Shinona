@@ -30,14 +30,16 @@ func (r *handler) fullTranscriptResponse(c *gin.Context, key transcriptPageKey, 
 	defer timing.Start(ctx, "transcript_write")()
 
 	var capture *boundedCapture
+	var state run.TranscriptState
 	err := r.service.StreamTranscript(ctx, key.owner, key.session, func(stream run.TranscriptStream) error {
 		if r.transcriptPages != nil && stream.Session != nil && !stream.Session.Active {
 			capture = &boundedCapture{}
+			state = run.TranscriptState{Session: *stream.Session, HeadID: stream.HeadID}
 		}
 		return r.writeTranscriptExport(ctx, c, key.zstd, capture, stream, settings, maxFullTranscriptBytes)
 	})
 	if err == nil {
-		r.saveTranscriptResponse(c, key, capture)
+		r.saveTranscriptResponse(c, key, state, capture)
 	}
 	return err
 }

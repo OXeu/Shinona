@@ -153,3 +153,16 @@ func TestStoredTranscriptPartsAreAnArray(t *testing.T) {
 		}
 	}
 }
+
+func TestLatestTranscriptCacheRejectsPagesOverItsBudget(t *testing.T) {
+	page := &run.Transcript{Turns: []run.Run{{ID: "turn", Output: "Completed"}}}
+	key := latestTranscriptKey{owner: "owner", session: "session"}
+	size := latestTranscriptSize(page.Turns) + len(key.owner) + len(key.session)
+	for _, budget := range []int{0, size - 1, size} {
+		cache := newLatestTranscriptCache(budget)
+		cache.put(key, page)
+		if hit := cache.get(key) != nil; hit != (budget == size) {
+			t.Fatalf("cached page of %d bytes with budget %d: %t", size, budget, hit)
+		}
+	}
+}

@@ -1,14 +1,17 @@
 package rest
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/gin-gonic/gin"
 
@@ -40,12 +43,53 @@ type sessionListVersion struct {
 	zstd     func() []byte
 }
 
+func (v sessionListVersion) retainedBytes() int {
+	size := int(unsafe.Sizeof(v)) + cap(v.encoded) + len(v.key.owner) + len(v.key.project) + len(v.key.etag)
+	if len(v.encoded) >= httpserver.MinimumCompressSize {
+		// Reserve space for compression, which runs only when requested.
+		size += len(v.encoded)
+	}
+	size += cap(v.body.Projects) * int(unsafe.Sizeof(projectResponse{}))
+	for _, project := range v.body.Projects {
+		size += len(project.ID) + len(project.Name)
+	}
+	size += cap(v.body.Sessions) * int(unsafe.Sizeof(sessionSummary{}))
+	for _, session := range v.body.Sessions {
+		size += len(session.ID) + len(session.Title)
+		if session.ProjectID != nil {
+			size += int(unsafe.Sizeof(*session.ProjectID)) + len(*session.ProjectID)
+		}
+	}
+	return size
+}
+
+func (v sessionListVersion) cacheWeight(budget int) (int, bool) {
+	if len(v.encoded) > min(budget, sessionListMaxSnapshot) {
+		return 0, false
+	}
+	size := v.retainedBytes()
+	return size, size <= budget
+}
+
 // Recent versions allow any tab to resume from its own snapshot. Missing
 // versions, including after restart or eviction, use a full response.
 type sessionListHistory struct {
 	mu       sync.Mutex
 	versions responsecache.Store[sessionListKey, sessionListVersion]
 	latest   map[sessionListScope]sessionListKey
+	loading  map[sessionListRevision]*sessionListLoad
+}
+
+type sessionListRevision struct {
+	scope    sessionListScope
+	revision int64
+}
+
+type sessionListLoad struct {
+	done    chan struct{}
+	version sessionListVersion
+	err     error
+	retry   bool
 }
 
 func (h *sessionListHistory) get(key sessionListKey) (sessionsResponse, bool) {
@@ -55,9 +99,7 @@ func (h *sessionListHistory) get(key sessionListKey) (sessionsResponse, bool) {
 	return version.body, found
 }
 
-func (h *sessionListHistory) current(scope sessionListScope, revision int64) (sessionListVersion, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+func (h *sessionListHistory) currentLocked(scope sessionListScope, revision int64) (sessionListVersion, bool) {
 	if key, ok := h.latest[scope]; ok {
 		if version, cached := h.versions.Peek(key); cached && version.revision == revision {
 			return h.versions.Get(key)
@@ -66,32 +108,117 @@ func (h *sessionListHistory) current(scope sessionListScope, revision int64) (se
 	return sessionListVersion{}, false
 }
 
-func (h *sessionListHistory) save(version sessionListVersion) {
+func (h *sessionListHistory) load(ctx context.Context, key sessionListRevision, build func() (sessionListVersion, error)) (sessionListVersion, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return sessionListVersion{}, err
+		}
+		h.mu.Lock()
+		if version, found := h.currentLocked(key.scope, key.revision); found {
+			h.mu.Unlock()
+			return version, nil
+		}
+		load := h.loading[key]
+		if load == nil {
+			load = &sessionListLoad{done: make(chan struct{})}
+			if h.loading == nil {
+				h.loading = make(map[sessionListRevision]*sessionListLoad)
+			}
+			h.loading[key] = load
+			h.mu.Unlock()
+			// Build on this request's goroutine so the HTTP recovery still
+			// catches a panic. A canceled leader must not fail other callers.
+			finished := false
+			defer func() {
+				h.mu.Lock()
+				defer h.mu.Unlock()
+				load.retry = !finished || (load.err != nil && ctx.Err() != nil)
+				delete(h.loading, key)
+				if len(h.loading) == 0 {
+					h.loading = nil
+				}
+				close(load.done)
+			}()
+			load.version, load.err = build()
+			finished = true
+			return load.version, load.err
+		}
+		h.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return sessionListVersion{}, ctx.Err()
+		case <-load.done:
+			if err := ctx.Err(); err != nil {
+				return sessionListVersion{}, err
+			}
+			if !load.retry {
+				return load.version, load.err
+			}
+		}
+	}
+}
+
+func (r *handler) buildSessionList(ctx context.Context, history *sessionListHistory, scope sessionListScope, cacheBytes int) (sessionListVersion, error) {
+	var projectID *string
+	if scope.filtered {
+		projectID = &scope.project
+	}
+	snapshot, err := r.service.SessionListSnapshot(ctx, scope.owner, projectID)
+	if err != nil {
+		return sessionListVersion{}, r.apiError(err)
+	}
+	current := publicSessionList(snapshot)
+	body, err := json.Marshal(current)
+	if err != nil {
+		return sessionListVersion{}, r.apiError(err)
+	}
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "%q/%t/%q\n", scope.owner, scope.filtered, scope.project)
+	_, _ = hash.Write(body)
+	// The same snapshot can be transported with different content encodings.
+	tag := `W/"` + hex.EncodeToString(hash.Sum(nil)) + `"`
+	version := sessionListVersion{key: sessionListKey{scope, tag}, revision: snapshot.Revision, body: current, encoded: body}
+	if size, ok := version.cacheWeight(cacheBytes); ok {
+		// The project value may refer to the full request query string.
+		version.key.project = strings.Clone(scope.project)
+		if len(body) >= httpserver.MinimumCompressSize {
+			version.zstd = sync.OnceValue(func() []byte { return httpserver.EncodeZstdForCache(body) })
+		}
+		version = history.save(version, size)
+	}
+	return version, nil
+}
+
+func (h *sessionListHistory) save(version sessionListVersion, size int) sessionListVersion {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	key := version.key
 	revision := version.revision
-	if cached, ok := h.versions.Peek(key); ok && cached.revision > version.revision {
+	if cached, ok := h.versions.Peek(key); ok {
+		cached.revision = max(cached.revision, revision)
 		version = cached
+		size = cached.retainedBytes()
 	}
-	h.versions.Put(key, version, 1, func(evicted sessionListKey) {
+	h.versions.Put(key, version, size, func(evicted sessionListKey) {
 		if scope := evicted.sessionListScope; h.latest[scope] == evicted {
 			delete(h.latest, scope)
 		}
 	})
 	scope := key.sessionListScope
 	latest, exists := h.versions.Peek(h.latest[scope])
-	if revision >= 0 && (!exists || latest.revision <= revision) {
+	if !exists || latest.revision <= revision {
 		h.latest[scope] = key
 	}
+	return version
 }
 
-func (r *handler) sessionList() gin.HandlerFunc {
+func (r *handler) sessionList(cacheBytes int) gin.HandlerFunc {
 	history := sessionListHistory{
-		versions: responsecache.NewStore[sessionListKey, sessionListVersion](sessionListHistoryLimit, sessionListHistoryLimit),
+		versions: responsecache.NewStore[sessionListKey, sessionListVersion](sessionListHistoryLimit, cacheBytes),
 		latest:   make(map[sessionListScope]sessionListKey),
 	}
 	return func(c *gin.Context) {
+		zstd := httpserver.NegotiateZstd(c.Writer, c.Request)
 		var args struct {
 			ProjectID *string `form:"projectId"`
 			Delta     bool    `form:"delta"`
@@ -115,35 +242,15 @@ func (r *handler) sessionList() gin.HandlerFunc {
 			writeError(c, r.apiError(err))
 			return
 		}
-		version, found := history.current(scope, revision)
-		if !found {
-			current, err := r.sessions(ctx, args.ProjectID)
-			if err != nil {
+		key := sessionListRevision{scope: scope, revision: revision}
+		version, err := history.load(ctx, key, func() (sessionListVersion, error) {
+			return r.buildSessionList(ctx, &history, scope, cacheBytes)
+		})
+		if err != nil {
+			if ctx.Err() == nil {
 				writeError(c, err)
-				return
 			}
-			body, err := json.Marshal(current)
-			if err != nil {
-				writeError(c, r.apiError(err))
-				return
-			}
-			hash := sha256.New()
-			_, _ = fmt.Fprintf(hash, "%q/%t/%q\n", scope.owner, scope.filtered, scope.project)
-			_, _ = hash.Write(body)
-			// The same snapshot can be transported with different content encodings.
-			tag := `W/"` + hex.EncodeToString(hash.Sum(nil)) + `"`
-			version = sessionListVersion{key: sessionListKey{scope, tag}, revision: revision, body: current, encoded: body}
-			if len(body)+len(scope.owner)+len(scope.project) <= sessionListMaxSnapshot {
-				if len(body) >= httpserver.MinimumCompressSize {
-					version.zstd = sync.OnceValue(func() []byte { return httpserver.EncodeZstd(body) })
-				}
-				// The list uses two reads. Only reuse it when no relevant write
-				// committed between fetching its revision and both queries.
-				if after, err := r.service.SessionListRevision(ctx, scope.owner); err != nil || after != revision {
-					version.revision = -1
-				}
-				defer history.save(version)
-			}
+			return
 		}
 		tag := version.key.etag
 		body := version.encoded
@@ -173,11 +280,24 @@ func (r *handler) sessionList() gin.HandlerFunc {
 			c.Status(http.StatusNotModified)
 			return
 		}
-		if !patched && version.zstd != nil && httpserver.AcceptsZstd(c.Request) {
-			c.Header("Content-Encoding", "zstd")
-			body = version.zstd()
+		const contentType = "application/json; charset=utf-8"
+		if !zstd || len(body) < httpserver.MinimumCompressSize {
+			c.Data(http.StatusOK, contentType, body)
+			return
 		}
-		c.Data(http.StatusOK, "application/json; charset=utf-8", body)
+		if !patched && version.zstd != nil {
+			if compressed := version.zstd(); compressed != nil {
+				c.Header("Content-Encoding", httpserver.ZstdEncoding)
+				c.Data(http.StatusOK, contentType, compressed)
+				return
+			}
+		}
+		c.Header("Content-Type", contentType)
+		writer, finish := httpserver.NewZstdResponse(c.Writer, c.Writer)
+		_, err = writer.Write(body)
+		if err = errors.Join(err, finish(err == nil)); err != nil {
+			r.logger.Debug("write session list response", "error", err)
+		}
 	}
 }
 

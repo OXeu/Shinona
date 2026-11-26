@@ -1,6 +1,57 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestAPICacheBudgetsUseMiBAndAcceptZero(t *testing.T) {
+	const responses = "SHINONA_TRANSCRIPT_RESPONSE_CACHE_MIB"
+	const turns = "SHINONA_TRANSCRIPT_TURN_CACHE_MIB"
+	const lists = "SHINONA_SESSION_LIST_CACHE_MIB"
+	t.Setenv(responses, "")
+	t.Setenv(turns, "")
+	t.Setenv(lists, "")
+	config := environment{responses: "0", turns: "7", lists: "3"}
+	got, err := apiConfig(config)
+	if err != nil || got.Transcript.ResponseCacheBytes != 0 || got.Transcript.TurnCacheBytes != 7<<20 || got.SessionListCacheBytes != 3<<20 {
+		t.Fatalf("configured API cache budgets = %+v, %v", got, err)
+	}
+	t.Setenv(lists, "0")
+	if got, err := apiConfig(config); err != nil || got.SessionListCacheBytes != 0 {
+		t.Fatalf("zero session-list cache budget = %+v, %v", got, err)
+	}
+	t.Setenv(lists, "-1")
+	if _, err := apiConfig(config); err == nil || !strings.Contains(err.Error(), lists) {
+		t.Fatalf("negative session-list cache budget returned %v", err)
+	}
+	t.Setenv(lists, "")
+	t.Setenv(turns, "513")
+	if _, err := apiConfig(config); err == nil || !strings.Contains(err.Error(), turns) {
+		t.Fatalf("oversized turn cache returned %v", err)
+	}
+	t.Setenv("SHINONA_SQLITE_TRANSCRIPT_CACHE_MIB", "-1")
+	if _, err := openDatabase(t.Context(), nil); err == nil || !strings.Contains(err.Error(), "SHINONA_SQLITE_TRANSCRIPT_CACHE_MIB") {
+		t.Fatalf("negative SQLite transcript cache returned %v", err)
+	}
+}
+
+func TestOpenDatabaseRejectsInvalidReadConnections(t *testing.T) {
+	const readers = "SHINONA_SQLITE_READ_CONNECTIONS"
+	t.Setenv("SHINONA_DATABASE", ":memory:")
+	t.Setenv(readers, "")
+	repo, err := openDatabase(t.Context(), environment{readers: "3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+
+	t.Setenv(readers, "0")
+	_, err = openDatabase(t.Context(), environment{readers: "3"})
+	if err == nil || !strings.Contains(err.Error(), readers) {
+		t.Fatalf("opening with invalid read connections returned %v", err)
+	}
+}
 
 func TestWebOrigin(t *testing.T) {
 	for _, tc := range []struct {

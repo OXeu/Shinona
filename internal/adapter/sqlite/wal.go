@@ -10,24 +10,18 @@ import (
 	"time"
 
 	"github.com/mattn/go-sqlite3"
-	"gorm.io/driver/sqlite"
 )
 
 const (
-	walWriterDriver       = "shinona-sqlite-writer"
 	walCheckpointInterval = 250 * time.Millisecond
 	walCheckpointWarn     = 30 * time.Second
 	walLargeLogPages      = 4096
 )
 
-func init() {
-	sql.Register(walWriterDriver, &sqlite3.SQLiteDriver{
-		ConnectHook: func(conn *sqlite3.SQLiteConn) error {
-			// The threshold is per connection, including replacement writers.
-			_, err := conn.Exec("PRAGMA wal_autocheckpoint = 0", nil)
-			return err
-		},
-	})
+func disableWALAutoCheckpoint(conn *sqlite3.SQLiteConn) error {
+	// The threshold is per connection, including replacement writers.
+	_, err := conn.Exec("PRAGMA wal_autocheckpoint = 0", nil)
+	return err
 }
 
 // startWALCheckpoint moves checkpoint I/O to a dedicated connection. PASSIVE
@@ -41,10 +35,7 @@ func startWALCheckpoint(ctx context.Context, dsn string) (func() error, error) {
 	options.Del("_query_only")
 	// A busy reader must not stall other requests during the fallback.
 	options.Set("_busy_timeout", "0")
-	pool, err := sql.Open(sqlite.DriverName, path+"?"+options.Encode())
-	if err != nil {
-		return nil, err
-	}
+	pool := sql.OpenDB(&sqliteConnector{dsn: path + "?" + options.Encode()})
 	pool.SetMaxOpenConns(1)
 	pool.SetMaxIdleConns(1)
 	if err := pool.PingContext(ctx); err != nil {

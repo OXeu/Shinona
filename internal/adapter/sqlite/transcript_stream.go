@@ -38,9 +38,10 @@ func (r *ConversationStore) StreamTranscript(ctx context.Context, owner, id stri
 		if len(ids) == 0 {
 			return nil
 		}
+		stream.HeadID = ids[len(ids)-1]
 		var latest struct{ Options []byte }
 		if err := turns().Select("json_extract(payload, '$.options') AS options").
-			Where("id = ?", ids[len(ids)-1]).Take(&latest).Error; err != nil {
+			Where("id = ?", stream.HeadID).Take(&latest).Error; err != nil {
 			return err
 		}
 		stream.LastOptions = new(run.Options)

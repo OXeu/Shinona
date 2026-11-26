@@ -133,12 +133,16 @@ func (s *Service) Stop(ctx context.Context, owner, sessionID, id string) error {
 }
 
 // A nil project ID includes all projects. An empty project ID selects the default project.
-func (s *Service) RecentSessions(ctx context.Context, owner string, projectID *string) ([]Session, error) {
-	return s.stores.Sessions.RecentSessions(ctx, owner, projectID, recentSessionLimit)
+func (s *Service) SessionListSnapshot(ctx context.Context, owner string, projectID *string) (SessionListSnapshot, error) {
+	return s.stores.Sessions.SessionListSnapshot(ctx, owner, projectID, recentSessionLimit)
 }
 
 func (s *Service) SessionListRevision(ctx context.Context, owner string) (int64, error) {
 	return s.stores.Sessions.SessionListRevision(ctx, owner)
+}
+
+func (s *Service) TranscriptState(ctx context.Context, owner, id string) (*TranscriptState, error) {
+	return s.stores.Transcripts.TranscriptState(ctx, owner, id)
 }
 
 func (s *Service) Transcript(ctx context.Context, owner, id string) (*Transcript, error) {

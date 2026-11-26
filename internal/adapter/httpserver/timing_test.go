@@ -148,7 +148,7 @@ func TestServerTimingRetainsOversizedRequestHandling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Accept-Encoding", "zstd")
+	request.Header.Set("Accept-Encoding", ZstdEncoding)
 	response, err := server.Client().Do(request)
 	if err != nil {
 		t.Fatal(err)

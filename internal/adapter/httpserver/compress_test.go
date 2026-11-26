@@ -1,6 +1,8 @@
 package httpserver
 
 import (
+	"bytes"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,6 +12,30 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 )
+
+func TestCachedZstdEncodingFitsTheReservedSpace(t *testing.T) {
+	plain := bytes.Repeat([]byte("session snapshot"), 128)
+	compressed := EncodeZstdForCache(plain)
+	if compressed == nil || cap(compressed) > len(plain) {
+		t.Fatalf("the cache is allowed to retain %d bytes, got a buffer with capacity %d", len(plain), cap(compressed))
+	}
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer decoder.Close()
+	decoded, err := decoder.DecodeAll(compressed, nil)
+	if err != nil || !bytes.Equal(decoded, plain) {
+		t.Fatalf("cached representation changed the response: %v", err)
+	}
+	random := rand.NewPCG(1, 2)
+	for i := range plain {
+		plain[i] = byte(random.Uint64())
+	}
+	if compressed := EncodeZstdForCache(plain); compressed != nil {
+		t.Fatalf("incompressible body retained a %d-byte buffer", cap(compressed))
+	}
+}
 
 func TestCompressNegotiatesZstandardForJSON(t *testing.T) {
 	decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxWindow(8<<20))

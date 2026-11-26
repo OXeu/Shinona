@@ -14,6 +14,7 @@ import (
 const (
 	ProtobufMediaType   = "application/protobuf"
 	MinimumCompressSize = 1024
+	ZstdEncoding        = "zstd"
 )
 
 func newZstdEncoder() any {
@@ -29,16 +30,23 @@ func newZstdEncoder() any {
 var zstdWriters = sync.Pool{New: newZstdEncoder}
 var zstdBuffers = sync.Pool{New: newZstdEncoder}
 
-// EncodeZstd compresses a small, complete representation for response caches.
-func EncodeZstd(body []byte) []byte {
+// EncodeZstdForCache only retains compressed buffers that fit within the size
+// of the original body.
+func EncodeZstdForCache(body []byte) []byte {
 	encoder := zstdBuffers.Get().(*zstd.Encoder)
 	defer zstdBuffers.Put(encoder)
-	return encoder.EncodeAll(body, nil)
+	compressed := encoder.EncodeAll(body, nil)
+	if cap(compressed) > len(body) {
+		return nil
+	}
+	return compressed
 }
 
-// NewZstdStream borrows an encoder. Finalize with commit=false to discard
-// buffered output after an interrupted or failed response.
-func NewZstdStream(dst io.Writer) (io.Writer, func(commit bool) error) {
+// NewZstdResponse prepares the response headers and borrows an encoder for dst.
+// Finalize with commit=false to discard buffered output after a failed write.
+func NewZstdResponse(response http.ResponseWriter, dst io.Writer) (*zstd.Encoder, func(commit bool) error) {
+	response.Header().Del("Content-Length")
+	response.Header().Set("Content-Encoding", ZstdEncoding)
 	writer := zstdWriters.Get().(*zstd.Encoder)
 	writer.Reset(dst)
 	return writer, func(commit bool) error {
@@ -52,14 +60,15 @@ func NewZstdStream(dst io.Writer) (io.Writer, func(commit bool) error) {
 	}
 }
 
-func AcceptsZstd(r *http.Request) bool {
+// NegotiateZstd records the request header that selects the representation.
+func NegotiateZstd(w http.ResponseWriter, r *http.Request) bool {
+	w.Header().Add("Vary", "Accept-Encoding")
 	return r.Method != http.MethodHead && acceptsZstd(r.Header.Values("Accept-Encoding"))
 }
 
 // Compress negotiates HTTP Zstandard for large JSON and Protobuf responses.
 func Compress(c *gin.Context) {
-	c.Writer.Header().Add("Vary", "Accept-Encoding")
-	if !AcceptsZstd(c.Request) {
+	if !NegotiateZstd(c.Writer, c.Request) {
 		return
 	}
 	writer := &zstdResponseWriter{ResponseWriter: c.Writer}
@@ -74,7 +83,7 @@ func acceptsZstd(values []string) bool {
 		for token := range strings.SplitSeq(value, ",") {
 			name, parameters, _ := strings.Cut(token, ";")
 			name = strings.ToLower(strings.TrimSpace(name))
-			if name != "zstd" && name != "*" {
+			if name != ZstdEncoding && name != "*" {
 				continue
 			}
 			accepted := true
@@ -85,7 +94,7 @@ func acceptsZstd(values []string) bool {
 					accepted = err == nil && q > 0 && q <= 1
 				}
 			}
-			if name == "zstd" {
+			if name == ZstdEncoding {
 				return accepted
 			}
 			wildcard = accepted
@@ -97,6 +106,7 @@ func acceptsZstd(values []string) bool {
 type zstdResponseWriter struct {
 	gin.ResponseWriter
 	writer *zstd.Encoder
+	finish func(bool) error
 }
 
 func (w *zstdResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -111,11 +121,8 @@ func (w *zstdResponseWriter) Write(data []byte) (int, error) {
 		header := w.Header()
 		mediaType, _, _ := strings.Cut(header.Get("Content-Type"), ";")
 		if (mediaType == "application/json" || mediaType == ProtobufMediaType) && header.Get("Content-Encoding") == "" {
-			header.Del("Content-Length")
-			header.Set("Content-Encoding", "zstd")
+			w.writer, w.finish = NewZstdResponse(w.ResponseWriter, w.ResponseWriter)
 			w.WriteHeaderNow()
-			w.writer = zstdWriters.Get().(*zstd.Encoder)
-			w.writer.Reset(w.ResponseWriter)
 		}
 	}
 	if w.writer != nil {
@@ -132,9 +139,7 @@ func (w *zstdResponseWriter) Flush() {
 }
 
 func (w *zstdResponseWriter) close() {
-	if w.writer != nil {
-		_ = w.writer.Close()
-		w.writer.Reset(io.Discard)
-		zstdWriters.Put(w.writer)
+	if w.finish != nil {
+		_ = w.finish(true)
 	}
 }

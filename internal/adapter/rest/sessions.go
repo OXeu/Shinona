@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -44,20 +45,15 @@ type sessionsResponse struct {
 	Sessions []sessionSummary  `json:"sessions"`
 }
 
-func (r *handler) sessions(ctx context.Context, projectID *string) (sessionsResponse, error) {
-	projects, err := r.Projects(ctx)
-	if err != nil {
-		return sessionsResponse{}, err
+func publicSessionList(snapshot run.SessionListSnapshot) sessionsResponse {
+	result := sessionsResponse{
+		Projects: publicProjects(snapshot.Projects),
+		Sessions: make([]sessionSummary, len(snapshot.Sessions)),
 	}
-	items, err := r.service.RecentSessions(ctx, auth.CurrentUser(ctx).ID, projectID)
-	if err != nil {
-		return sessionsResponse{}, r.apiError(err)
-	}
-	result := sessionsResponse{Projects: projects, Sessions: make([]sessionSummary, len(items))}
-	for i, item := range items {
+	for i, item := range snapshot.Sessions {
 		result.Sessions[i] = publicSession(item)
 	}
-	return result, nil
+	return result
 }
 
 type turnResponse struct {
@@ -133,6 +129,7 @@ type transcriptRequest struct {
 }
 
 func (r *handler) transcript(c *gin.Context) {
+	zstd := httpserver.NegotiateZstd(c.Writer, c.Request)
 	var args transcriptRequest
 	if !bind(c, &args, false) {
 		return
@@ -165,12 +162,13 @@ func (r *handler) transcript(c *gin.Context) {
 		return
 	}
 	c.Header("X-Content-Type-Options", "nosniff")
-	key, err := r.transcriptResponseKey(c, owner, args.ID, before, !paged, settings)
+	key := (transcriptPageKey{owner: owner, session: args.ID, before: before, full: !paged, zstd: zstd}).withSettings(settings)
+	cached, err := r.serveCachedTranscript(c, key)
 	if err != nil {
 		r.writeTranscriptFailure(c, err)
 		return
 	}
-	if r.serveCachedTranscript(c, key) {
+	if cached {
 		return
 	}
 	slots := r.fullTranscript
@@ -178,7 +176,10 @@ func (r *handler) transcript(c *gin.Context) {
 		slots = r.pagedTranscript
 	}
 	wait := timing.Start(ctx, "transcript_wait")
-	err = slots.Acquire(ctx, 1)
+	waited := !slots.TryAcquire(1)
+	if waited {
+		err = slots.Acquire(ctx, 1)
+	}
 	wait()
 	if err != nil {
 		r.writeTranscriptFailure(c, err)
@@ -186,18 +187,20 @@ func (r *handler) transcript(c *gin.Context) {
 	}
 	defer slots.Release(1)
 
-	if paged {
-		err = r.pagedTranscriptResponse(c, key, settings)
-	} else {
-		// Exports waiting for a slot can reuse a response filled while they waited.
-		key, err = r.transcriptResponseKey(c, owner, args.ID, before, true, settings)
+	if waited {
+		// A request waiting for a slot can reuse a response filled in that time.
+		cached, err := r.serveCachedTranscript(c, key)
 		if err != nil {
 			r.writeTranscriptFailure(c, err)
 			return
 		}
-		if r.serveCachedTranscript(c, key) {
+		if cached {
 			return
 		}
+	}
+	if paged {
+		err = r.pagedTranscriptResponse(c, key, settings)
+	} else {
 		err = r.fullTranscriptResponse(c, key, settings)
 	}
 	if err != nil {

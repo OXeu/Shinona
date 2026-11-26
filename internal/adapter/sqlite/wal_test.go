@@ -10,6 +10,33 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
+func TestWALReplacementWriterDisablesAutoCheckpoint(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "replacement.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	pool, err := repo.db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetMaxIdleConns(0)
+	before := pool.Stats().MaxIdleClosed
+	for range 2 {
+		var threshold int
+		if err := pool.QueryRowContext(ctx, "PRAGMA wal_autocheckpoint").Scan(&threshold); err != nil {
+			t.Fatal(err)
+		}
+		if threshold != 0 {
+			t.Fatalf("replacement writer autocheckpoint = %d, want 0", threshold)
+		}
+	}
+	if closed := pool.Stats().MaxIdleClosed - before; closed != 2 {
+		t.Fatalf("closed %d replacement connections, want 2", closed)
+	}
+}
+
 func TestWALMaintenanceReusesLogWithoutWriterAutoCheckpoint(t *testing.T) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "checkpoint.db")
@@ -39,7 +66,9 @@ func TestWALMaintenanceReusesLogWithoutWriterAutoCheckpoint(t *testing.T) {
 	size := logSize()
 	deadline := time.Now().Add(5 * time.Second)
 	for i := 0; time.Now().Before(deadline); i++ {
-		time.Sleep(25 * time.Millisecond)
+		// Leave a full checkpoint interval without writes. PASSIVE does not
+		// wait for the writer, so a probe on every tick can miss progress.
+		time.Sleep(2 * walCheckpointInterval)
 		now := time.Now().UTC()
 		id := fmt.Sprintf("checkpoint-%d", i)
 		if err := repo.Conversations.CreateSession(ctx, run.Session{ID: id, OwnerID: "owner", CreatedAt: now, UpdatedAt: now}); err != nil {

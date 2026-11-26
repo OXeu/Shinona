@@ -35,7 +35,7 @@ type transcriptPageKey struct {
 	owner, session, policies string
 	selected                 sandbox.Policy
 	before                   int
-	revision                 int64
+	head, summary            string
 	zstd, full               bool
 }
 
@@ -45,46 +45,60 @@ type transcriptPageBody struct {
 	data        []byte
 }
 
-func (r *handler) transcriptResponseKey(c *gin.Context, owner, session string, before int, full bool, settings run.Settings) (transcriptPageKey, error) {
-	key := transcriptPageKey{owner: owner, session: session, before: before, full: full,
-		selected: settings.Selected, zstd: httpserver.AcceptsZstd(c.Request)}
-	if r.transcriptPages == nil {
-		return key, nil
-	}
+func (key transcriptPageKey) withSettings(settings run.Settings) transcriptPageKey {
+	key.selected = settings.Selected
 	var policies strings.Builder
 	for _, policy := range settings.Available {
 		policies.WriteString(string(policy))
 		policies.WriteByte(',')
 	}
 	key.policies = policies.String()
-	revision, err := r.service.SessionListRevision(c.Request.Context(), owner)
-	key.revision = revision
+	return key
+}
+
+func (key transcriptPageKey) withState(state run.TranscriptState) (transcriptPageKey, error) {
+	summary, err := proto.Marshal(sessiontransfer.Summary(state.Session))
+	key.head, key.summary = state.HeadID, string(summary)
 	return key, err
 }
 
-func (r *handler) serveCachedTranscript(c *gin.Context, key transcriptPageKey) bool {
-	if r.transcriptPages != nil {
-		lookup := timing.Start(c.Request.Context(), "transcript_response_cache_hit")
-		if hit, ok := r.transcriptPages.Get(key); ok {
-			lookup()
-			c.Header("Content-Encoding", hit.encoding)
-			c.Header("Cache-Control", "private, no-store")
-			c.Data(http.StatusOK, hit.contentType, hit.data)
-			return true
-		}
+func (r *handler) serveCachedTranscript(c *gin.Context, key transcriptPageKey) (bool, error) {
+	if r.transcriptPages == nil {
+		return false, nil
 	}
-	return false
+	state, err := r.service.TranscriptState(c.Request.Context(), key.owner, key.session)
+	if err != nil || state == nil || state.Session.Active {
+		return false, err
+	}
+	key, err = key.withState(*state)
+	if err != nil {
+		return false, err
+	}
+	lookup := timing.Start(c.Request.Context(), "transcript_response_cache_hit")
+	if hit, ok := r.transcriptPages.Get(key); ok {
+		lookup()
+		c.Header("Content-Encoding", hit.encoding)
+		c.Header("Cache-Control", "private, no-store")
+		c.Data(http.StatusOK, hit.contentType, hit.data)
+		return true, nil
+	}
+	return false, nil
 }
 
-func (r *handler) saveTranscriptResponse(c *gin.Context, key transcriptPageKey, capture *boundedCapture) {
+func (r *handler) saveTranscriptResponse(c *gin.Context, key transcriptPageKey, state run.TranscriptState, capture *boundedCapture) {
 	if capture == nil || capture.overflow {
 		return
 	}
-	if revision, err := r.service.SessionListRevision(c.Request.Context(), key.owner); err == nil && revision == key.revision {
-		encoding := c.Writer.Header().Get("Content-Encoding")
-		r.transcriptPages.Put(key, transcriptPageBody{c.Writer.Header().Get("Content-Type"), encoding, capture.Bytes()},
-			capture.Cap()+len(key.owner)+len(key.session)+len(key.policies)+128)
+	// Use the state captured with these turns, even if a concurrent write
+	// changed the session after the initial cache lookup.
+	key, err := key.withState(state)
+	if err != nil {
+		r.logger.Debug("encode transcript cache key", "error", err)
+		return
 	}
+	encoding := c.Writer.Header().Get("Content-Encoding")
+	r.transcriptPages.Put(key, transcriptPageBody{c.Writer.Header().Get("Content-Type"), encoding, capture.Bytes()},
+		capture.Cap()+len(key.owner)+len(key.session)+len(key.policies)+len(key.head)+len(key.summary)+len(key.selected))
 }
 
 func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey, settings run.Settings) error {
@@ -145,8 +159,8 @@ func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey,
 		}
 		return nil
 	})
-	if err == nil {
-		r.saveTranscriptResponse(c, key, capture)
+	if err == nil && capture != nil {
+		r.saveTranscriptResponse(c, key, page.TranscriptState, capture)
 	}
 	return err
 }
@@ -179,8 +193,7 @@ func (w *transcriptWire) Write(data []byte) (int, error) {
 	if w.writer == nil {
 		w.writer = w.sink
 		if w.zstd && len(data) >= httpserver.MinimumCompressSize {
-			w.c.Header("Content-Encoding", "zstd")
-			w.writer, w.finish = httpserver.NewZstdStream(w.sink)
+			w.writer, w.finish = httpserver.NewZstdResponse(w.c.Writer, w.sink)
 		}
 	}
 	return w.writer.Write(data)

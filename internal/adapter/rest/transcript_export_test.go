@@ -108,10 +108,11 @@ func TestTranscriptExportReportsErrorsBeforeAndAfterResponseStarts(t *testing.T)
 				return []run.Run{{ID: "second", Output: turn.Output}}, tt.nextErr
 			}
 			route := gin.New()
-			route.GET("/", httpserver.Compress, func(c *gin.Context) {
+			route.GET("/", func(c *gin.Context) {
+				zstd := httpserver.NegotiateZstd(c.Writer, c.Request)
 				ctx, finish := httpserver.StreamTiming(c.Writer, c.Request.Context())
 				defer finish()
-				err := api.writeTranscriptExport(ctx, c, tt.zstd, nil, stream, run.Settings{}, tt.limit)
+				err := api.writeTranscriptExport(ctx, c, zstd, nil, stream, run.Settings{}, tt.limit)
 				if err == nil {
 					t.Error("export should fail")
 					return

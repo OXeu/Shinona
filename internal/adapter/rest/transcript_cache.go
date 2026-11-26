@@ -3,7 +3,6 @@ package rest
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/proto"
@@ -15,7 +14,6 @@ import (
 )
 
 const (
-	encodedTranscriptCapacity = 32 << 20
 	encodedTranscriptMaxTurn  = 2 << 20
 	encodedTranscriptMaxCount = 2048
 )
@@ -29,21 +27,24 @@ type transcriptTurnKey struct {
 // Completed turns are immutable and can appear in different transcript pages.
 // The repository still checks which turns the current request can see.
 type encodedTranscriptTurns struct {
-	init    sync.Once
 	cache   *responsecache.Cache[transcriptTurnKey, []byte]
 	loading singleflight.Group
 }
 
+func newEncodedTranscriptTurns(bytes int) encodedTranscriptTurns {
+	if bytes <= 0 {
+		return encodedTranscriptTurns{}
+	}
+	return encodedTranscriptTurns{cache: responsecache.New[transcriptTurnKey, []byte](encodedTranscriptMaxCount, bytes)}
+}
+
 func (c *encodedTranscriptTurns) get(key transcriptTurnKey) []byte {
-	c.init.Do(func() {
-		c.cache = responsecache.New[transcriptTurnKey, []byte](encodedTranscriptMaxCount, encodedTranscriptCapacity)
-	})
 	body, _ := c.cache.Get(key)
 	return body
 }
 
 func (c *encodedTranscriptTurns) add(key transcriptTurnKey, body []byte) {
-	size := cap(body) + len(key.owner) + len(key.session) + len(key.id) + 160
+	size := cap(body) + len(key.owner) + len(key.session) + len(key.id) + len(key.status)
 	if size <= encodedTranscriptMaxTurn {
 		c.cache.Put(key, body, size)
 	}
@@ -51,6 +52,10 @@ func (c *encodedTranscriptTurns) add(key transcriptTurnKey, body []byte) {
 
 func (c *encodedTranscriptTurns) encode(ctx context.Context, turn run.Run) ([]byte, error) {
 	if !turn.Status.Completed() {
+		return marshalTranscriptTurn(turn)
+	}
+	if c.cache == nil {
+		defer timing.Start(ctx, "transcript_turn_encode")()
 		return marshalTranscriptTurn(turn)
 	}
 	key := transcriptTurnKey{

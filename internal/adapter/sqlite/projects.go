@@ -35,8 +35,12 @@ func (r *ProjectStore) CreateProject(ctx context.Context, project run.Project) e
 }
 
 func (r *ProjectStore) Projects(ctx context.Context, ownerID string) ([]run.Project, error) {
+	return listProjects(r.read.WithContext(ctx), ownerID)
+}
+
+func listProjects(db *gorm.DB, ownerID string) ([]run.Project, error) {
 	var records []projectRow
-	if err := r.read.WithContext(ctx).Where("owner_id = ?", ownerID).Order("name COLLATE NOCASE, id").Find(&records).Error; err != nil {
+	if err := db.Where("owner_id = ?", ownerID).Order("name COLLATE NOCASE, id").Find(&records).Error; err != nil {
 		return nil, err
 	}
 	projects := make([]run.Project, len(records))

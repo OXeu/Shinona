@@ -130,7 +130,7 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target) *be
 	server := httptest.NewUnstartedServer(nil)
 	origin := "http://" + server.Listener.Addr().String()
 	newHandler := func() http.Handler {
-		router := newAPIRouter(ctx, origin, service, nil, authHandler, logger, rest.DefaultTranscriptConcurrency())
+		router := newAPIRouter(ctx, origin, service, nil, authHandler, logger, rest.DefaultConfig())
 		return httpserver.ServerTiming(allowedHost(router, func() string { return "" }))
 	}
 	server.Config.Handler = newHandler()

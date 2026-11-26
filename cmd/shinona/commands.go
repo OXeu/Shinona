@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/term"
 
-	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
 )
 
@@ -29,7 +28,7 @@ func execute(ctx context.Context, logger *slog.Logger, args []string) error {
 		return errors.New("usage: shinona [create-user EMAIL | adopt-legacy USER_ID | grant-admin USER_ID | revoke-admin USER_ID]")
 	}
 
-	repository, err := sqlite.Open(ctx, environment.value("SHINONA_DATABASE", "shinona.db"))
+	repository, err := openDatabase(ctx, environment)
 	if err != nil {
 		return err
 	}

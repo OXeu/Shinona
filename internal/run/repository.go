@@ -17,7 +17,7 @@ type ServiceStores struct {
 
 type SessionRepository interface {
 	CreateSession(context.Context, Session) error
-	RecentSessions(ctx context.Context, ownerID string, projectID *string, limit int) ([]Session, error)
+	SessionListSnapshot(ctx context.Context, ownerID string, projectID *string, limit int) (SessionListSnapshot, error)
 	SessionListRevision(ctx context.Context, ownerID string) (int64, error)
 	sessionProjectReader
 	UpdateSession(ctx context.Context, ownerID, sessionID string, changes SessionChanges) (Session, error)
@@ -26,6 +26,7 @@ type SessionRepository interface {
 }
 
 type TranscriptRepository interface {
+	TranscriptState(ctx context.Context, ownerID, sessionID string) (*TranscriptState, error)
 	Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*Transcript, error)
 	TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*Transcript, error)
 	StreamTranscript(ctx context.Context, ownerID, sessionID string, write func(TranscriptStream) error) error

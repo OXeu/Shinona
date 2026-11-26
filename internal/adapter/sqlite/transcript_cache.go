@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"time"
+	"unsafe"
 
 	"gorm.io/gorm"
 
@@ -15,7 +16,6 @@ import (
 
 const (
 	latestTranscriptEntries = 128
-	latestTranscriptBytes   = 32 << 20
 	latestTranscriptPageMax = 4 << 20
 )
 
@@ -34,12 +34,14 @@ type latestTranscriptPage struct {
 }
 
 type latestTranscriptCache struct {
-	entries *responsecache.Cache[latestTranscriptKey, *latestTranscriptPage]
+	entries      *responsecache.Cache[latestTranscriptKey, *latestTranscriptPage]
+	maxPageBytes int
 }
 
-func newLatestTranscriptCache() latestTranscriptCache {
+func newLatestTranscriptCache(bytes int) latestTranscriptCache {
 	return latestTranscriptCache{
-		entries: responsecache.New[latestTranscriptKey, *latestTranscriptPage](latestTranscriptEntries, latestTranscriptBytes),
+		entries:      responsecache.New[latestTranscriptKey, *latestTranscriptPage](latestTranscriptEntries, bytes),
+		maxPageBytes: min(latestTranscriptPageMax, bytes),
 	}
 }
 
@@ -49,12 +51,15 @@ func (c *latestTranscriptCache) get(key latestTranscriptKey) *latestTranscriptPa
 }
 
 func (c *latestTranscriptCache) put(key latestTranscriptKey, page *run.Transcript) {
-	size := latestTranscriptSize(page.Turns)
-	if size > latestTranscriptPageMax {
+	if c.maxPageBytes == 0 {
+		return
+	}
+	size := latestTranscriptSize(page.Turns) + len(key.owner) + len(key.session) + len(page.HeadID)
+	if size > c.maxPageBytes {
 		return
 	}
 	entry := &latestTranscriptPage{
-		key: key, head: page.Turns[len(page.Turns)-1].ID, turns: cloneTranscriptTurns(page.Turns),
+		key: key, head: page.HeadID, turns: cloneTranscriptTurns(page.Turns),
 		createdAt: page.Session.CreatedAt, updatedAt: page.Session.UpdatedAt, turnCount: page.Session.TurnCount,
 		next: page.NextBeforeSequence,
 	}
@@ -65,36 +70,63 @@ func (c *latestTranscriptCache) discard(entry *latestTranscriptPage) {
 	c.entries.DeleteIf(entry.key, func(current *latestTranscriptPage) bool { return current == entry })
 }
 
-func (r *ConversationStore) validateCachedTranscript(ctx context.Context, key latestTranscriptKey, page *latestTranscriptPage) (*run.Transcript, bool, error) {
-	var current struct {
-		Session sessionRow `gorm:"embedded"`
-		HeadID  string
+func (r *ConversationStore) TranscriptState(ctx context.Context, owner, id string) (*run.TranscriptState, error) {
+	return transcriptState(r.read.WithContext(ctx), owner, id)
+}
+
+type transcriptHeadRow struct {
+	Session sessionRow `gorm:"embedded"`
+	HeadID  string
+}
+
+func (r transcriptHeadRow) state() run.TranscriptState {
+	return run.TranscriptState{Session: describeSession(r.Session), HeadID: r.HeadID}
+}
+
+func transcriptState(db *gorm.DB, owner, id string) (*run.TranscriptState, error) {
+	current, err := readTranscriptHead(db, owner, id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	state := current.state()
+	return &state, nil
+}
+
+func readTranscriptHead(db *gorm.DB, owner, id string) (transcriptHeadRow, error) {
+	var current transcriptHeadRow
 	// Completed turns are immutable. Revert removes a suffix, while enqueue
 	// appends a turn with a fresh ID. Validate the visible head and summary
 	// together so this works even with writes from another repository.
-	err := sessionScope(r.read.WithContext(ctx), key.owner).
+	err := sessionScope(db, owner).
 		Select(sessionWithActivity+`, COALESCE((
 			SELECT id FROM runs WHERE session_id = agent_sessions.id
 			AND owner_id = agent_sessions.owner_id AND reverted_at IS NULL
 			ORDER BY sequence DESC LIMIT 1
 		), '') AS head_id`, []run.Status{run.Queued, run.Running}).
-		First(&current, "id = ?", key.session).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		r.latest.discard(page)
-		return nil, true, nil
-	}
+		First(&current, "id = ?", id).Error
+	return current, err
+}
+
+func (r *ConversationStore) validateCachedTranscript(ctx context.Context, key latestTranscriptKey, page *latestTranscriptPage) (*run.Transcript, bool, error) {
+	state, err := r.TranscriptState(ctx, key.owner, key.session)
 	if err != nil {
 		return nil, false, err
 	}
-	if current.Session.HasActive || current.HeadID != page.head || current.Session.TurnCount != page.turnCount ||
-		!current.Session.CreatedAt.Equal(page.createdAt) || !current.Session.UpdatedAt.Equal(page.updatedAt) {
+	if state == nil {
+		r.latest.discard(page)
+		return nil, true, nil
+	}
+	if state.Session.Active || state.HeadID != page.head || state.Session.TurnCount != page.turnCount ||
+		!state.Session.CreatedAt.Equal(page.createdAt) || !state.Session.UpdatedAt.Equal(page.updatedAt) {
 		r.latest.discard(page)
 		return nil, false, nil
 	}
 	defer timing.Start(ctx, "transcript_cache_hit")()
 	return &run.Transcript{
-		Session: describeSession(current.Session), Turns: cloneTranscriptTurns(page.turns), NextBeforeSequence: page.next,
+		TranscriptState: *state, Turns: cloneTranscriptTurns(page.turns), NextBeforeSequence: page.next,
 	}, true, nil
 }
 
@@ -123,24 +155,34 @@ func cloneTranscriptTurns(turns []run.Run) []run.Run {
 
 // Estimate retained memory from the strings and slices in the decoded page.
 func latestTranscriptSize(turns []run.Run) int {
-	size := 1024
+	size := int(unsafe.Sizeof(latestTranscriptPage{})) + len(turns)*int(unsafe.Sizeof(run.Run{}))
 	for _, turn := range turns {
-		size += 512 + len(turn.ID) + len(turn.OwnerID) + len(turn.SessionID) + len(turn.Backend) +
+		size += len(turn.ID) + len(turn.OwnerID) + len(turn.SessionID) + len(turn.Backend) +
 			len(turn.Policy) + len(turn.Status) + len(turn.Prompt) + len(turn.Output) +
 			len(turn.AgentMessages) + len(turn.CompactedContext)
+		size += len(turn.RetryOf)
+		if turn.TokenUsage != nil {
+			size += int(unsafe.Sizeof(run.TokenUsage{}))
+		}
+		if turn.StartedAt != nil {
+			size += int(unsafe.Sizeof(time.Time{}))
+		}
+		if turn.RevertedAt != nil {
+			size += int(unsafe.Sizeof(time.Time{}))
+		}
 		options := turn.Payload.Options
 		size += len(options.Model) + len(options.Permission) + len(options.Thinking) + len(options.MCP)
 		for _, server := range options.MCPServers {
-			size += 16 + len(server)
+			size += int(unsafe.Sizeof("")) + len(server)
 		}
 		for _, part := range turn.Parts {
-			size += 112 + len(part.Kind) + len(part.Text) + len(part.Tool) + len(part.Input) + len(part.Output) + len(part.Status)
+			size += int(unsafe.Sizeof(run.TurnPart{})) + len(part.Kind) + len(part.Text) + len(part.Tool) + len(part.Input) + len(part.Output) + len(part.Status)
 		}
 		for _, steer := range turn.Steering {
-			size += 24 + len(steer.Text)
+			size += int(unsafe.Sizeof(run.SteeringMessage{})) + len(steer.Text)
 		}
 		for _, image := range turn.Payload.Images {
-			size += 48 + len(image.Name) + len(image.MediaType) + len(image.Data)
+			size += int(unsafe.Sizeof(run.Image{})) + len(image.Name) + len(image.MediaType) + len(image.Data)
 		}
 	}
 	return size

@@ -1,12 +1,12 @@
 package sqlite
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"gorm.io/driver/sqlite"
 
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
@@ -18,7 +18,8 @@ func openSchemaFixture(t *testing.T, filename string, version int) *Database {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, pool, err := openDB(sqlite.DriverName, dsn, 1)
+	pool := sql.OpenDB(&sqliteConnector{dsn: dsn})
+	db, err := openDB(pool, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,13 +27,67 @@ func openSchemaFixture(t *testing.T, filename string, version int) *Database {
 	if err := migrateTo(db.WithContext(t.Context()), version); err != nil {
 		t.Fatal(err)
 	}
-	return newDatabase(db, db)
+	return newDatabase(db, db, DefaultConfig().TranscriptCacheBytes)
 }
 
 func markUnversioned(t *testing.T, repo *Database) {
 	t.Helper()
 	if err := repo.db.Exec("PRAGMA user_version = 0").Error; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionListRevisionMigrationReplacesLegacyUpdateTrigger(t *testing.T) {
+	const previousVersion = 8
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "session-list.db")
+	old := openSchemaFixture(t, path, previousVersion)
+	seedAccounts(t, old, "owner")
+	session := run.Session{ID: "session", OwnerID: "owner", Title: "Saved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := old.Conversations.CreateSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.db.Exec(`DROP TRIGGER session_list_agent_sessions_update;
+		CREATE TRIGGER session_list_agent_sessions_update AFTER UPDATE OF title ON agent_sessions
+		BEGIN UPDATE session_list_revisions SET revision = revision + 1 WHERE owner_id = NEW.owner_id; END;`).Error; err != nil {
+		t.Fatal(err)
+	}
+	revision := func(repo *Database) int64 {
+		t.Helper()
+		value, err := repo.Conversations.SessionListRevision(ctx, session.OwnerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	update := func(repo *Database, field string, value any) {
+		t.Helper()
+		if err := repo.db.Model(&sessionRow{}).Where("id = ?", session.ID).UpdateColumn(field, value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := revision(old)
+	update(old, "title", session.Title)
+	baseline := revision(old)
+	if baseline != before+1 {
+		t.Fatalf("legacy no-op update advanced the revision from %d to %d", before, baseline)
+	}
+
+	repo, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	update(repo, "title", session.Title)
+	update(repo, "archived_at", nil)
+	if got := revision(repo); got != baseline {
+		t.Fatalf("migration or no-op updates changed the revision from %d to %d", baseline, got)
+	}
+	update(repo, "title", "Renamed")
+	update(repo, "archived_at", session.CreatedAt.Add(time.Hour))
+	update(repo, "archived_at", nil)
+	if got := revision(repo); got != baseline+3 {
+		t.Fatalf("title and archive changes advanced the revision from %d to %d, want %d", baseline, got, baseline+3)
 	}
 }
 
@@ -266,7 +321,8 @@ func TestOwnershipMigrationRunsOnceOnConcurrentOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	sessions, err := repo.Conversations.RecentSessions(ctx, "owner", nil, 10)
+	list, err := repo.Conversations.SessionListSnapshot(ctx, "owner", nil, 10)
+	sessions := list.Sessions
 	if err != nil || len(sessions) != 1 || sessions[0].ID != "session" {
 		t.Fatalf("concurrent upgrades changed the session data: %+v, %v", sessions, err)
 	}

@@ -164,7 +164,7 @@ Shinona applies resource limits to existing containers when they next run. Their
 
 ## Session transfer
 
-The session list uses `GET /api/v1/sessions`. Clients can send `If-None-Match` for an unchanged `304` response. Add `delta=true` with a previously received ETag in that header to request changes. The browser pauses polling when the tab is hidden. Visible tabs for the same account and list share results when Web Locks and BroadcastChannel are available.
+The session list uses `GET /api/v1/sessions`. Clients can send `If-None-Match` for an unchanged `304` response. Add `delta=true` with a previously received ETag in that header to request changes. When the requested base has left the cache, the server returns the current full list. The browser pauses polling when the tab is hidden. Visible tabs for the same account and list share results when Web Locks and BroadcastChannel are available.
 
 `GET /api/v1/sessions/{id}/transcript` returns a Protobuf `TranscriptPage` with media type `application/protobuf`. It returns the latest 30 turns and a cursor for fetching earlier turns with `beforeSequence`.
 
@@ -173,6 +173,17 @@ With `paged=false`, the response uses `application/vnd.shinona.transcript-stream
 The full export allows up to 5,000 turns, 128 MiB before compression, and 45 seconds including time spent waiting for an export slot. Use pagination for larger histories. The server applies Zstandard to JSON and Protobuf responses of at least 1 KiB when the client accepts `zstd`.
 
 Set `SHINONA_TRANSCRIPT_EXPORT_CONCURRENCY` (1–32) and `SHINONA_TRANSCRIPT_PAGE_CONCURRENCY` (1–128) to tune the two request limits independently. The CPU-scaled defaults range from 1–4 full exports and 8–32 paginated requests. Restart Shinona after changing either value.
+
+`SHINONA_SQLITE_READ_CONNECTIONS` controls the read-only connection pool for file-backed SQLite databases independently of the HTTP concurrency limits. It accepts 1–64 and defaults to the Go process's CPU concurrency, bounded to 2–16. The file database has a separate single writer. In-memory databases share one connection for reads and writes. Restart Shinona to apply the change.
+
+These startup settings control retained session list and transcript data. Each accepts 0–512 MiB, with 0 disabling that cache. The byte budgets account for cached payloads. Entry-count and per-entry limits still apply, and process memory also includes indexing and in-flight responses.
+
+| Setting | Cached data | Default |
+| --- | --- | ---: |
+| `SHINONA_SESSION_LIST_CACHE_MIB` | Session list snapshots and their encoded responses | 16 MiB |
+| `SHINONA_SQLITE_TRANSCRIPT_CACHE_MIB` | Decoded latest pages from SQLite | 32 MiB |
+| `SHINONA_TRANSCRIPT_TURN_CACHE_MIB` | Encoded Protobuf turns | 32 MiB |
+| `SHINONA_TRANSCRIPT_RESPONSE_CACHE_MIB` | Encoded HTTP pages and small exports | 16 MiB |
 
 An open conversation receives Protobuf updates over `/api/v1/live`. Client and server negotiate WebSocket compression when they connect. Growing text and tool output are sent as appended text. Changes to the turn list or status include changed turn records. The browser reconciles with the current transcript on reconnect and polls about once per second while an active session's live socket is unavailable. Intermediate progress can coalesce for slow viewers. The server validates the login on connection and at least every 15 seconds while delivering updates or heartbeats. Login changes from a separate process can take up to two additional seconds to expire from the HTTP authentication cache. Legacy subscriptions that ask for a full transcript in a single frame are limited to 256 turns.
 

@@ -21,6 +21,7 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/oidc"
 	"github.com/OXeu/shinona/internal/adapter/password"
 	"github.com/OXeu/shinona/internal/adapter/rest"
+	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -61,6 +62,20 @@ func (e environment) boundedInt(key string, fallback, from, through int) (int, e
 	return value, nil
 }
 
+func openDatabase(ctx context.Context, e environment) (*sqlite.Database, error) {
+	config := sqlite.DefaultConfig()
+	connections, err := e.boundedInt("SHINONA_SQLITE_READ_CONNECTIONS", config.ReadConnections, 1, sqlite.MaxReadConnections)
+	if err != nil {
+		return nil, err
+	}
+	config.ReadConnections = connections
+	config.TranscriptCacheBytes, err = cacheBudget(e, "SHINONA_SQLITE_TRANSCRIPT_CACHE_MIB", config.TranscriptCacheBytes)
+	if err != nil {
+		return nil, err
+	}
+	return sqlite.OpenWithConfig(ctx, e.value("SHINONA_DATABASE", "shinona.db"), config)
+}
+
 func passwordHasher(e environment) (password.Argon2id, error) {
 	defaults := password.DefaultParameters()
 	timeCost, err := e.boundedInt("SHINONA_ARGON2_TIME", int(defaults.Time), 1, 10)
@@ -78,17 +93,37 @@ func passwordHasher(e environment) (password.Argon2id, error) {
 	return password.New(password.Parameters{Time: uint32(timeCost), MemoryKiB: uint32(memory), Threads: uint8(threads)})
 }
 
-func transcriptConcurrency(e environment) (rest.TranscriptConcurrency, error) {
-	defaults := rest.DefaultTranscriptConcurrency()
-	exports, err := e.boundedInt("SHINONA_TRANSCRIPT_EXPORT_CONCURRENCY", defaults.Exports, 1, 32)
+func apiConfig(e environment) (rest.Config, error) {
+	config := rest.DefaultConfig()
+	limits := &config.Transcript
+	var err error
+	limits.Exports, err = e.boundedInt("SHINONA_TRANSCRIPT_EXPORT_CONCURRENCY", limits.Exports, 1, 32)
 	if err != nil {
-		return rest.TranscriptConcurrency{}, err
+		return rest.Config{}, err
 	}
-	pages, err := e.boundedInt("SHINONA_TRANSCRIPT_PAGE_CONCURRENCY", defaults.Pages, 1, 128)
+	limits.Pages, err = e.boundedInt("SHINONA_TRANSCRIPT_PAGE_CONCURRENCY", limits.Pages, 1, 128)
 	if err != nil {
-		return rest.TranscriptConcurrency{}, err
+		return rest.Config{}, err
 	}
-	return rest.TranscriptConcurrency{Exports: exports, Pages: pages}, nil
+	limits.ResponseCacheBytes, err = cacheBudget(e, "SHINONA_TRANSCRIPT_RESPONSE_CACHE_MIB", limits.ResponseCacheBytes)
+	if err != nil {
+		return rest.Config{}, err
+	}
+	limits.TurnCacheBytes, err = cacheBudget(e, "SHINONA_TRANSCRIPT_TURN_CACHE_MIB", limits.TurnCacheBytes)
+	if err != nil {
+		return rest.Config{}, err
+	}
+	config.SessionListCacheBytes, err = cacheBudget(e, "SHINONA_SESSION_LIST_CACHE_MIB", config.SessionListCacheBytes)
+	if err != nil {
+		return rest.Config{}, err
+	}
+	return config, nil
+}
+
+func cacheBudget(e environment, key string, fallbackBytes int) (int, error) {
+	const mib = 1 << 20
+	value, err := e.boundedInt(key, fallbackBytes/mib, 0, 512)
+	return value * mib, err
 }
 
 func trustedProxyNetworks(raw string) ([]netip.Prefix, error) {

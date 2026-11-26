@@ -4,6 +4,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -35,12 +37,12 @@ type pools struct {
 	read *gorm.DB
 }
 
-func newDatabase(db, read *gorm.DB) *Database {
+func newDatabase(db, read *gorm.DB, transcriptCacheBytes int) *Database {
 	connections := pools{db: db, read: read}
 	return &Database{
 		pools:         connections,
 		Accounts:      &AccountStore{pools: connections, sessions: newSessionCache()},
-		Conversations: &ConversationStore{pools: connections, latest: newLatestTranscriptCache()},
+		Conversations: &ConversationStore{pools: connections, latest: newLatestTranscriptCache(transcriptCacheBytes)},
 		Projects:      &ProjectStore{pools: connections},
 		Settings:      &SettingsStore{pools: connections},
 		E2B:           &E2BStore{pools: connections},
@@ -63,16 +65,40 @@ func (timingLogger) Trace(ctx context.Context, begin time.Time, _ func() (string
 	timing.Since(ctx, "sqlite", begin)
 }
 
+const MaxReadConnections = 64
+
+type Config struct {
+	ReadConnections      int
+	TranscriptCacheBytes int
+}
+
+func DefaultConfig() Config {
+	return Config{ReadConnections: min(max(runtime.GOMAXPROCS(0), 2), 16), TranscriptCacheBytes: 32 << 20}
+}
+
 func Open(ctx context.Context, filename string) (*Database, error) {
+	return OpenWithConfig(ctx, filename, DefaultConfig())
+}
+
+// OpenWithConfig sets the read-only pool size and decoded transcript cache budget.
+// In-memory databases use a single connection for both reads and writes.
+func OpenWithConfig(ctx context.Context, filename string, config Config) (*Database, error) {
+	if config.ReadConnections < 1 || config.ReadConnections > MaxReadConnections {
+		return nil, fmt.Errorf("SQLite read connections must be between 1 and %d", MaxReadConnections)
+	}
+	if config.TranscriptCacheBytes < 0 {
+		return nil, errors.New("SQLite transcript cache budget must be nonnegative")
+	}
 	writeDSN, readDSN, err := databaseDSNs(filename)
 	if err != nil {
 		return nil, err
 	}
-	driver := sqlite.DriverName
+	writer := &sqliteConnector{dsn: writeDSN}
 	if readDSN != "" {
-		driver = walWriterDriver
+		writer.driver.ConnectHook = disableWALAutoCheckpoint
 	}
-	db, pool, err := openDB(driver, writeDSN, 1)
+	pool := sql.OpenDB(writer)
+	db, err := openDB(pool, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -89,13 +115,13 @@ func Open(ctx context.Context, filename string) (*Database, error) {
 		return nil, errors.Join(err, pool.Close())
 	}
 	if readDSN == "" {
-		return newDatabase(db, db), nil
+		return newDatabase(db, db, config.TranscriptCacheBytes), nil
 	}
-	read, _, err := openDB(sqlite.DriverName, readDSN, min(max(runtime.GOMAXPROCS(0), 2), 16))
+	read, err := openDB(sql.OpenDB(&sqliteConnector{dsn: readDSN}), config.ReadConnections)
 	if err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
-	database := newDatabase(db, read)
+	database := newDatabase(db, read, config.TranscriptCacheBytes)
 	database.stopCheckpoint, err = startWALCheckpoint(ctx, readDSN)
 	if err != nil {
 		return nil, errors.Join(err, database.Close())
@@ -129,18 +155,31 @@ func databaseDSNs(filename string) (write, read string, err error) {
 	return write, path + "?" + options.Encode(), nil
 }
 
-func openDB(driver, dsn string, maxConnections int) (*gorm.DB, *sql.DB, error) {
-	pool, err := sql.Open(driver, dsn)
-	if err != nil {
-		return nil, nil, err
+// sqliteConnector keeps driver options scoped to their connection pool.
+type sqliteConnector struct {
+	dsn    string
+	driver sqlite3.SQLiteDriver
+}
+
+func (c *sqliteConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	return c.driver.Open(c.dsn)
+}
+
+func (c *sqliteConnector) Driver() driver.Driver {
+	return &c.driver
+}
+
+func openDB(pool *sql.DB, maxConnections int) (*gorm.DB, error) {
 	pool.SetMaxOpenConns(maxConnections)
 	pool.SetMaxIdleConns(maxConnections)
 	db, err := gorm.Open(sqlite.New(sqlite.Config{Conn: pool}), &gorm.Config{Logger: timingLogger{logger.Default.LogMode(logger.Silent)}})
 	if err != nil {
-		return nil, nil, errors.Join(err, pool.Close())
+		return nil, errors.Join(err, pool.Close())
 	}
-	return db, pool, nil
+	return db, nil
 }
 
 func (r *Database) Close() error {

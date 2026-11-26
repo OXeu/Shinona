@@ -82,18 +82,14 @@ func describeSession(record sessionRow) run.Session {
 	}
 }
 
-func (r *ConversationStore) RecentSessions(ctx context.Context, ownerID string, projectID *string, limit int) ([]run.Session, error) {
-	return r.recentSessions(ctx, ownerID, projectID, limit, 0)
-}
-
-func (r *ConversationStore) recentSessions(ctx context.Context, ownerID string, projectID *string, limit, offset int) ([]run.Session, error) {
+func listRecentSessions(db *gorm.DB, ownerID string, projectID *string, limit int) ([]run.Session, error) {
 	var records []sessionRow
-	query := sessionScope(r.read.WithContext(ctx), ownerID)
+	query := sessionScope(db, ownerID)
 	if projectID != nil {
 		query = query.Where("project_id = ?", *projectID)
 	}
 	err := withActivity(query).
-		Order("pinned DESC, updated_at DESC, id DESC").Limit(limit).Offset(offset).Find(&records).Error
+		Order("pinned DESC, updated_at DESC, id DESC").Limit(limit).Find(&records).Error
 	sessions := make([]run.Session, len(records))
 	for i, record := range records {
 		sessions[i] = describeSession(record)
@@ -175,12 +171,8 @@ func (r *ConversationStore) transcript(ctx context.Context, ownerID, sessionID s
 	var result *run.Transcript
 	var turns []transcriptRow
 	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var session sessionRow
-		err := withActivity(sessionScope(tx, ownerID)).First(&session, "id = ?", sessionID).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
-		if err != nil {
+		state, err := transcriptState(tx, ownerID, sessionID)
+		if err != nil || state == nil {
 			return err
 		}
 		query := transcriptQuery(conversationTurns(tx, ownerID, sessionID)).Order("sequence DESC")
@@ -193,7 +185,7 @@ func (r *ConversationStore) transcript(ctx context.Context, ownerID, sessionID s
 		if err := query.Find(&turns).Error; err != nil {
 			return err
 		}
-		result = &run.Transcript{Session: describeSession(session)}
+		result = &run.Transcript{TranscriptState: *state}
 		if window.paged && len(turns) == window.limit {
 			before := turns[len(turns)-1].Run.Sequence
 			var earlier []int

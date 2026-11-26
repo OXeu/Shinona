@@ -24,7 +24,7 @@ func decodeTranscriptTurn(t *testing.T, wire []byte, err error) *sessionpb.Turn 
 
 func TestCompletedTranscriptTurnsReuseProtobuf(t *testing.T) {
 	ctx := t.Context()
-	var cache encodedTranscriptTurns
+	cache := newEncodedTranscriptTurns(DefaultConfig().Transcript.TurnCacheBytes)
 	item := run.Run{
 		OwnerID: "alice", SessionID: "session", ID: "turn", Status: run.Succeeded,
 		UpdatedAt: time.Now().UTC(),

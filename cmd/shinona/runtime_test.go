@@ -169,7 +169,7 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 	}
 	service := run.NewService(repository.RunStores(), app.ResolveForAccount, uuid.NewString, &run.Controls{}, nil)
 	api := gin.New()
-	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler), rest.DefaultTranscriptConcurrency())
+	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler), rest.DefaultConfig())
 	const path = "/settings/application"
 	as := func(admin bool, method string, body any) string {
 		t.Helper()
