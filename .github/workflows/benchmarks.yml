@@ -50,6 +50,8 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y openssh-server
           fi
+          # Ubuntu's OpenSSH requires this directory even for a separate daemon.
+          sudo install -d -o root -g root -m 0755 /run/sshd
           bash .github/scripts/benchmark-ssh.sh bash -e -c '
             go test -p 1 -cpu 2 -run "^\$" -bench "^BenchmarkSandboxAPI\$/^ssh\$/^(FileList|GitChanges|GitHistory|PTYRoundTrip)\$" \
               -benchmem -benchtime=500ms -count=1 ./cmd/shinona
