@@ -22,13 +22,14 @@ func sandboxConfig(config run.ProjectSandboxConfig) projectSandboxConfig {
 }
 
 type projectSandboxResponse struct {
-	Project       projectResponse          `json:"project"`
-	Config        projectSandboxConfig     `json:"config"`
-	Effective     projectSandboxConfig     `json:"effective"`
-	ProviderLabel string                   `json:"providerLabel"`
-	Providers     []projectSandboxProvider `json:"providers"`
-	SandboxID     string                   `json:"sandboxId"`
-	State         string                   `json:"state"`
+	Project         projectResponse          `json:"project"`
+	Config          projectSandboxConfig     `json:"config"`
+	Effective       projectSandboxConfig     `json:"effective"`
+	ProviderLabel   string                   `json:"providerLabel"`
+	Providers       []projectSandboxProvider `json:"providers"`
+	SandboxID       string                   `json:"sandboxId"`
+	State           string                   `json:"state"`
+	ActiveOnTimeout string                   `json:"activeOnTimeout,omitempty"`
 }
 
 type projectSandboxProvider struct {
@@ -51,7 +52,7 @@ func (r *handler) ProjectSandbox(ctx context.Context, args resourceID) (projectS
 		Project:   projectResponse{ID: status.Project.ID, Name: status.Project.Name},
 		Config:    sandboxConfig(status.Config),
 		Effective: sandboxConfig(status.Effective), ProviderLabel: status.ProviderLabel, Providers: providers,
-		SandboxID: status.Status.ID, State: string(status.Status.State),
+		SandboxID: status.Status.ID, State: string(status.Status.State), ActiveOnTimeout: status.Status.OnTimeout,
 	}, nil
 }
 

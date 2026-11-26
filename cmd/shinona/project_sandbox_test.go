@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -102,5 +104,113 @@ func TestProjectSandboxTimeoutOverridesReachProvisioning(t *testing.T) {
 				checkCreate(path + "/recreate")
 			}
 		})
+	}
+}
+
+func TestChangingE2BDurationKeepsTheProjectSandbox(t *testing.T) {
+	type call struct {
+		path    string
+		timeout int
+	}
+	calls := make(chan call, 16)
+	const box = `{"sandboxID":"fixture-box","envdVersion":"0.11.0","envdAccessToken":"token"}`
+	mux := http.NewServeMux()
+	record := func(w http.ResponseWriter, r *http.Request, response int) {
+		var request struct{ Timeout int }
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode E2B request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		select {
+		case calls <- call{r.URL.Path, request.Timeout}:
+		default:
+			t.Error("unexpected extra E2B request")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(response)
+		if response != http.StatusNoContent {
+			_, _ = io.WriteString(w, box)
+		}
+	}
+	mux.HandleFunc("POST /sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		record(w, r, http.StatusCreated)
+	})
+	mux.HandleFunc("POST /sandboxes/fixture-box/connect", func(w http.ResponseWriter, r *http.Request) {
+		record(w, r, http.StatusOK)
+	})
+	mux.HandleFunc("POST /sandboxes/fixture-box/timeout", func(w http.ResponseWriter, r *http.Request) {
+		record(w, r, http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /sandboxes/fixture-box", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sandboxID":"fixture-box","state":"running","lifecycle":{"onTimeout":"pause","autoResume":false}}`)
+	})
+	mux.HandleFunc("DELETE /sandboxes/fixture-box", func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("changing the duration destroyed the active sandbox")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	remote := httptest.NewServer(mux)
+	t.Cleanup(remote.Close)
+	app, db, _ := settingsTestApp(t, settings.Values{
+		settings.E2BAPIKey: "fixture", settings.E2BBaseURL: remote.URL, settings.E2BProxyURL: remote.URL,
+		settings.E2BAPIVersion: "v1", settings.E2BWorkDirectory: "/workspace", settings.E2BTimeout: "480",
+	})
+	service := run.NewService(db.RunStores(), app.ResolveForAccount, uuid.NewString, &run.Controls{}, app.ProjectTargets, run.DefaultWorkspaceTimeouts())
+	const owner = "alice"
+	ctx := t.Context()
+	if err := service.CreateProjectSandbox(ctx, owner, ""); err != nil {
+		t.Fatal(err)
+	}
+	session, err := service.CreateSession(ctx, owner, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := func() {
+		t.Helper()
+		if err := service.WithWorkspace(ctx, owner, session.ID, func(context.Context, sandbox.Workspace) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.SaveProjectSandbox(ctx, owner, "", run.ProjectSandboxConfig{Provider: sandbox.ProviderE2B, TimeoutSeconds: 90}, ""); err != nil {
+		t.Fatal(err)
+	}
+	open()
+	open()
+	if _, err := app.Update(ctx, []settings.Change{{Key: settings.E2BTimeout, Value: new("30")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SaveProjectSandbox(ctx, owner, "", run.ProjectSandboxConfig{Provider: sandbox.ProviderE2B}, ""); err != nil {
+		t.Fatal(err)
+	}
+	open()
+	close(calls)
+	var got []call
+	for call := range calls {
+		got = append(got, call)
+	}
+	want := []call{
+		{"/sandboxes", 480},
+		{"/sandboxes/fixture-box/connect", 90}, {"/sandboxes/fixture-box/timeout", 90},
+		{"/sandboxes/fixture-box/connect", 90},
+		{"/sandboxes/fixture-box/connect", 30}, {"/sandboxes/fixture-box/timeout", 30},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("E2B requests = %v, want %v", got, want)
+	}
+
+	if _, err := app.Update(ctx, []settings.Change{{Key: settings.E2BOnTimeout, Value: new(sandbox.TimeoutKill)}}); err != nil {
+		t.Fatal(err)
+	}
+	api := gin.New()
+	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler), rest.DefaultConfig())
+	response := performREST(t, api, auth.WithUser(ctx, auth.User{ID: owner}), http.MethodGet, "/projects/default/sandbox", nil)
+	var status struct {
+		ActiveOnTimeout string
+		Effective       struct{ OnTimeout string }
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &status) != nil ||
+		status.ActiveOnTimeout != sandbox.TimeoutPause || status.Effective.OnTimeout != sandbox.TimeoutKill {
+		t.Fatalf("incorrect configured or active E2B action: %d %s", response.Code, response.Body)
 	}
 }

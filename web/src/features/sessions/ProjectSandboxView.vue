@@ -11,6 +11,7 @@ import UiChoiceDropdown from '../../shared/ui/UiChoiceDropdown.vue'
 import UiDialog from '../../shared/ui/UiDialog.vue'
 import UiIcon from '../../shared/ui/UiIcon.vue'
 import UiInput from '../../shared/ui/UiInput.vue'
+import UiTooltip from '../../shared/ui/UiTooltip.vue'
 import { UiBox, UiButton, UiForm, UiHeading, UiInline, UiSection, UiSubheading } from '../../shared/ui/elements'
 import { projectSandboxApi } from './projectSandboxApi'
 import type { ProjectSandbox, ProjectSandboxConfig } from './projectSandboxApi'
@@ -85,10 +86,14 @@ const replaces = computed(() => {
   const { effective } = current
   const updated = next.value
   return effective.provider !== fallback.provider || effective.template !== (updated.template || fallback.template) ||
-    effective.timeoutSeconds !== (updated.timeoutSeconds || fallback.timeoutSeconds) ||
     effective.onTimeout !== (updated.onTimeout || fallback.onTimeout)
 })
 const recreateLabel = computed(() => t(snapshot.value?.state === 'NONE' ? 'sandbox.create' : 'sandbox.recreate'))
+const timeoutActionNotice = computed(() => {
+  const current = snapshot.value
+  if (!current?.activeOnTimeout || current.activeOnTimeout === current.effective.onTimeout) return ''
+  return t('sandbox.timeoutActionPending', { action: timeoutActionName(current.activeOnTimeout) })
+})
 const confirmTitle = computed(() => skipCleanupFor.value ? t('sandbox.switchAnyway') : action.value === 'save' ? t('settings.save') :
   action.value === 'destroy' ? t('sandbox.destroy') : recreateLabel.value)
 const confirmMessage = computed(() => t(skipCleanupFor.value ? 'sandbox.confirmSwitchAfterCleanupFailure' :
@@ -207,6 +212,7 @@ onUnmounted(() => request.abort())
         <UiInline>{{ providerName(snapshot?.effective.provider ?? '', snapshot?.providerLabel) }}</UiInline>
         <UiInline class="sandbox-id" :hidden="!snapshot?.sandboxId">{{ snapshot?.sandboxId }}</UiInline>
       </UiBox>
+      <UiBox v-if="timeoutActionNotice" class="sandbox-hint">{{ timeoutActionNotice }}</UiBox>
       <UiBox class="sandbox-actions" :hidden="!configured">
         <UiButton
           class="secondary-button"
@@ -257,7 +263,14 @@ onUnmounted(() => request.abort())
             :aria-invalid="!validTimeout"
             inputmode="numeric"
             maxlength="5"
-          />
+          >
+            <template #help>
+              <UiTooltip
+                :label="t('common.helpFor', { label: t('sandbox.timeout') })"
+                :text="t('sandbox.timeoutOnConnect')"
+              />
+            </template>
+          </UiInput>
           <UiChoiceDropdown
             v-model="onTimeout"
             :label="t('sandbox.onTimeout')"

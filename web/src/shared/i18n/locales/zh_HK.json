@@ -377,6 +377,8 @@
   "sandbox.template": "沙箱範本",
   "sandbox.image": "Docker 映像",
   "sandbox.timeout": "逾時時間（秒）",
+  "sandbox.timeoutOnConnect": "新的時長會在下次連線至工作區時生效。",
+  "sandbox.timeoutActionPending": "目前沙箱的逾時操作仍為「{action}」。重建沙箱後會套用已設定的操作。",
   "sandbox.onTimeout": "逾時操作",
   "sandbox.pause": "暫停",
   "sandbox.kill": "終止",

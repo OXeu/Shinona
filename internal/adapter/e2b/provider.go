@@ -69,9 +69,10 @@ type WorkspaceStore interface {
 type credentials struct {
 	EnvdToken        string
 	TrafficToken     string
-	RecoverySnapshot string `json:",omitempty"`
-	WorkspaceUser    string `json:",omitempty"`
-	WorkDirectory    string `json:",omitempty"`
+	RecoverySnapshot string        `json:",omitempty"`
+	WorkspaceUser    string        `json:",omitempty"`
+	WorkDirectory    string        `json:",omitempty"`
+	Timeout          time.Duration `json:",omitempty"`
 }
 
 type projectSandbox struct {
@@ -265,7 +266,15 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 	if box.ID != id {
 		return nil, fmt.Errorf("E2B returned an unexpected sandbox while reconnecting %s", id)
 	}
+	// Connect can extend the expiration. Overwrite it when the previous
+	// duration was longer or the workspace predates saved timeout settings.
+	if project.tokens.Timeout == 0 || project.tokens.Timeout > p.config.Timeout {
+		if err := box.SetTimeout(ctx, p.config.Timeout); err != nil {
+			return nil, fmt.Errorf("set E2B project sandbox timeout: %w", err)
+		}
+	}
 	tokens := boxCredentials(box, project.tokens)
+	tokens.Timeout = p.config.Timeout
 	workspace, tokens, err := p.dataPlane(ctx, box, tokens, true)
 	if err != nil {
 		return nil, err
@@ -315,7 +324,7 @@ func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previou
 		return nil, err
 	}
 
-	tokens := credentials{RecoverySnapshot: snapshot}
+	tokens := credentials{RecoverySnapshot: snapshot, Timeout: p.config.Timeout}
 	if snapshot != "" {
 		tokens.WorkspaceUser, tokens.WorkDirectory = previous.tokens.WorkspaceUser, previous.tokens.WorkDirectory
 	}

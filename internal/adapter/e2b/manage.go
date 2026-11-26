@@ -28,6 +28,12 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 	default:
 		status.State = sandbox.ProjectUnavailable
 	}
+	if lifecycle := info.Lifecycle; lifecycle != nil {
+		switch lifecycle.OnTimeout {
+		case sandbox.TimeoutPause, sandbox.TimeoutKill:
+			status.OnTimeout = lifecycle.OnTimeout
+		}
+	}
 	return status, nil
 }
 

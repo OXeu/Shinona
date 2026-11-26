@@ -377,6 +377,8 @@
   "sandbox.template": "Sandbox template",
   "sandbox.image": "Docker image",
   "sandbox.timeout": "Timeout in seconds",
+  "sandbox.timeoutOnConnect": "The new timeout takes effect when the workspace next connects.",
+  "sandbox.timeoutActionPending": "This sandbox still uses {action} on timeout. Recreate it to apply the configured action.",
   "sandbox.onTimeout": "On timeout",
   "sandbox.pause": "Pause",
   "sandbox.kill": "Kill",

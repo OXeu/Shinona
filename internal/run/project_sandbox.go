@@ -150,6 +150,7 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 		if skipCleanupFor != "" && (current.Provider != skipCleanupFor || current.Provider == next.Provider) {
 			return ErrProjectSandboxConfig
 		}
+		before, after := current.effective(target), next.effective(target)
 		switch {
 		case current.Provider == "":
 		case current.Provider != next.Provider:
@@ -162,7 +163,7 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 					return ErrProjectSandboxCleanup
 				}
 			}
-		case current.effective(target) != next.effective(target):
+		case before.Template != after.Template || before.OnTimeout != after.OnTimeout:
 			if err := s.destroyProjectSandbox(ctx, provider, spec); err != nil {
 				return err
 			}

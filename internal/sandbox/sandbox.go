@@ -91,8 +91,9 @@ const (
 )
 
 type ProjectStatus struct {
-	ID    string
-	State ProjectState
+	ID        string
+	State     ProjectState
+	OnTimeout string
 }
 
 type ManagedProjectProvider interface {

@@ -18,6 +18,7 @@ export interface ProjectSandbox {
   providers: (ProjectSandboxConfig & { label: string })[]
   sandboxId: string
   state: 'NONE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'MISSING' | 'UNAVAILABLE'
+  activeOnTimeout?: 'pause' | 'kill'
 }
 
 function sandboxPath(project: ProjectTarget) {
