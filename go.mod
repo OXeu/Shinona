@@ -12,6 +12,7 @@ require (
 	github.com/graph-gophers/graphql-go v1.11.1
 	github.com/joho/godotenv v1.5.1
 	github.com/klauspost/compress v1.20.5
+	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/sky-valley/pi v1.6.32
 	golang.org/x/crypto v0.55.0
@@ -31,7 +32,6 @@ require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
-	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/oapi-codegen/runtime v1.4.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect

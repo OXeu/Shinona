@@ -52,10 +52,11 @@ type row struct {
 func (row) TableName() string { return "runs" }
 
 type Repository struct {
-	db       *gorm.DB
-	read     *gorm.DB
-	sessions sessionCache
-	latest   latestTranscriptCache
+	db             *gorm.DB
+	read           *gorm.DB
+	sessions       sessionCache
+	latest         latestTranscriptCache
+	stopCheckpoint func() error
 }
 
 type timingLogger struct{ logger.Interface }
@@ -69,7 +70,11 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, pool, err := openDB(writeDSN, 1)
+	driver := sqlite.DriverName
+	if readDSN != "" {
+		driver = walWriterDriver
+	}
+	db, pool, err := openDB(driver, writeDSN, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -107,14 +112,19 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 		UpdateColumn("policy", sandbox.Shared).Error; err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
-	read := db
-	if readDSN != "" {
-		read, _, err = openDB(readDSN, min(max(runtime.GOMAXPROCS(0), 2), 16))
-		if err != nil {
-			return nil, errors.Join(err, pool.Close())
-		}
+	repo := &Repository{db: db, read: db}
+	if readDSN == "" {
+		return repo, nil
 	}
-	return &Repository{db: db, read: read}, nil
+	repo.read, _, err = openDB(sqlite.DriverName, readDSN, min(max(runtime.GOMAXPROCS(0), 2), 16))
+	if err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
+	repo.stopCheckpoint, err = startWALCheckpoint(ctx, readDSN)
+	if err != nil {
+		return nil, errors.Join(err, repo.Close())
+	}
+	return repo, nil
 }
 
 func databaseDSNs(filename string) (write, read string, err error) {
@@ -143,8 +153,8 @@ func databaseDSNs(filename string) (write, read string, err error) {
 	return write, path + "?" + options.Encode(), nil
 }
 
-func openDB(dsn string, maxConnections int) (*gorm.DB, *sql.DB, error) {
-	pool, err := sql.Open(sqlite.DriverName, dsn)
+func openDB(driver, dsn string, maxConnections int) (*gorm.DB, *sql.DB, error) {
+	pool, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -158,11 +168,14 @@ func openDB(dsn string, maxConnections int) (*gorm.DB, *sql.DB, error) {
 }
 
 func (r *Repository) Close() error {
-	var readErr error
+	var checkpointErr, readErr error
+	if r.stopCheckpoint != nil {
+		checkpointErr = r.stopCheckpoint()
+	}
 	if r.read != r.db {
 		readErr = closeDB(r.read)
 	}
-	return errors.Join(readErr, closeDB(r.db))
+	return errors.Join(checkpointErr, readErr, closeDB(r.db))
 }
 
 func closeDB(db *gorm.DB) error {
