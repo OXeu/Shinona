@@ -41,7 +41,10 @@ let retry: ReturnType<typeof setTimeout> | undefined
 let inspectionTrigger: HTMLElement | undefined
 
 const lists = { changes, files, history }
-const state = computed(() => loadMessage.value || (loading.value && !lists[props.view].value ? t('repository.loading') : ''))
+const state = computed(() => {
+  if (lists[props.view].value) return ''
+  return loadMessage.value || (loading.value ? t('repository.loading') : '')
+})
 const refreshDisabled = computed(() => loading.value || mutating.value)
 
 function pause() {
@@ -231,12 +234,13 @@ onUnmounted(() => {
       @unauthorized="emit('unauthorized')"
     />
     <UiBox v-else-if="state" class="workspace-empty">{{ state }}</UiBox>
+    <UiBox v-else-if="loadMessage" class="workspace-note">{{ loadMessage }}</UiBox>
     <WorkspaceChangesPanel
       v-show="view === 'changes' && !inspection && !state"
       ref="changesPanel"
       :changes="changes"
-      :busy="loading || mutating"
-      :turn-active="active"
+      :busy="mutating"
+      :commit-blocked="active || loading"
       @preview="inspectChange"
       @commit="commit"
     />

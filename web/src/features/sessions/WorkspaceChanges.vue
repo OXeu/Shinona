@@ -8,7 +8,7 @@ import UiTextarea from '../../shared/ui/UiTextarea.vue'
 import { UiBox, UiButton, UiForm, UiInline, UiList, UiListItem, UiSection } from '../../shared/ui/elements'
 import type { WorkspaceChanges } from './workspaceApi'
 
-const props = defineProps<{ changes: WorkspaceChanges | null; busy: boolean; turnActive: boolean }>()
+const props = defineProps<{ changes: WorkspaceChanges | null; busy: boolean; commitBlocked: boolean }>()
 const emit = defineEmits<{
   preview: [path: string, status: string]
   commit: [message: string, paths: string[]]
@@ -79,13 +79,13 @@ defineExpose({
         id="workspace-commit-message"
         v-model="message"
         :label="t('repository.commitMessage')"
-        :disabled="busy || turnActive"
+        :disabled="busy"
         maxlength="4096"
         rows="2"
       />
       <UiBox class="workspace-commit-actions">
         <UiInline class="workspace-meta">{{ t('repository.selected', { count: selected.length, total: entries.length }) }}</UiInline>
-        <UiButton type="submit" :disabled="busy || turnActive || !selected.length || !message.trim()">
+        <UiButton type="submit" :disabled="busy || commitBlocked || !selected.length || !message.trim()">
           {{ t('repository.commit') }}
         </UiButton>
       </UiBox>
