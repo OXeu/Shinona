@@ -11,7 +11,7 @@ import (
 // database claim and registration so Stop cannot miss a newly claimed turn.
 type Controls struct {
 	mu       sync.Mutex
-	leaseMu  sync.Mutex
+	leaseMu  sync.RWMutex
 	active   *activeTurn
 	watchers map[sessionKey]map[*SessionWatch]struct{}
 }

@@ -105,8 +105,8 @@ async function load() {
     }
   } catch (error) {
     if (signal.aborted) return
-    if (props.active && error instanceof HttpError &&
-      (error.code === 'WORKSPACE_BUSY' || error.code === 'WORKSPACE_UNAVAILABLE')) {
+    if (error instanceof HttpError &&
+      (error.code === 'WORKSPACE_BUSY' || (props.active && error.code === 'WORKSPACE_UNAVAILABLE'))) {
       loadMessage.value = t('repository.starting')
       retry = setTimeout(load, 1_000)
     } else {

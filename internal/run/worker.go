@@ -130,7 +130,10 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 		return Result{}, fmt.Errorf("load workspace project: %w", err)
 	}
 	spec.RunID = item.ID
-	if _, ok := target.Provider.(sandbox.ProjectProvider); !ok {
+	var projectID *string
+	if _, ok := target.Provider.(sandbox.ProjectProvider); ok {
+		projectID = &spec.ProjectID
+	} else {
 		spec.Policy = item.Policy
 	}
 	if !slices.Contains(target.policies(item.OwnerID), spec.Policy) {
@@ -149,7 +152,7 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 		return Result{}, fmt.Errorf("%w: %w", errWorkspaceSetup, err)
 	}
 
-	detach := w.controls.publishWorkspace(active, workspace)
+	detach := w.controls.publishWorkspace(active, workspace, projectID)
 	result, runErr := agent.Run(ctx, Input{
 		OwnerID: item.OwnerID, Prompt: item.Prompt, History: history, Payload: item.Payload, Steering: &active.steering,
 		ReportParts:   func(parts []TurnPart) { w.controls.reportParts(active, parts) },

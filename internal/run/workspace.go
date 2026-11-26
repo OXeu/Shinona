@@ -20,12 +20,13 @@ const workspaceTimeout = 15 * time.Second
 type liveWorkspace struct {
 	workspace sandbox.Workspace
 	ctx       context.Context
+	projectID *string // Nil denotes a session-scoped lease. An empty ID denotes the default project.
 	readers   sync.WaitGroup
 }
 
-func (c *Controls) publishWorkspace(active *activeTurn, ws sandbox.Workspace) func() {
+func (c *Controls) publishWorkspace(active *activeTurn, ws sandbox.Workspace, projectID *string) func() {
 	ctx, cancel := context.WithCancel(active.ctx)
-	lease := &liveWorkspace{workspace: ws, ctx: ctx}
+	lease := &liveWorkspace{workspace: ws, ctx: ctx, projectID: projectID}
 	c.mu.Lock()
 	active.workspace = lease
 	c.mu.Unlock()
@@ -40,31 +41,58 @@ func (c *Controls) publishWorkspace(active *activeTurn, ws sandbox.Workspace) fu
 	}
 }
 
-func (c *Controls) borrowWorkspace(owner, id string) *liveWorkspace {
+func (s *Service) borrowWorkspace(ctx context.Context, owner, id string) (*liveWorkspace, error) {
+	c := s.controls
+	c.mu.Lock()
+	active := c.active
+	if active == nil || active.item.OwnerID != owner || active.workspace == nil || active.workspace.ctx.Err() != nil {
+		c.mu.Unlock()
+		return nil, nil
+	}
+	live := active.workspace
+	if active.item.SessionID == id {
+		live.readers.Add(1)
+		c.mu.Unlock()
+		return live, nil
+	}
+	c.mu.Unlock()
+	if live.projectID == nil {
+		return nil, nil
+	}
+	projectID, err := s.repo.SessionProject(ctx, owner, id)
+	if errors.Is(err, ErrSession) {
+		return nil, ErrWorkspaceUnavailable
+	}
+	if err != nil || projectID != *live.projectID {
+		return nil, err
+	}
+
+	// The worker may have detached the lease while we verified membership.
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	active := c.active
-	if active == nil || active.item.OwnerID != owner || active.item.SessionID != id ||
-		active.workspace == nil || active.workspace.ctx.Err() != nil {
-		return nil
+	if c.active != active || active.workspace != live || live.ctx.Err() != nil {
+		return nil, nil
 	}
-	active.workspace.readers.Add(1)
-	return active.workspace
+	live.readers.Add(1)
+	return live, nil
 }
 
-// InspectWorkspace runs a read-only operation on the live lease when available.
-// A retained workspace can also be inspected between turns.
+// InspectWorkspace can borrow a live lease for the same project. Between
+// turns, several readers may open the retained workspace concurrently.
 func (s *Service) InspectWorkspace(ctx context.Context, owner, id string, inspect func(context.Context, sandbox.Workspace) error) error {
-	live := s.controls.borrowWorkspace(owner, id)
+	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
+	defer cancel()
+	live, err := s.borrowWorkspace(ctx, owner, id)
+	if err != nil {
+		return err
+	}
 	if live == nil {
 		return s.withWorkspace(ctx, owner, id, true, inspect)
 	}
 	defer live.readers.Done()
-	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
-	defer cancel()
 	stop := context.AfterFunc(live.ctx, cancel)
 	defer stop()
-	err := inspect(ctx, live.workspace)
+	err = inspect(ctx, live.workspace)
 	if errors.Is(err, context.Canceled) && live.ctx.Err() != nil {
 		return ErrWorkspaceBusy
 	}
@@ -78,10 +106,17 @@ func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(
 }
 
 func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly bool, use func(context.Context, sandbox.Workspace) error) (err error) {
-	if !s.controls.leaseMu.TryLock() {
-		return ErrWorkspaceBusy
+	if readOnly {
+		if !s.controls.leaseMu.TryRLock() {
+			return ErrWorkspaceBusy
+		}
+		defer s.controls.leaseMu.RUnlock()
+	} else {
+		if !s.controls.leaseMu.TryLock() {
+			return ErrWorkspaceBusy
+		}
+		defer s.controls.leaseMu.Unlock()
 	}
-	defer s.controls.leaseMu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
 	defer cancel()
 	acquired := sync.OnceFunc(timing.Start(ctx, "workspace_acquire"))
