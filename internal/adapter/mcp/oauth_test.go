@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -114,9 +115,11 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	fixture = httptest.NewServer(mux)
 	t.Cleanup(fixture.Close)
 	server := settings.MCPServer{Name: "fixture", URL: fixture.URL + "/mcp", OAuth: &settings.MCPOAuthConfig{}}
-	lookup := func(name string) (settings.MCPServer, bool) { return server, name == server.Name }
+	lookup := func(_ context.Context, owner, name string) (settings.MCPServer, bool) {
+		return server, owner == "owner" && name == server.Name
+	}
 	oauth := NewOAuth(store.Settings, origin)
-	state, destination, err := oauth.Start(ctx, "owner", server, "")
+	state, destination, err := oauth.Start(ctx, "owner", server.Name, "", lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +220,178 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	}
 }
 
-func TestDisconnectCancelsPendingOAuthDiscovery(t *testing.T) {
+func TestOAuthRefreshDuringCallerOrGrantChanges(t *testing.T) {
+	for _, scenario := range []string{"cancel caller", "disconnect grant", "replace grant"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "shinona.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			const owner = "owner"
+			if err := store.Accounts.CreatePasswordUser(ctx, auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+				t.Fatal(err)
+			}
+			started, reply := make(chan struct{}), make(chan struct{})
+			var refreshes atomic.Int32
+			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseForm(); err != nil || r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "original-refresh" {
+					t.Error("unexpected refresh request")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if refreshes.Add(1) != 1 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					writeOAuthJSON(w, map[string]string{"error": "invalid_grant"})
+					return
+				}
+				close(started)
+				select {
+				case <-reply:
+					writeOAuthJSON(w, map[string]any{"access_token": "rotated-access", "refresh_token": "rotated-refresh", "expires_in": 3600})
+				case <-r.Context().Done():
+				}
+			}))
+			t.Cleanup(fixture.Close)
+			allowReply := sync.OnceFunc(func() { close(reply) })
+			t.Cleanup(allowReply)
+			server := settings.MCPServer{Name: "fixture", URL: fixture.URL + "/mcp", OAuth: &settings.MCPOAuthConfig{}}
+			oauth := NewOAuth(store.Settings, "http://127.0.0.1:5174")
+			grant := oauthGrant{
+				Fingerprint: fingerprint(server), Resource: server.URL,
+				Config: oauth2.Config{ClientID: "fixture", RedirectURL: oauth.redirect, Endpoint: oauth2.Endpoint{TokenURL: fixture.URL + "/token"}},
+			}
+			save := func(token *oauth2.Token) {
+				t.Helper()
+				grant.Token = token
+				data, err := json.Marshal(grant)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Settings.SaveMCPGrant(ctx, owner, server.Name, data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			save(&oauth2.Token{AccessToken: "original-access", RefreshToken: "original-refresh", Expiry: time.Now().Add(-time.Minute)})
+			type tokenResult struct {
+				token *oauth2.Token
+				err   error
+			}
+			caller, cancelCaller := context.WithCancel(ctx)
+			defer cancelCaller()
+			result := make(chan tokenResult, 1)
+			go func() {
+				token, err := oauth.Token(caller, owner, server)
+				result <- tokenResult{token, err}
+			}()
+			select {
+			case <-started:
+			case <-ctx.Done():
+				t.Fatal("refresh did not reach the issuer")
+			}
+			await := func() tokenResult {
+				t.Helper()
+				select {
+				case result := <-result:
+					return result
+				case <-ctx.Done():
+					t.Fatal("refresh caller did not return")
+					return tokenResult{}
+				}
+			}
+			wantAccess, wantRefresh := "rotated-access", "rotated-refresh"
+			switch scenario {
+			case "cancel caller":
+				cancelCaller()
+				if got := await(); !errors.Is(got.err, context.Canceled) || got.token != nil {
+					t.Errorf("cancelled caller should return immediately: %v", got.err)
+				}
+				allowReply()
+				if token, err := oauth.Token(ctx, owner, server); err != nil || token.AccessToken != wantAccess {
+					t.Errorf("next caller did not obtain the rotated token: %v", err)
+				}
+			case "disconnect grant":
+				if err := oauth.Disconnect(ctx, owner, server.Name); err != nil {
+					t.Fatal(err)
+				}
+				allowReply()
+				if got := await(); !errors.Is(got.err, ErrOAuthRequired) || got.token != nil {
+					t.Errorf("refresh returned a disconnected grant: %v", got.err)
+				}
+				wantAccess, wantRefresh = "", ""
+			case "replace grant":
+				wantAccess, wantRefresh = "new-access", "new-refresh"
+				save(&oauth2.Token{AccessToken: wantAccess, RefreshToken: wantRefresh, Expiry: time.Now().Add(time.Hour)})
+				if token, err := oauth.Token(ctx, owner, server); err != nil || token.AccessToken != wantAccess {
+					t.Errorf("new authorization waited for the old refresh: %v", err)
+				}
+				allowReply()
+				if got := await(); got.err != nil || got.token.AccessToken != wantAccess {
+					t.Errorf("refresh did not return the newer authorization: %v", got.err)
+				}
+			}
+			if refreshes.Load() != 1 {
+				t.Errorf("the issuer received %d requests for one refresh token", refreshes.Load())
+			}
+			saved, _, err := oauth.grant(ctx, owner, server)
+			if wantAccess == "" {
+				if !errors.Is(err, ErrOAuthRequired) {
+					t.Fatalf("refresh restored a disconnected grant: %v", err)
+				}
+			} else if err != nil || saved.Token.AccessToken != wantAccess || saved.Token.RefreshToken != wantRefresh {
+				t.Fatalf("SQLite did not retain the expected grant: %v", err)
+			}
+		})
+	}
+}
+
+func TestOAuthStartWaitsForServerChanges(t *testing.T) {
+	const owner = "owner"
+	var discoveryRequests atomic.Int32
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		discoveryRequests.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(remote.Close)
+	server := settings.MCPServer{Name: "fixture", URL: remote.URL + "/mcp", OAuth: &settings.MCPOAuthConfig{}}
+	configured := true
+	oauth := NewOAuth(nil, "https://shinona.example.test")
+	handler := oauthHandler{oauth: oauth, logger: slog.New(slog.DiscardHandler),
+		lookup: func(_ context.Context, account, name string) (settings.MCPServer, bool) {
+			return server, configured && account == owner && name == server.Name
+		},
+	}
+	start := func(ctx context.Context) *httptest.ResponseRecorder {
+		request := httptest.NewRequestWithContext(auth.WithUser(ctx, auth.User{ID: owner}), http.MethodPost,
+			"/auth/mcp/start", strings.NewReader(`{"name":"fixture"}`))
+		response := httptest.NewRecorder()
+		handler.start(response, request)
+		return response
+	}
+	// While the settings change is pending, the former endpoint is still
+	// visible in the repository. Starting OAuth must wait for the edit.
+	if err := oauth.ApplyServerChanges(t.Context(), owner, func() ([]string, error) {
+		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+		defer cancel()
+		response := start(ctx)
+		if ctx.Err() != context.DeadlineExceeded || discoveryRequests.Load() != 0 || response.Header().Get("Set-Cookie") != "" {
+			t.Errorf("start used a configuration being changed: status=%d, discovery requests=%d, context=%v",
+				response.Code, discoveryRequests.Load(), ctx.Err())
+		}
+		configured = false
+		return []string{server.Name}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if response := start(t.Context()); response.Code != http.StatusNotFound || discoveryRequests.Load() != 0 {
+		t.Fatalf("start did not see the committed removal: status=%d, discovery requests=%d", response.Code, discoveryRequests.Load())
+	}
+}
+
+func TestDisconnectCancelsPendingOAuthRequests(t *testing.T) {
 	store, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "shinona.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -229,6 +403,8 @@ func TestDisconnectCancelsPendingOAuthDiscovery(t *testing.T) {
 	}
 	discovering := make(chan struct{})
 	stopped := make(chan struct{})
+	exchanging := make(chan struct{})
+	exchangeStopped := make(chan struct{})
 	var firstRequest atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
@@ -250,6 +426,15 @@ func TestDisconnectCancelsPendingOAuthDiscovery(t *testing.T) {
 			"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token",
 			"code_challenge_methods_supported": []string{"S256"},
 		})
+	})
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		close(exchanging)
+		<-r.Context().Done()
+		close(exchangeStopped)
 	})
 	remote := httptest.NewServer(mux)
 	t.Cleanup(remote.Close)
@@ -301,8 +486,34 @@ func TestDisconnectCancelsPendingOAuthDiscovery(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("discovery request remained open on the OAuth server")
 	}
-	if state, destination, err := oauth.Start(ctx, owner, server, ""); err != nil || state == "" || destination == "" {
+	state, destination, err := oauth.Start(ctx, owner, server.Name, "", handler.lookup)
+	if err != nil || state == "" || destination == "" {
 		t.Fatalf("explicit reconnect did not start a new flow: %v", err)
+	}
+	callback := make(chan error, 1)
+	go func() {
+		callback <- oauth.Finish(ctx, owner, state, "fixture-code", "", handler.lookup)
+	}()
+	select {
+	case <-exchanging:
+	case <-ctx.Done():
+		t.Fatal("OAuth exchange did not start")
+	}
+	if err := oauth.Disconnect(ctx, owner, server.Name); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-callback:
+		if !errors.Is(err, ErrOAuthFlow) {
+			t.Fatalf("exchange was not invalidated: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("disconnect did not interrupt the callback")
+	}
+	select {
+	case <-exchangeStopped:
+	case <-ctx.Done():
+		t.Fatal("token exchange remained open on the OAuth server")
 	}
 }
 

@@ -18,13 +18,13 @@ const oauthCookie = "shinona_mcp_oauth"
 
 type oauthHandler struct {
 	oauth  *OAuth
-	lookup func(context.Context, string, string) (settings.MCPServer, bool)
+	lookup oauthServerLookup
 	secure bool
 	logger *slog.Logger
 }
 
 func (o *OAuth) Routes(mux httpserver.Routes, requireUser, sameOrigin func(http.Handler) http.Handler,
-	lookup func(context.Context, string, string) (settings.MCPServer, bool), secure bool, logger *slog.Logger,
+	lookup oauthServerLookup, secure bool, logger *slog.Logger,
 ) {
 	h := oauthHandler{oauth: o, lookup: lookup, secure: secure, logger: logger}
 	mux.Handle("POST /auth/mcp/start", sameOrigin(requireUser(http.HandlerFunc(h.start))))
@@ -33,30 +33,32 @@ func (o *OAuth) Routes(mux httpserver.Routes, requireUser, sameOrigin func(http.
 	mux.HandleFunc("GET "+OAuthMetadata, h.metadata)
 }
 
-func (h oauthHandler) submittedServer(w http.ResponseWriter, r *http.Request) (settings.MCPServer, bool) {
+func submittedName(w http.ResponseWriter, r *http.Request) (string, bool) {
 	var input struct{ Name string }
 	if err := httpserver.DecodeJSON(w, r, 4096, &input); err != nil {
 		httpserver.WriteError(w, http.StatusBadRequest, "INVALID_MCP_OAUTH", "Invalid MCP OAuth request.")
-		return settings.MCPServer{}, false
+		return "", false
 	}
-	lookup := timing.Start(r.Context(), "mcp_server_lookup")
-	server, ok := h.lookup(r.Context(), auth.CurrentUser(r.Context()).ID, input.Name)
-	lookup()
-	if !ok || server.OAuth == nil {
-		httpserver.WriteError(w, http.StatusNotFound, "MCP_SERVER_NOT_FOUND", "MCP OAuth server not found.")
-		return settings.MCPServer{}, false
-	}
-	return server, true
+	return input.Name, true
+}
+
+func (h oauthHandler) findServer(ctx context.Context, owner, name string) (settings.MCPServer, bool) {
+	defer timing.Start(ctx, "mcp_server_lookup")()
+	return h.lookup(ctx, owner, name)
 }
 
 func (h oauthHandler) start(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	server, ok := h.submittedServer(w, r)
+	name, ok := submittedName(w, r)
 	if !ok {
 		return
 	}
-	state, destination, err := h.oauth.Start(r.Context(), auth.CurrentUser(r.Context()).ID, server, stateCookie(r))
+	state, destination, err := h.oauth.Start(r.Context(), auth.CurrentUser(r.Context()).ID, name, stateCookie(r), h.findServer)
 	if err != nil {
+		if errors.Is(err, errOAuthServerNotFound) {
+			httpserver.WriteError(w, http.StatusNotFound, "MCP_SERVER_NOT_FOUND", "MCP OAuth server not found.")
+			return
+		}
 		if errors.Is(err, ErrOAuthClientRequired) {
 			httpserver.WriteError(w, http.StatusBadRequest, "MCP_OAUTH_CLIENT_REQUIRED", ErrOAuthClientRequired.Error())
 			return
@@ -65,7 +67,7 @@ func (h oauthHandler) start(w http.ResponseWriter, r *http.Request) {
 			httpserver.WriteError(w, http.StatusConflict, "MCP_OAUTH_START_FAILED", ErrOAuthFlow.Error())
 			return
 		}
-		h.logger.Warn("start MCP OAuth failed", "server", server.Name, "failure", httpserver.OAuthFailure(err))
+		h.logger.Warn("start MCP OAuth failed", "server", name, "failure", httpserver.OAuthFailure(err))
 		httpserver.WriteError(w, http.StatusBadGateway, "MCP_OAUTH_START_FAILED", "Could not start MCP OAuth.")
 		return
 	}
@@ -83,9 +85,7 @@ func (h oauthHandler) callback(w http.ResponseWriter, r *http.Request) {
 	result := "failed"
 	if state != "" && subtle.ConstantTimeCompare([]byte(cookie), []byte(state)) == 1 {
 		owner := auth.CurrentUser(r.Context()).ID
-		err := h.oauth.Finish(r.Context(), owner, state, query.Get("code"), query.Get("iss"), func(name string) (settings.MCPServer, bool) {
-			return h.lookup(r.Context(), owner, name)
-		})
+		err := h.oauth.Finish(r.Context(), owner, state, query.Get("code"), query.Get("iss"), h.findServer)
 		if err == nil {
 			result = "connected"
 		} else if !errors.Is(err, ErrOAuthFlow) {
@@ -96,12 +96,17 @@ func (h oauthHandler) callback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h oauthHandler) disconnect(w http.ResponseWriter, r *http.Request) {
-	server, ok := h.submittedServer(w, r)
+	name, ok := submittedName(w, r)
 	if !ok {
 		return
 	}
-	if err := h.oauth.Disconnect(r.Context(), auth.CurrentUser(r.Context()).ID, server.Name); err != nil {
-		h.logger.Error("disconnect MCP OAuth failed", "server", server.Name, "error", err)
+	ctx, owner := r.Context(), auth.CurrentUser(r.Context()).ID
+	if server, ok := h.findServer(ctx, owner, name); !ok || server.OAuth == nil {
+		httpserver.WriteError(w, http.StatusNotFound, "MCP_SERVER_NOT_FOUND", "MCP OAuth server not found.")
+		return
+	}
+	if err := h.oauth.Disconnect(ctx, owner, name); err != nil {
+		h.logger.Error("disconnect MCP OAuth failed", "server", name, "error", err)
 		httpserver.WriteError(w, http.StatusInternalServerError, "MCP_OAUTH_DISCONNECT_FAILED", "Could not disconnect MCP OAuth.")
 		return
 	}
