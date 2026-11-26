@@ -11,11 +11,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/andybalholm/brotli"
 	"github.com/gorilla/websocket"
 	"github.com/klauspost/compress/zstd"
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
@@ -254,6 +256,51 @@ func TestTranscriptFramesAndOwnership(t *testing.T) {
 			t.Fatalf("expected token usage only for the measured turn: %v, %v", first[0].GetTokenUsage(), first[1].GetTokenUsage())
 		}
 	}
+}
+
+func TestFullTranscriptWaitAllowsPagedReadsAndCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		handler := fixtureHandler(t)
+		handler.fullTranscriptSlots = semaphore.NewWeighted(1)
+		if !handler.fullTranscriptSlots.TryAcquire(1) {
+			t.Fatal("reserve the full transcript slot")
+		}
+		owner := auth.WithUser(t.Context(), auth.User{ID: "owner"})
+		full, cancel := context.WithCancel(owner)
+		defer cancel()
+		request := func(ctx context.Context, body string) *http.Request {
+			return httptest.NewRequestWithContext(ctx, http.MethodPost, TranscriptPath, strings.NewReader(body))
+		}
+		response := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			handler.Transcript(response, request(full, `{"id":"owner","paged":false}`))
+		}()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("full transcript did not wait for a slot")
+		default:
+		}
+
+		paged := httptest.NewRecorder()
+		handler.Transcript(paged, request(owner, `{"id":"owner"}`))
+		if !paged.Flushed || paged.Header().Get("Content-Type") != transcriptType {
+			t.Fatal("paged transcript did not stream while the full slot was busy")
+		}
+
+		cancel()
+		<-done
+		if response.Body.Len() != 0 {
+			t.Fatal("canceled full transcript wrote a response")
+		}
+		handler.fullTranscriptSlots.Release(1)
+		if !handler.fullTranscriptSlots.TryAcquire(1) {
+			t.Fatal("full transcript slot was lost after cancellation")
+		}
+		handler.fullTranscriptSlots.Release(1)
+	})
 }
 
 func TestTranscriptPublishesServerTiming(t *testing.T) {
