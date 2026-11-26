@@ -82,6 +82,16 @@ func (c *Controls) stop(ctx context.Context, repo Repository, owner, session, id
 	return err
 }
 
+func (c *Controls) stopAccount(owner string) {
+	c.mu.Lock()
+	if c.active != nil && c.active.item.OwnerID == owner {
+		c.active.stopping = true
+		c.active.cancel()
+	}
+	c.mu.Unlock()
+	c.changedAccount(owner)
+}
+
 func (c *Controls) addProgress(turn *Run) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

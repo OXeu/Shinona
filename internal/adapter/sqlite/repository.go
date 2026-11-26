@@ -67,7 +67,14 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 	}
 	// A single connection serializes SQLite writes and supports in-memory tests.
 	pool.SetMaxOpenConns(1)
-	if err := db.WithContext(ctx).AutoMigrate(&userRow{}, &avatarRow{}, &emailChallengeRow{}, &identityRow{}, &loginRow{}, &flowRow{}, &projectRow{}, &sessionRow{}, &settingsRow{}, &composerDefaultsRow{}, &instanceSettingsRow{}, &modelSettingsRow{}, &mcpSettingsRow{}, &mcpGrantRow{}, &e2bWorkspaceRow{}, &workspaceRootRow{}, &row{}); err != nil {
+	models := []any{&userRow{}, &instanceSettingsRow{}, &deletedAccountRow{}}
+	for _, table := range ownedAccountTables {
+		models = append(models, table)
+	}
+	if err := db.WithContext(ctx).AutoMigrate(models...); err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
+	if err := protectDeletedAccounts(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
 	// Existing queued E2B turns should start with the project workspace after upgrade.
@@ -136,7 +143,7 @@ func (r *Repository) Complete(ctx context.Context, id string, completion run.Com
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			return fmt.Errorf("run %s is no longer running", id)
+			return fmt.Errorf("complete run %s: %w", id, run.ErrNotRunning)
 		}
 		return tx.Model(&sessionRow{}).Where("id = ?", item.SessionID).Update("updated_at", completion.UpdatedAt).Error
 	})

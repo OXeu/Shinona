@@ -90,9 +90,13 @@ To bind or change a sign-in email, enter the code from the new mailbox. The code
 
 Configure **Settings → Email delivery** with a Resend API key and a sender address on a verified domain to enable email binding. The startup fallbacks are `SHINONA_RESEND_API_KEY` and `SHINONA_RESEND_FROM`.
 
+To attach the configured OAuth provider to an existing password account, sign in with the password and choose **Link OAuth** under **Account → Sign-in and security**. Confirm the current password and complete the provider sign-in. An OAuth identity can belong to only one account. An existing account can disconnect OAuth after setting a password. Disconnecting revokes the account's other sign-ins.
+
 ### User management
 
 Grant the first super administrator role with `shinona grant-admin USER_ID`. Super administrators can open **User management** from the avatar menu to search accounts, create password users, grant or revoke administrator access, and disable or re-enable other users. A disabled account loses its login sessions and keeps its projects and conversation history.
+
+An administrator can permanently delete another account from the same menu. This removes its projects, conversations, settings, and sign-in credentials from Shinona and stops its active turn and terminal shells. Sandboxes and snapshots retained by E2B are managed on E2B. When OAuth account creation is available, a deleted or disconnected OAuth identity can sign in again as a new account.
 
 ## Sandboxes
 

@@ -83,7 +83,7 @@ func (w *Worker) execute(ctx context.Context, active *activeTurn) {
 	completion := Completion{
 		Result: result, Steering: active.steering.close(), Status: status, UpdatedAt: time.Now().UTC(),
 	}
-	if err := w.repo.Complete(saveCtx, item.ID, completion); err != nil {
+	if err := w.repo.Complete(saveCtx, item.ID, completion); err != nil && !errors.Is(err, ErrNotRunning) {
 		w.logger.Error("persist run completion", "run_id", item.ID, "error", err)
 	}
 }

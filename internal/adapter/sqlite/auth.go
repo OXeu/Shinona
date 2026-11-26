@@ -41,7 +41,7 @@ func (row userRow) user() auth.User {
 type identityRow struct {
 	Issuer  string `gorm:"primaryKey"`
 	Subject string `gorm:"primaryKey"`
-	OwnerID string `gorm:"not null"`
+	OwnerID string `gorm:"not null;index"`
 }
 
 func (identityRow) TableName() string { return "oauth_identities" }
@@ -55,11 +55,13 @@ type loginRow struct {
 func (loginRow) TableName() string { return "login_sessions" }
 
 type flowRow struct {
-	Key       string    `gorm:"primaryKey"`
-	Nonce     string    `gorm:"not null"`
-	Verifier  string    `gorm:"not null"`
-	ExpiresAt time.Time `gorm:"not null;index"`
-	Version   string
+	Key        string    `gorm:"primaryKey"`
+	Nonce      string    `gorm:"not null"`
+	Verifier   string    `gorm:"not null"`
+	ExpiresAt  time.Time `gorm:"not null;index"`
+	Version    string
+	OwnerID    string `gorm:"index"`
+	SessionKey string
 }
 
 func (flowRow) TableName() string { return "oauth_flows" }
@@ -108,15 +110,33 @@ func (r *Repository) OAuthUser(ctx context.Context, identity auth.Identity, id s
 
 func (r *Repository) SaveSession(ctx context.Context, key, ownerID string, expiresAt time.Time) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var account userRow
-		if err := readEnabledAccount(tx, ownerID, &account); err != nil {
-			return err
-		}
-		if err := tx.Where("expires_at <= ?", time.Now().UTC()).Delete(&loginRow{}).Error; err != nil {
-			return err
-		}
-		return tx.Create(&loginRow{Key: key, OwnerID: ownerID, ExpiresAt: expiresAt}).Error
+		return saveSession(tx, key, ownerID, expiresAt)
 	})
+}
+
+func (r *Repository) SaveOAuthSession(ctx context.Context, key, ownerID string, identity auth.Identity, expiresAt time.Time) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var binding identityRow
+		err := tx.Select("owner_id").Take(&binding, "issuer = ? AND subject = ? AND owner_id = ?", identity.Issuer, identity.Subject, ownerID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return auth.ErrCredentials
+		}
+		if err != nil {
+			return err
+		}
+		return saveSession(tx, key, ownerID, expiresAt)
+	})
+}
+
+func saveSession(tx *gorm.DB, key, ownerID string, expiresAt time.Time) error {
+	var account userRow
+	if err := readEnabledAccount(tx, ownerID, &account); err != nil {
+		return err
+	}
+	if err := tx.Where("expires_at <= ?", time.Now().UTC()).Delete(&loginRow{}).Error; err != nil {
+		return err
+	}
+	return tx.Create(&loginRow{Key: key, OwnerID: ownerID, ExpiresAt: expiresAt}).Error
 }
 
 func (r *Repository) SessionUser(ctx context.Context, key string, now time.Time) (*auth.User, error) {

@@ -21,9 +21,13 @@ func (h *Handler) accountRoutes(mux *http.ServeMux, post func(http.Handler) http
 	mux.Handle("POST /auth/account/password", accountPost(h.changePassword))
 	mux.Handle("POST /auth/account/email/start", accountPost(h.startEmailBinding))
 	mux.Handle("POST /auth/account/email/verify", accountPost(h.verifyEmailBinding))
+	mux.Handle("GET /auth/account/oauth", h.RequireUser(http.HandlerFunc(h.oauthStatus)))
+	mux.Handle("POST /auth/oauth/link", accountPost(h.startOAuthLink))
+	mux.Handle("POST /auth/account/oauth/unlink", accountPost(h.unlinkOAuth))
 	mux.Handle("GET /auth/admin/users", h.RequireUser(http.HandlerFunc(h.accounts)))
 	mux.Handle("POST /auth/admin/users", accountPost(h.createAccount))
 	mux.Handle("POST /auth/admin/users/{id}/access", accountPost(h.changeAccess))
+	mux.Handle("POST /auth/admin/users/{id}/delete", accountPost(h.deleteAccount))
 }
 
 func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
@@ -189,6 +193,21 @@ func (h *Handler) changeAccess(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, publicUser(user))
 }
 
+func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
+	if !accountInput(w, r, &struct{}{}, 4096) {
+		return
+	}
+	target := r.PathValue("id")
+	if err := h.service.DeleteAccount(r.Context(), target); err != nil {
+		h.accountError(w, err)
+		return
+	}
+	if after := h.config().AccountDeleted; after != nil {
+		after(target)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) accountPasswordSlot(w http.ResponseWriter) bool {
 	if !h.accountRate.Allow() {
 		authError(w, "AUTH_RATE_LIMITED", "Too many account requests. Try again shortly.", http.StatusTooManyRequests)
@@ -235,6 +254,12 @@ func (h *Handler) accountError(w http.ResponseWriter, err error) {
 		code, status = "ACCOUNT_ADMIN_SELF", http.StatusForbidden
 	case errors.Is(err, auth.ErrAccountMissing):
 		code, status = "ACCOUNT_NOT_FOUND", http.StatusNotFound
+	case errors.Is(err, auth.ErrOAuthDisabled):
+		code, status = "ACCOUNT_OAUTH_DISABLED", http.StatusServiceUnavailable
+	case errors.Is(err, auth.ErrOAuthLinked):
+		code, status = "ACCOUNT_OAUTH_LINKED", http.StatusConflict
+	case errors.Is(err, auth.ErrOAuthPassword):
+		code, status = "ACCOUNT_OAUTH_NEEDS_PASSWORD", http.StatusConflict
 	case errors.Is(err, auth.ErrBindEmail):
 		code = "ACCOUNT_BIND_EMAIL"
 	case errors.Is(err, auth.ErrEmailInUse):

@@ -194,6 +194,22 @@ func (s *Service) CloseTerminals() {
 	p.active.Wait()
 }
 
+func (s *Service) AccountDeleted(owner string) {
+	s.controls.stopAccount(owner)
+	p := &s.terminals
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, tabs := range p.tabs {
+		if key.owner != owner {
+			continue
+		}
+		for _, entry := range tabs {
+			entry.cancel()
+		}
+		delete(p.tabs, key)
+	}
+}
+
 func (t *TerminalSession) run(provider sandbox.ProjectProvider, spec sandbox.Spec) error {
 	ctx, phases := timing.WithRecorder(t.ctx)
 	acquire := timing.Start(ctx, "sandbox_acquire")

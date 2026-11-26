@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -20,6 +21,7 @@ import (
 
 const sessionCookie = "shinona_session"
 const flowCookie = "shinona_oauth"
+const linkFlowPrefix = "link:"
 
 type OAuthProvider interface {
 	AuthorizationURL(string, auth.Flow) string
@@ -27,10 +29,11 @@ type OAuthProvider interface {
 }
 
 type Config struct {
-	OAuth       OAuthProvider
-	Mailer      auth.VerificationMailer
-	Secure      bool
-	FlowVersion string
+	OAuth          OAuthProvider
+	Mailer         auth.VerificationMailer
+	Secure         bool
+	FlowVersion    string
+	AccountDeleted func(string)
 }
 
 type Handler struct {
@@ -166,7 +169,7 @@ func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
 		h.failure(w, err)
 		return
 	}
-	if err := h.signIn(w, r.WithContext(ctx), user); err != nil {
+	if err := h.signIn(w, r.WithContext(ctx), user, nil); err != nil {
 		h.failure(w, err)
 		return
 	}
@@ -191,11 +194,9 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login?oauth=failed", http.StatusSeeOther)
 		return
 	}
-	if previous := readCookie(r, flowCookie); previous != "" {
-		if _, err := h.service.ConsumeFlow(r.Context(), previous); err != nil {
-			h.failure(w, err)
-			return
-		}
+	if err := h.cancelPreviousOAuthFlow(r); err != nil {
+		h.failure(w, err)
+		return
 	}
 	state, flow, err := h.service.BeginFlow(r.Context(), config.FlowVersion)
 	if err != nil {
@@ -206,50 +207,87 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, config.OAuth.AuthorizationURL(state, flow), http.StatusSeeOther)
 }
 
+func (h *Handler) cancelPreviousOAuthFlow(r *http.Request) error {
+	previous, _ := strings.CutPrefix(readCookie(r, flowCookie), linkFlowPrefix)
+	if previous == "" {
+		return nil
+	}
+	_, err := h.service.ConsumeFlow(r.Context(), previous)
+	return err
+}
+
 func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	state, cookie := r.URL.Query().Get("state"), readCookie(r, flowCookie)
-	h.cookie(w, flowCookie, "/auth/oauth", "", -1)
+	state := r.URL.Query().Get("state")
+	cookie, link := strings.CutPrefix(readCookie(r, flowCookie), linkFlowPrefix)
 	config := h.config()
-	if config.OAuth == nil || state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(cookie)) != 1 {
-		http.Redirect(w, r, "/login?oauth=failed", http.StatusSeeOther)
+	if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(cookie)) != 1 {
+		h.redirectOAuthResult(w, r, link, auth.ErrCredentials)
 		return
 	}
-	if err := h.finishOAuth(w, r, state, config); err != nil {
-		h.logger.Warn("OAuth sign-in failed")
-		http.Redirect(w, r, "/login?oauth=failed", http.StatusSeeOther)
-		return
+	h.cookie(w, flowCookie, "/auth/oauth", "", -1)
+	err := h.finishOAuth(w, r, state, config, link)
+	if err != nil {
+		h.logger.Warn("OAuth callback failed", "link", link)
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	h.redirectOAuthResult(w, r, link, err)
 }
 
-func (h *Handler) finishOAuth(w http.ResponseWriter, r *http.Request, state string, config Config) error {
+func (h *Handler) redirectOAuthResult(w http.ResponseWriter, r *http.Request, link bool, err error) {
+	target := "/"
+	switch {
+	case link && err == nil:
+		target = "/account?oauthLink=linked"
+	case link && errors.Is(err, auth.ErrOAuthInUse):
+		target = "/account?oauthLink=in-use"
+	case link:
+		target = "/account?oauthLink=failed"
+	case err != nil:
+		target = "/login?oauth=failed"
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func (h *Handler) finishOAuth(w http.ResponseWriter, r *http.Request, state string, config Config, link bool) error {
 	ctx := r.Context()
 	flow, err := h.service.ConsumeFlow(ctx, state)
 	if err != nil {
 		return err
 	}
 	code := r.URL.Query().Get("code")
-	if flow == nil || code == "" || flow.Version != config.FlowVersion {
+	if config.OAuth == nil || flow == nil || code == "" || flow.Version != config.FlowVersion || link != (flow.OwnerID != "") {
+		return auth.ErrCredentials
+	}
+	token := readCookie(r, sessionCookie)
+	if link && !flow.MatchesSession(token) {
 		return auth.ErrCredentials
 	}
 	identity, err := config.OAuth.Exchange(ctx, code, *flow)
 	if err != nil {
 		return err
 	}
+	if link {
+		return h.service.FinishOAuthLink(ctx, *flow, token, identity)
+	}
 	user, err := h.service.OAuthUser(ctx, identity)
 	if err != nil {
 		return err
 	}
-	return h.signIn(w, r, user)
+	return h.signIn(w, r, user, &identity)
 }
 
-func (h *Handler) signIn(w http.ResponseWriter, r *http.Request, user auth.User) error {
+func (h *Handler) signIn(w http.ResponseWriter, r *http.Request, user auth.User, identity *auth.Identity) error {
 	if err := h.service.EndSession(r.Context(), readCookie(r, sessionCookie)); err != nil {
 		return err
 	}
-	token, err := h.service.StartSession(r.Context(), user)
+	var token string
+	var err error
+	if identity != nil {
+		token, err = h.service.StartOAuthSession(r.Context(), user, *identity)
+	} else {
+		token, err = h.service.StartSession(r.Context(), user)
+	}
 	if err != nil {
 		return err
 	}

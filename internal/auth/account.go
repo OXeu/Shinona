@@ -91,6 +91,10 @@ type AccountRepository interface {
 	ListAccounts(ctx context.Context, search string, offset, limit int) (AccountPage, error)
 	CreateManagedAccount(ctx context.Context, actor string, user User, hash []byte) error
 	SetAccountAccess(ctx context.Context, actor, target string, access AccountAccess) (User, error)
+	DeleteAccount(ctx context.Context, actor, target string) error
+	HasOAuthIdentity(ctx context.Context, owner string) (bool, error)
+	LinkOAuthIdentity(ctx context.Context, owner, sessionKey string, identity Identity, now time.Time) error
+	UnlinkOAuthIdentity(ctx context.Context, state CredentialState, sessionKey string, now time.Time) error
 }
 
 type VerificationMailer interface {
@@ -236,14 +240,31 @@ func (s *Service) CreateManagedAccount(ctx context.Context, email, password, nam
 
 func (s *Service) SetAccountAccess(ctx context.Context, target string, access AccountAccess) (User, error) {
 	defer timing.Start(ctx, "account_admin_access")()
+	actor, err := managementActor(ctx, target)
+	if err != nil {
+		return User{}, err
+	}
+	return s.repo.SetAccountAccess(ctx, actor, target, access)
+}
+
+func (s *Service) DeleteAccount(ctx context.Context, target string) error {
+	defer timing.Start(ctx, "account_admin_delete")()
+	actor, err := managementActor(ctx, target)
+	if err != nil {
+		return err
+	}
+	return s.repo.DeleteAccount(ctx, actor, target)
+}
+
+func managementActor(ctx context.Context, target string) (string, error) {
 	actor := CurrentUser(ctx)
 	if !actor.Admin {
-		return User{}, ErrAdminRequired
+		return "", ErrAdminRequired
 	}
 	if target == actor.ID {
-		return User{}, ErrAdminSelf
+		return "", ErrAdminSelf
 	}
-	return s.repo.SetAccountAccess(ctx, actor.ID, target, access)
+	return actor.ID, nil
 }
 
 func normalizeName(name string) (string, error) {

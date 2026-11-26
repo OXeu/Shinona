@@ -23,6 +23,11 @@ export const accountApi = {
     requestJSON<{ request: string }>('/auth/account/email/start', { email, currentPassword }),
   verifyEmail: (request: string, code: string) =>
     requestJSON<AuthSession>('/auth/account/email/verify', { request, code }),
+  oauthStatus: (signal: AbortSignal) => requestJSON<{ linked: boolean }>('/auth/account/oauth', undefined, signal),
+  startOAuthLink: (currentPassword: string) =>
+    requestJSON<{ url: string }>('/auth/oauth/link', { currentPassword }),
+  unlinkOAuth: (currentPassword: string) =>
+    requestJSON<AuthSession>('/auth/account/oauth/unlink', { currentPassword }),
   listUsers: (search: string, offset: number, signal: AbortSignal) => {
     const query = new URLSearchParams({ search, offset: String(offset) })
     return requestJSON<AccountPage>('/auth/admin/users?' + query.toString(), undefined, signal)
@@ -31,4 +36,5 @@ export const accountApi = {
     requestJSON<User>('/auth/admin/users', { email, password, name }),
   updateAccess: (id: string, change: AccessChange) =>
     requestJSON<User>('/auth/admin/users/' + encodeURIComponent(id) + '/access', change),
+  deleteUser: (id: string) => requestJSON<void>('/auth/admin/users/' + encodeURIComponent(id) + '/delete', {}),
 }

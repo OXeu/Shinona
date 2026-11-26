@@ -27,7 +27,8 @@ const loaded = ref(false)
 const busy = ref(false)
 const createOpen = ref(false)
 const accessOpen = ref(false)
-const action = ref<{ user: User; field: 'admin' | 'disabled' }>()
+type AccountAction = 'admin' | 'disabled' | 'delete'
+const action = ref<{ user: User; field: AccountAction }>()
 const createEmail = ref('')
 const createName = ref('')
 const createPassword = ref('')
@@ -43,12 +44,14 @@ const actionLabel = computed(() => {
   return t(accessLabel(action.value.user, action.value.field))
 })
 const actionTarget = computed(() => action.value ? userName(action.value.user) : '')
+const deleting = computed(() => action.value?.field === 'delete')
 
 function userName(user: User) {
   return user.name || user.email || user.id
 }
 
-function accessLabel(user: User, field: 'admin' | 'disabled'): MessageKey {
+function accessLabel(user: User, field: AccountAction): MessageKey {
+  if (field === 'delete') return 'adminUsers.delete'
   if (field === 'admin') return user.admin ? 'adminUsers.removeAdmin' : 'adminUsers.makeAdmin'
   return user.disabled ? 'adminUsers.enable' : 'adminUsers.disable'
 }
@@ -78,7 +81,7 @@ async function searchUsers() {
   await load(0)
 }
 
-function chooseAction(user: User, field: 'admin' | 'disabled') {
+function chooseAction(user: User, field: AccountAction) {
   action.value = { user, field }
   accessOpen.value = true
 }
@@ -88,13 +91,23 @@ async function updateAccess() {
   if (busy.value || !selected) return
   busy.value = true
   try {
+    if (selected.field === 'delete') {
+      await accountApi.deleteUser(selected.user.id)
+      users.value = users.value.filter((user) => user.id !== selected.user.id)
+      total.value = Math.max(0, total.value - 1)
+      const next = Math.min(offset.value, Math.max(0, Math.ceil(total.value / limit.value) - 1) * limit.value)
+      accessOpen.value = false
+      notify.success(t('adminUsers.deleted'))
+      await load(next)
+      return
+    }
     const change = selected.field === 'admin' ? { admin: !selected.user.admin } : { disabled: !selected.user.disabled }
     const updated = await accountApi.updateAccess(selected.user.id, change)
     users.value = users.value.map((user) => user.id === updated.id ? updated : user)
     accessOpen.value = false
     notify.success(t('adminUsers.accessSaved'))
   } catch (error) {
-    notify.error(messageFor(error, 'adminUsers.saveFailed'))
+    notify.error(messageFor(error, selected.field === 'delete' ? 'adminUsers.deleteFailed' : 'adminUsers.saveFailed'))
   } finally {
     busy.value = false
   }
@@ -156,6 +169,7 @@ onUnmounted(() => request?.abort())
             <template #default="{ close }">
               <UiButton class="menu-item" @click="close(); chooseAction(user, 'admin')">{{ t(accessLabel(user, 'admin')) }}</UiButton>
               <UiButton class="menu-item" @click="close(); chooseAction(user, 'disabled')">{{ t(accessLabel(user, 'disabled')) }}</UiButton>
+              <UiButton class="menu-item danger-text" @click="close(); chooseAction(user, 'delete')">{{ t('adminUsers.delete') }}</UiButton>
             </template>
           </UiMoreMenu>
         </UiBox>
@@ -207,10 +221,14 @@ onUnmounted(() => request?.abort())
     </UiDialog>
     <UiDialog v-model="accessOpen" :label="actionLabel" :busy="busy">
       <UiSubheading>{{ actionLabel }}</UiSubheading>
-      <UiInline class="dialog-message">{{ t('adminUsers.confirmAccess', { user: actionTarget }) }}</UiInline>
+      <UiInline class="dialog-message">
+        {{ t(deleting ? 'adminUsers.confirmDelete' : 'adminUsers.confirmAccess', { user: actionTarget }) }}
+      </UiInline>
       <UiBox class="form-actions">
         <UiButton class="ghost-button" :disabled="busy" @click="accessOpen = false">{{ t('common.cancel') }}</UiButton>
-        <UiButton :disabled="busy" @click="updateAccess">{{ actionLabel }}</UiButton>
+        <UiButton :class="{ 'danger-text': deleting, 'ghost-button': deleting }" :disabled="busy" @click="updateAccess">
+          {{ actionLabel }}
+        </UiButton>
       </UiBox>
     </UiDialog>
   </UiBox>
@@ -226,4 +244,5 @@ onUnmounted(() => request?.abort())
 .admin-user-identity > span { display: block; }
 .admin-user-description { color: var(--muted); font-size: 0.875rem; }
 .admin-user-pagination { display: flex; gap: 4px; }
+.danger-text { color: var(--danger); }
 </style>

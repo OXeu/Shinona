@@ -44,11 +44,13 @@ type Identity struct {
 }
 
 type Flow struct {
-	Key       string
-	Nonce     string
-	Verifier  string
-	ExpiresAt time.Time
-	Version   string
+	Key        string
+	Nonce      string
+	Verifier   string
+	ExpiresAt  time.Time
+	Version    string
+	OwnerID    string
+	SessionKey string
 }
 
 type Repository interface {
@@ -57,6 +59,7 @@ type Repository interface {
 	PasswordUser(context.Context, string) (User, []byte, error)
 	OAuthUser(context.Context, Identity, string) (User, error)
 	SaveSession(context.Context, string, string, time.Time) error
+	SaveOAuthSession(context.Context, string, string, Identity, time.Time) error
 	SessionUser(context.Context, string, time.Time) (*User, error)
 	DeleteSession(context.Context, string) error
 	SaveFlow(context.Context, Flow, time.Time) error
@@ -136,6 +139,15 @@ func (s *Service) StartSession(ctx context.Context, user User) (string, error) {
 	return token, nil
 }
 
+func (s *Service) StartOAuthSession(ctx context.Context, user User, identity Identity) (string, error) {
+	defer timing.Start(ctx, "auth_session_create")()
+	token := rand.Text() + rand.Text()
+	if err := s.repo.SaveOAuthSession(ctx, digest(token), user.ID, identity, time.Now().UTC().Add(SessionLifetime)); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
 func (s *Service) SessionUser(ctx context.Context, token string) (*User, error) {
 	if token == "" {
 		return nil, nil
@@ -153,11 +165,15 @@ func (s *Service) EndSession(ctx context.Context, token string) error {
 
 func (s *Service) BeginFlow(ctx context.Context, version string) (string, Flow, error) {
 	defer timing.Start(ctx, "auth_oauth_begin")()
+	return s.beginFlow(ctx, version, "", "")
+}
+
+func (s *Service) beginFlow(ctx context.Context, version, owner, sessionKey string) (string, Flow, error) {
 	state := rand.Text() + rand.Text()
 	now := time.Now().UTC()
 	flow := Flow{
 		Key: digest(state), Nonce: rand.Text(), Verifier: rand.Text() + rand.Text(),
-		ExpiresAt: now.Add(FlowLifetime), Version: version,
+		ExpiresAt: now.Add(FlowLifetime), Version: version, OwnerID: owner, SessionKey: sessionKey,
 	}
 	return state, flow, s.repo.SaveFlow(ctx, flow, now)
 }

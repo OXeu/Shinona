@@ -80,7 +80,12 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	}
 	defer func() { _ = transfer.Close() }()
 	mux := http.NewServeMux()
-	authHandler := httpauth.NewWithConfig(auth.New(repository, password.Argon2id{}, uuid.NewString), config.Auth, logger)
+	authConfig := func() httpauth.Config {
+		current := config.Auth()
+		current.AccountDeleted = service.AccountDeleted
+		return current
+	}
+	authHandler := httpauth.NewWithConfig(auth.New(repository, password.Argon2id{}, uuid.NewString), authConfig, logger)
 	authHandler.Routes(mux, sameOriginJSON)
 	config.mcpOAuth.Routes(mux, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)

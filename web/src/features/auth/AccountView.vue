@@ -12,6 +12,7 @@ import { UiBox, UiButton, UiForm, UiHeading, UiInline, UiSection, UiSubheading }
 import { accountApi } from './accountApi'
 import { useAuthStore } from './authStore'
 import EmailBindingDialog from './EmailBindingDialog.vue'
+import OAuthAccountSettings from './OAuthAccountSettings.vue'
 
 const auth = useAuthStore()
 const nickname = ref(auth.user?.name ?? '')
@@ -161,6 +162,7 @@ async function savePassword() {
         </UiBox>
         <UiButton class="secondary-button" :disabled="!auth.user?.loginEmail" @click="passwordOpen = true">{{ passwordLabel }}</UiButton>
       </UiBox>
+      <OAuthAccountSettings />
     </UiSection>
     <EmailBindingDialog v-model="emailOpen" />
     <UiDialog v-model="passwordOpen" :label="passwordLabel" :busy="passwordBusy">
