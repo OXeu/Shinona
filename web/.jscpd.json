@@ -1,0 +1,9 @@
+{
+  "path": ["src"],
+  "format": ["javascript", "typescript", "vue"],
+  "ignore": ["**/wire/*_pb.ts"],
+  "mode": "weak",
+  "minTokens": 70,
+  "minLines": 0,
+  "failOnEmpty": true
+}

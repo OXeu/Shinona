@@ -14,10 +14,23 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: Prepare workspace temporary directory
+        run: |
+          mkdir -p .tmp
+          printf '%s=%s\n' TMPDIR "$PWD/.tmp" TMP "$PWD/.tmp" TEMP "$PWD/.tmp" GOTMPDIR "$PWD/.tmp" >> "$GITHUB_ENV"
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15.0
           args: ./cmd/... ./internal/...
+      - name: Check Go reachability
+        run: |
+          findings=$(go run golang.org/x/tools/cmd/deadcode@v0.50.0 -test ./cmd/... ./internal/...)
+          if [ -n "$findings" ]; then
+            printf '%s\n' "$findings"
+            exit 1
+          fi
+      - name: Report Go structure
+        run: bash .github/scripts/report-go-structure.sh
       - run: go test -race ./cmd/... ./internal/...
   web:
     runs-on: ubuntu-latest
@@ -31,7 +44,14 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Prepare workspace temporary directory
+        working-directory: .
+        run: |
+          mkdir -p .tmp
+          printf '%s=%s\n' TMPDIR "$PWD/.tmp" TMP "$PWD/.tmp" TEMP "$PWD/.tmp" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run lint
+      - run: npm run lint:unused
+      - run: npm run lint:structure
       - run: npm test
       - run: npm run build

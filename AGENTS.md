@@ -9,3 +9,11 @@
 ## Commits
 
 - Commit functional changes separately in English according to [Conventional Commits 1.0.0](docs/conventional-commits.md). Descriptions must be imperative and at most 72 characters. See [Commit rules](docs/commit-rules.md).
+
+## Redundancy and refactoring
+
+- Use repository-wide source line counts only to observe trends. Keep them out of acceptance criteria and optimization targets.
+- Give each cleanup a structural goal. Remove verified dead code or obsolete compatibility, consolidate mechanisms with the same behavior, or remove pass-through layers that add no value. Verify callers, supported platforms, and migration requirements before deleting code.
+- Preserve readable names, useful comments and spacing, error handling, input validation, type and redaction boundaries, concurrency safeguards, timeouts, and test assertions. Avoid packing statements onto one line or replacing clear control flow to improve a metric.
+- Apply the Rule of Three before introducing shared abstractions for similar code. Look for at least three cases with the same responsibility that need to change together. Avoid using boolean mode flags or reflection to combine different behaviors.
+- For dedicated redundancy refactors, keep behavior equivalent and explain the redundancy removed in each change. Run the tests, Go race checks, and lint checks in [Contributing](CONTRIBUTING.md). Have an independent review agent compare the diff for swallowed errors, weakened checks, reduced readability, and abstractions that increase coupling.

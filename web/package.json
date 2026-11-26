@@ -10,9 +10,12 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "lint": "node lint/check-source.js && eslint . --max-warnings 0",
+    "lint:unused": "knip",
+    "lint:structure": "eslint --config eslint.structure.config.js src && jscpd --no-colors",
     "test": "node --experimental-strip-types --test lint/*.test.js"
   },
   "dependencies": {
+    "@arrow-js/core": "1.0.6",
     "@arrow-js/sandbox": "1.0.6",
     "@bufbuild/protobuf": "2.17.0",
     "@tanstack/vue-virtual": "3.13.54",
@@ -32,6 +35,8 @@
     "esbuild": "0.28.2",
     "eslint": "10.15.0",
     "eslint-plugin-vue": "10.12.1",
+    "jscpd": "5.4.3",
+    "knip": "6.48.0",
     "less": "4.9.1",
     "postcss": "8.5.33",
     "postcss-less": "7.1.1",

@@ -24,12 +24,20 @@ Run from the project root.
 
 ```sh
 golangci-lint run ./cmd/... ./internal/...
+go run golang.org/x/tools/cmd/deadcode@v0.50.0 -test ./cmd/... ./internal/...
+bash .github/scripts/report-go-structure.sh
 go test -race ./cmd/... ./internal/...
 npm --prefix web ci
 npm --prefix web run lint
+npm --prefix web run lint:unused
+npm --prefix web run lint:structure
 npm --prefix web test
 npm --prefix web run build
 ```
+
+CI blocks on unused code reported by Go lint, `deadcode`, or Knip. Go lint also enforces import boundaries and formatting. The reachability check includes tests on CI's Linux target. During a cleanup, run `deadcode` without `-test` to find functions reached only from tests, and check any other supported build targets before deleting a symbol. Review dynamic entry points and migration paths when investigating findings.
+
+The structure reports flag Go and Web duplication, complex functions, lines over 140 characters, and source files over 400 lines. The Go report also flags interfaces with more than 10 methods. The Web report flags multiple statements on one line. Use the findings to review responsibilities and maintenance cost. Repository-wide line counts are an optional trend metric.
 
 Coordinate REST route and response changes with the clients in `web/src/features/sessions/sessionApi.ts` and `web/src/features/sessions/settingsApi.ts`. Editable instance setting keys are registered in `internal/settings`. Protect credential fields with server-side redaction, and keep address and database configuration in startup wiring.
 
