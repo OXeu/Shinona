@@ -152,7 +152,7 @@ const messages = computed(() => {
 </script>
 
 <template>
-  <UiChatFrame :composer-visible="!hasSelection || !!session" :centered="centered">
+  <UiChatFrame class="conversation" :composer-visible="!hasSelection || !!session" :centered="centered">
     <template #default="{ inset }">
       <UiVirtualColumn
         :key="session?.id || 'draft'"
@@ -160,6 +160,7 @@ const messages = computed(() => {
         :items="messages"
         :item-key="(item) => item.id"
         :bottom-inset="inset"
+        :fit-content="centered"
       >
         <template #start>
           <UiBox :hidden="!hasOlder" class="conversation-history">
@@ -287,6 +288,12 @@ const messages = computed(() => {
 </template>
 
 <style lang="less" scoped>
+.conversation {
+  --composer-max-width: 42rem;
+  --composer-padding-inline: 12px;
+  --composer-border-width: 1px;
+}
+
 .conversation-history {
   display: grid;
   justify-items: center;

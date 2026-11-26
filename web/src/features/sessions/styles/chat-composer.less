@@ -1,11 +1,3 @@
-.chat-overlay {
-  position: absolute;
-  z-index: 1;
-  inset: auto 0 0;
-  padding: 10px 16px max(16px, env(safe-area-inset-bottom));
-  background: linear-gradient(transparent, var(--background) 28%);
-}
-
 .chat-composer {
   width: min(100%, var(--composer-max-width));
   margin-inline: auto;
@@ -44,11 +36,7 @@
   font-size: 0.875rem;
 }
 
-@media (max-width: @compact-width) {
-  .chat-overlay {
-    padding: 8px 8px max(8px, env(safe-area-inset-bottom));
-  }
-
+@media (max-width: @session-compact) {
   .chat-composer textarea {
     max-height: min(10rem, 32dvh);
     font-size: 1rem;

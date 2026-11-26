@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { languageTag, t } from '../../shared/i18n'
 import UiSplitPanel from '../../shared/ui/UiSplitPanel.vue'
 import { UiBox } from '../../shared/ui/elements'
+import breakpoints from '../../shared/ui/styles/breakpoints.module.less'
 import { useMediaQuery } from '../../shared/ui/useMediaQuery'
 import { useAuthStore } from '../auth/authStore'
 import ChattingPanel from './ChattingPanel.vue'
@@ -82,7 +83,7 @@ const terminalOpen = ref(false)
 const desktopPanel = ref(true)
 const compactPanel = ref(false)
 const compactSessions = ref(false)
-const compact = useMediaQuery('(max-width: 52rem)')
+const compact = useMediaQuery(breakpoints.session)
 const showPanel = computed(() => !!props.id && (compact.value ? compactPanel.value : desktopPanel.value))
 const showCompactSessions = computed(() => compact.value && compactSessions.value)
 

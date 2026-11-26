@@ -48,6 +48,8 @@ const filtered = computed(() => {
 </template>
 
 <style lang="less" scoped>
+@import (reference) '../../shared/ui/styles/breakpoints.less';
+
 .config-option-list { display: grid; min-width: 0; gap: 6px; }
 .config-option-label {
   padding-inline: 4px;
@@ -83,7 +85,7 @@ const filtered = computed(() => {
 .config-option .ui-icon { font-size: 0.875rem; }
 .config-option-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .config-option-empty { padding: 5px 8px; color: var(--muted); font-size: 0.75rem; }
-@media (max-width: 767px) {
+@media (max-width: @composer-compact) {
   .config-option { min-height: 44px; }
 }
 </style>

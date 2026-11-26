@@ -9,6 +9,7 @@ import { notify } from '../shared/notifications'
 import UiSplitPanel from '../shared/ui/UiSplitPanel.vue'
 import UiToaster from '../shared/ui/UiToaster.vue'
 import { UiMain } from '../shared/ui/elements'
+import breakpoints from '../shared/ui/styles/breakpoints.module.less'
 import { useMediaQuery } from '../shared/ui/useMediaQuery'
 import AppNav from './AppNav.vue'
 
@@ -19,7 +20,7 @@ const router = useRouter()
 const signingOut = ref(false)
 const navSize = ref(16.7)
 const navCollapsed = ref(false)
-const compact = useMediaQuery('(max-width: 58rem)')
+const compact = useMediaQuery(breakpoints.navigation)
 const showNav = computed(() => route.name !== 'login' && !!auth.user)
 const collapsed = computed(() => navCollapsed.value || compact.value)
 

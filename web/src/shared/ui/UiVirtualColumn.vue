@@ -7,6 +7,7 @@ const props = defineProps<{
   items: T[]
   itemKey: (item: T) => string
   bottomInset: number
+  fitContent?: boolean
 }>()
 defineSlots<{ default(props: { item: T }): unknown; start?(): unknown; empty(): unknown }>()
 
@@ -87,14 +88,15 @@ onUnmounted(() => {
 <template>
   <div
     ref="scroll"
-    class="chat-scroll"
+    class="virtual-column"
+    :data-fit-content="fitContent"
     tabindex="0"
     :aria-label="label"
   >
-    <div class="chat-empty" :hidden="items.length > 0">
+    <div class="virtual-column-empty" :hidden="items.length > 0">
       <slot name="empty" />
     </div>
-    <div class="chat-virtual-list" :hidden="!items.length" :style="{ height: height + 'px' }">
+    <div class="virtual-column-list" :hidden="!items.length" :style="{ height: height + 'px' }">
       <div ref="start" class="virtual-column-start">
         <slot name="start" />
       </div>
@@ -102,7 +104,7 @@ onUnmounted(() => {
         v-for="{ row, item } in visible"
         :key="String(row.key)"
         :ref="measure"
-        class="chat-virtual-row"
+        class="virtual-column-row"
         :data-index="row.index"
         :style="{ transform: 'translateY(' + row.start + 'px)' }"
       >
@@ -113,7 +115,39 @@ onUnmounted(() => {
 </template>
 
 <style lang="less" scoped>
+.virtual-column {
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.virtual-column-empty {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  padding: 1rem 1rem 6rem;
+}
+
+.virtual-column[data-fit-content='true'] {
+  flex: 0 0 auto;
+  height: auto;
+}
+
+.virtual-column[data-fit-content='true'] .virtual-column-empty {
+  min-height: 0;
+  padding: 0;
+}
+
+.virtual-column-list {
+  position: relative;
+}
+
 .virtual-column-start {
+  position: absolute;
+  inset: 0 0 auto;
+}
+
+.virtual-column-row {
   position: absolute;
   inset: 0 0 auto;
 }

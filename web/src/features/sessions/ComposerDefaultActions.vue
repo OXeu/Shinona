@@ -34,6 +34,8 @@ const emit = defineEmits<{ save: []; reset: [] }>()
 </template>
 
 <style lang="less" scoped>
+@import (reference) '../../shared/ui/styles/breakpoints.less';
+
 .config-default-actions { display: grid; gap: 2px; }
 .config-default-header { display: flex; justify-content: flex-end; padding: 1px 4px 4px; }
 .config-default-badge {
@@ -73,7 +75,7 @@ const emit = defineEmits<{ save: []; reset: [] }>()
   text-align: start;
 }
 .config-default-reset:hover:not(:disabled) { background: var(--sidebar-bg); }
-@media (max-width: 767px) {
+@media (max-width: @composer-compact) {
   .config-default-actions { gap: 8px; }
   .config-default-badge, .config-default-reset { min-height: 44px; }
 }

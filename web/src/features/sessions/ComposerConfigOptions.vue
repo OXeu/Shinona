@@ -7,6 +7,7 @@ import UiDialog from '../../shared/ui/UiDialog.vue'
 import UiDropdown from '../../shared/ui/UiDropdown.vue'
 import UiIcon from '../../shared/ui/UiIcon.vue'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
+import breakpoints from '../../shared/ui/styles/breakpoints.module.less'
 import { useMediaQuery } from '../../shared/ui/useMediaQuery'
 import ComposerDefaultActions from './ComposerDefaultActions.vue'
 import ComposerOptionList from './ComposerOptionList.vue'
@@ -32,7 +33,7 @@ const selection = { model, permission, thinking }
 const defaultSaved = computed(() => props.defaults?.model === model.value && props.defaults.permission === permission.value &&
   props.defaults.thinking === thinking.value)
 const groupId = useId()
-const mobile = useMediaQuery('(max-width: 767px)')
+const mobile = useMediaQuery(breakpoints.composer)
 const desktopOpen = ref(false)
 const sheetOpen = ref(false)
 const active = ref<Category | null>(null)
