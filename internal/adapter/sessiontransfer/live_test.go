@@ -323,8 +323,8 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	}
 	for {
 		if _, _, err := revocable.ReadMessage(); err != nil {
-			if !websocket.IsCloseError(err, websocket.ClosePolicyViolation) {
-				t.Fatalf("revoked subscription stayed open: %v", err)
+			if !websocket.IsCloseError(err, 4401) {
+				t.Fatalf("revoked subscription returned the wrong close code: %v", err)
 			}
 			break
 		}

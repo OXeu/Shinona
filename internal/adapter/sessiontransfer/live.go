@@ -19,7 +19,10 @@ import (
 
 const LivePath = "/api/v1/live"
 
-const liveHeartbeat = 15 * time.Second
+const (
+	liveHeartbeat  = 15 * time.Second
+	signInRequired = 4401
+)
 
 var errLiveAuth = errors.New("live session cookie is no longer valid")
 
@@ -137,7 +140,7 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send, heartbeat)
 		switch {
 		case errors.Is(err, errLiveAuth):
-			closeSocket(conn, websocket.ClosePolicyViolation, "Sign in required.")
+			closeSocket(conn, signInRequired, "Sign in required.")
 		case err != nil && ctx.Err() == nil:
 			h.logger.Debug("stream live session", "error", err)
 			closeSocket(conn, websocket.CloseInternalServerErr, "Live session unavailable.")

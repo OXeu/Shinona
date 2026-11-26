@@ -40,6 +40,11 @@ export class SessionUpdates {
     this.controller.abort()
   }
 
+  private signInRequired() {
+    this.close()
+    this.callbacks.unauthorized()
+  }
+
   wake() {
     clearTimeout(this.timer)
     if (document.hidden) return
@@ -69,6 +74,7 @@ export class SessionUpdates {
     void watchLiveSession(entry, {
       sync: (updated, settings) => this.callbacks.sync(updated, settings.selected),
       progress: this.callbacks.progress,
+      unauthorized: () => this.signInRequired(),
       missing: () => {
         void this.callbacks.missing().catch(() => {
           if (!signal.aborted) this.callbacks.failed(false)
@@ -106,8 +112,7 @@ export class SessionUpdates {
     } catch (error) {
       if (signal.aborted) return
       if (error instanceof HttpError && error.status === 401) {
-        this.close()
-        this.callbacks.unauthorized()
+        this.signInRequired()
         return
       }
       const delay = this.retry.next()

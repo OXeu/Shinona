@@ -7,11 +7,13 @@ import type { LiveProgress, LiveSync } from './session_transfer_pb'
 
 const endpoint = '/api/v1/live'
 const maxPayload = 64 * 1024 * 1024
+const signInRequired = 4401
 
 interface LiveCallbacks {
   sync: (session: AgentSession, settings: SandboxSettings) => void
   progress: (turn: Turn) => void
   missing: () => void
+  unauthorized: () => void
 }
 
 class SessionState {
@@ -99,7 +101,15 @@ export async function watchLiveSession(initial: AgentSession, callbacks: LiveCal
     }
     signal.addEventListener('abort', () => { close(); resolve() }, options)
     socket.addEventListener('error', fail, options)
-    socket.addEventListener('close', fail, options)
+    socket.addEventListener('close', ({ code }) => {
+      if (code !== signInRequired) {
+        fail()
+        return
+      }
+      close()
+      resolve()
+      callbacks.unauthorized()
+    }, options)
     socket.addEventListener('open', () => {
       try {
         socket.send(payload)
