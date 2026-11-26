@@ -55,37 +55,46 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
 		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
 		ctx, phases := timing.WithRecorder(ctx)
-		defer h.logSocketTimings("live", phases)
-		stop := context.AfterFunc(lifetime, func() {
+		stopLifetime := context.AfterFunc(lifetime, cancel)
+		stopSocket := context.AfterFunc(ctx, func() { _ = conn.Close() })
+		var readerDone <-chan struct{}
+		defer func() {
+			stopLifetime()
+			stopSocket()
 			cancel()
 			_ = conn.Close()
-		})
-		defer stop()
+			if readerDone != nil {
+				<-readerDone
+			}
+			h.logSocketTimings("live", phases)
+		}()
 		request, err := readLiveRequest(conn)
 		if err != nil {
 			closeSocket(conn, websocket.CloseUnsupportedData, "Invalid live subscription.")
+			return
+		}
+		readerDone, err = startLiveReader(conn, cancel, heartbeat)
+		if err != nil {
 			return
 		}
 		subscribe := timing.Start(ctx, "live_subscribe")
 		watch, err := source.WatchSession(ctx, owner, request.SessionId)
 		subscribe()
 		if err != nil {
-			if errors.Is(err, run.ErrSession) {
+			switch {
+			case ctx.Err() != nil:
+				return
+			case errors.Is(err, run.ErrSession):
 				closeSocket(conn, websocket.ClosePolicyViolation, "Session unavailable.")
-			} else {
+			default:
 				h.logger.Error("open live session", "error", err)
 				closeSocket(conn, websocket.CloseInternalServerErr, "Session unavailable.")
 			}
 			return
 		}
 		defer watch.Close()
-		if err := startLiveReader(conn, cancel, heartbeat); err != nil {
-			return
-		}
 		known := make(map[string]turnVersion, len(request.KnownTurns))
 		for _, version := range request.KnownTurns {
 			if version == nil {
@@ -165,19 +174,21 @@ func readLiveRequest(conn *websocket.Conn) (*sessionpb.LiveRequest, error) {
 	return &request, nil
 }
 
-func startLiveReader(conn *websocket.Conn, cancel context.CancelFunc, heartbeat time.Duration) error {
+func startLiveReader(conn *websocket.Conn, cancel context.CancelFunc, heartbeat time.Duration) (<-chan struct{}, error) {
 	conn.SetReadLimit(125)
 	extend := func() error { return conn.SetReadDeadline(time.Now().Add(3 * heartbeat)) }
 	if err := extend(); err != nil {
-		return err
+		return nil, err
 	}
 	conn.SetPongHandler(func(string) error { return extend() })
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer cancel()
 		// Only control frames are valid after the subscription request.
 		_, _, _ = conn.NextReader()
 	}()
-	return nil
+	return done, nil
 }
 
 func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *run.SessionWatch, state *liveConnection,

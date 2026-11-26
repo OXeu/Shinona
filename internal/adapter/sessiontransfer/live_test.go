@@ -2,6 +2,7 @@ package sessiontransfer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,12 @@ type stagedAgent struct {
 
 type timingLogs chan string
 
+type watchSessionFunc func(context.Context, string, string) (*run.SessionWatch, error)
+
+func (f watchSessionFunc) WatchSession(ctx context.Context, owner, id string) (*run.SessionWatch, error) {
+	return f(ctx, owner, id)
+}
+
 func (logs timingLogs) Write(data []byte) (int, error) {
 	logs <- string(data)
 	return len(data), nil
@@ -46,6 +53,74 @@ func (a stagedAgent) Run(ctx context.Context, input run.Input, _ sandbox.Workspa
 		case <-ctx.Done():
 			return run.Result{}, ctx.Err()
 		}
+	}
+}
+
+func TestLiveCancelsSubscriptionSetupOnDisconnect(t *testing.T) {
+	for _, reason := range []string{"client_disconnect", "server_shutdown"} {
+		t.Run(reason, func(t *testing.T) {
+			deadline, cancelDeadline := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancelDeadline()
+			lifetime, shutdown := context.WithCancel(t.Context())
+			defer shutdown()
+			watching, served := make(chan struct{}), make(chan struct{})
+			canceled := make(chan error, 1)
+			const origin = "https://shinona.example"
+			watch := watchSessionFunc(func(ctx context.Context, _, _ string) (*run.SessionWatch, error) {
+				close(watching)
+				<-ctx.Done()
+				canceled <- ctx.Err()
+				return nil, ctx.Err()
+			})
+			live := New(nil, slog.New(slog.DiscardHandler)).Live(lifetime, origin, nil, watch)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(served)
+				ctx := auth.WithUser(r.Context(), auth.User{ID: "owner"})
+				live.ServeHTTP(w, r.WithContext(ctx))
+			}))
+			defer server.Close()
+			socket, response, err := websocket.DefaultDialer.DialContext(deadline,
+				"ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Origin": {origin}})
+			if response != nil {
+				_ = response.Body.Close()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = socket.Close() }()
+			body, err := proto.Marshal(&sessionpb.LiveRequest{SessionId: "session"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := socket.WriteMessage(websocket.BinaryMessage, body); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-watching:
+			case <-deadline.Done():
+				t.Fatal("the request did not reach subscription setup")
+			}
+			if reason == "client_disconnect" {
+				if err := socket.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				shutdown()
+			}
+			select {
+			case err := <-canceled:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("subscription setup returned the wrong cancellation error: %v", err)
+				}
+			case <-deadline.Done():
+				t.Fatal("the disconnect left subscription setup blocked")
+			}
+			select {
+			case <-served:
+			case <-deadline.Done():
+				t.Fatal("the live handler did not exit after cancellation")
+			}
+		})
 	}
 }
 
