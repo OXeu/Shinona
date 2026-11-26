@@ -83,9 +83,16 @@ var definitions = []definition{
 
 type Values map[Key]string
 
+type OverrideSnapshot struct {
+	Values   Values
+	Revision int64
+}
+
 type Repository interface {
-	SettingOverrides(context.Context) (Values, error)
-	SaveSettingOverrides(context.Context, Values) error
+	SettingOverrides(context.Context) (OverrideSnapshot, error)
+	// SaveSettingOverrides stores the values and advances the revision together.
+	// A false result without an error means the stored revision differs.
+	SaveSettingOverrides(ctx context.Context, expectedRevision int64, values Values) (bool, error)
 }
 
 type ModelRepository interface {
@@ -186,6 +193,13 @@ func definitionFor(key Key) (definition, bool) {
 		}
 	}
 	return definition{}, false
+}
+
+// IsPublic reports whether a known setting may be stored with public configuration.
+// Unrecognized keys are kept with secrets until their meaning is known.
+func (key Key) IsPublic() bool {
+	field, known := definitionFor(key)
+	return known && !field.secret
 }
 
 type Field struct {

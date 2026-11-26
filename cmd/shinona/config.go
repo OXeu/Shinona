@@ -152,7 +152,7 @@ func sshContainerConfig(e environment) (sshsandbox.ContainerConfig, error) {
 	return config, config.Validate()
 }
 
-func (r *runtime) sshSandboxProvider(values settings.Values) (sandbox.Provider, error) {
+func (r *sshRuntime) sshSandboxProvider(values settings.Values) (sandbox.Provider, error) {
 	if values[settings.SSHAddress] == "" {
 		return nil, nil
 	}
@@ -160,7 +160,7 @@ func (r *runtime) sshSandboxProvider(values settings.Values) (sandbox.Provider, 
 		Address: values[settings.SSHAddress], User: values[settings.SSHUser],
 		KeyPath: values[settings.SSHKeyPath], HostFingerprint: values[settings.SSHHostFingerprint],
 		Template:  values[settings.SSHTemplate],
-		Container: r.sshContainer, ProjectConnections: &r.sshProjects,
+		Container: r.container, ProjectConnections: &r.projects,
 	})
 	if err != nil {
 		return nil, settings.Invalid("INVALID_SSH_CONFIG", err.Error())

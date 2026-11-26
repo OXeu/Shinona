@@ -87,7 +87,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		return err
 	}
 	defer func() {
-		if err := config.sshProjects.Close(); err != nil {
+		if err := config.Close(); err != nil {
 			logger.Warn("close idle SSH transports", "error", err)
 		}
 	}()
@@ -104,7 +104,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	}
 	authHandler := httpauth.NewWithConfig(auth.New(repository, hasher, uuid.NewString), authConfig, logger)
 	router := newAPIRouter(lifetime, config.origin.String(), service, config, authHandler, logger)
-	config.mcpOAuth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
+	config.oauth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)
 	server := &http.Server{
 		Handler:           httpserver.AuthenticatedServerTiming(allowedHost(router, config.Host)),

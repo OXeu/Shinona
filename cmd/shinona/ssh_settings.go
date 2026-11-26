@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -18,12 +17,15 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/httpclient"
 	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
 var sshImageName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,254}$`)
+
+const sshProviderCacheSize = 128
 
 type personalSSHKey struct{ owner, server string }
 
@@ -32,47 +34,47 @@ type cachedSSHProvider struct {
 	provider *sshsandbox.Provider
 }
 
-type personalSSHProviders struct {
-	mu      sync.Mutex
-	entries map[personalSSHKey]cachedSSHProvider
+type sshRuntime struct {
+	repo      settings.SSHRepository
+	trusted   map[string]bool
+	container sshsandbox.ContainerConfig
+	projects  sshsandbox.ProjectConnections
+	providers *responsecache.Cache[personalSSHKey, cachedSSHProvider]
 }
 
-func (p *personalSSHProviders) forget(key personalSSHKey) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.entries, key)
-}
-
-func (r *runtime) resolvePersonalSSH(owner string, server settings.SSHServer) (*sshsandbox.Provider, error) {
-	key := personalSSHKey{owner, server.ID}
-	config, err := json.Marshal(server)
+func newSSHRuntime(repo settings.SSHRepository, env environment) (*sshRuntime, error) {
+	trusted, err := trustedSSHAddresses(env.value("SHINONA_TRUSTED_SSH_ADDRESSES", ""))
 	if err != nil {
 		return nil, err
 	}
-	version := sha256.Sum256(config)
-	p := &r.sshProviders
-	p.mu.Lock()
-	cached := p.entries[key]
-	p.mu.Unlock()
-	if cached.provider != nil && cached.version == version {
+	container, err := sshContainerConfig(env)
+	if err != nil {
+		return nil, err
+	}
+	return &sshRuntime{
+		repo: repo, trusted: trusted, container: container,
+		providers: responsecache.New[personalSSHKey, cachedSSHProvider](sshProviderCacheSize, sshProviderCacheSize),
+	}, nil
+}
+
+func (r *sshRuntime) Close() error { return r.projects.Close() }
+
+func (r *sshRuntime) resolvePersonalSSH(owner string, server settings.SSHServer) (*sshsandbox.Provider, error) {
+	key := personalSSHKey{owner, server.ID}
+	config, err := json.Marshal(server.SSHServerInfo)
+	if err != nil {
+		return nil, err
+	}
+	keyHash := sha256.Sum256([]byte(server.PrivateKey))
+	version := sha256.Sum256(append(config, keyHash[:]...))
+	if cached, ok := r.providers.Get(key); ok && cached.version == version {
 		return cached.provider, nil
 	}
 	provider, err := r.personalSSH(server)
 	if err != nil {
 		return nil, err
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.entries == nil {
-		p.entries = make(map[personalSSHKey]cachedSSHProvider)
-	}
-	if _, exists := p.entries[key]; !exists && len(p.entries) >= 128 {
-		for oldest := range p.entries {
-			delete(p.entries, oldest)
-			break
-		}
-	}
-	p.entries[key] = cachedSSHProvider{version, provider}
+	r.providers.Put(key, cachedSSHProvider{version, provider}, 1)
 	return provider, nil
 }
 
@@ -99,14 +101,14 @@ func trustedSSHAddresses(raw string) (map[string]bool, error) {
 	return trusted, nil
 }
 
-func (r *runtime) personalSSH(server settings.SSHServer) (*sshsandbox.Provider, error) {
+func (r *sshRuntime) personalSSH(server settings.SSHServer) (*sshsandbox.Provider, error) {
 	config := sshsandbox.Config{
 		Address: server.Address, User: server.User, HostFingerprint: server.HostFingerprint,
 		Template: server.Template, PrivateKey: server.PrivateKey,
-		Container:          r.sshContainer,
-		ProjectConnections: &r.sshProjects,
+		Container:          r.container,
+		ProjectConnections: &r.projects,
 	}
-	if !r.trustedSSH[server.Address] {
+	if !r.trusted[server.Address] {
 		host, _, err := net.SplitHostPort(server.Address)
 		if err != nil {
 			return nil, sshAddressError()
@@ -136,25 +138,26 @@ func (r *runtime) personalSSH(server settings.SSHServer) (*sshsandbox.Provider, 
 func (r *runtime) ResolveForAccount(ctx context.Context, owner, name string) (run.Target, error) {
 	target := r.Resolve(name)
 	id, personal := strings.CutPrefix(name, settings.SSHProviderPrefix)
-	if !personal {
-		if name != "" || target.Provider != nil {
-			return target, nil
-		}
-		servers, err := r.repo.SSHServers(ctx, owner)
-		if err != nil || len(servers) == 0 {
-			return target, err
-		}
-		id = servers[0].ID
+	if !personal && (name != "" || target.Provider != nil) {
+		return target, nil
 	}
-	server, err := r.repo.SSHServer(ctx, owner, id)
+	var server settings.SSHServer
+	var err error
+	if personal {
+		server, err = r.sshRuntime.repo.SSHServer(ctx, owner, id)
+	} else {
+		server, err = r.sshRuntime.repo.DefaultSSHServer(ctx, owner)
+	}
 	if errors.Is(err, settings.ErrSSHServer) {
-		r.sshProviders.forget(personalSSHKey{owner, id})
+		if personal {
+			r.providers.Delete(personalSSHKey{owner, id})
+		}
 		return target, nil
 	}
 	if err != nil {
 		return target, err
 	}
-	target = sshTarget(server)
+	target = sshTarget(server.SSHServerInfo)
 	target.ResolveAgent = r.resolveAgent
 	provider, err := r.resolvePersonalSSH(owner, server)
 	if err != nil {
@@ -166,13 +169,13 @@ func (r *runtime) ResolveForAccount(ctx context.Context, owner, name string) (ru
 
 func (r *runtime) ProjectTargets(ctx context.Context, owner string) ([]run.Target, error) {
 	targets := make([]run.Target, 0, 2)
-	for _, name := range []string{sandbox.ProviderE2B, sandbox.ProviderSSH} {
-		target := r.Resolve(name)
+	config := r.current.Load()
+	for _, target := range []run.Target{config.e2b, config.ssh} {
 		if _, ok := target.Provider.(sandbox.ManagedProjectProvider); ok {
 			targets = append(targets, target)
 		}
 	}
-	servers, err := r.repo.SSHServers(ctx, owner)
+	servers, err := r.sshRuntime.repo.SSHServers(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -182,16 +185,16 @@ func (r *runtime) ProjectTargets(ctx context.Context, owner string) ([]run.Targe
 	return targets, nil
 }
 
-func sshTarget(server settings.SSHServer) run.Target {
+func sshTarget(server settings.SSHServerInfo) run.Target {
 	return run.Target{Name: settings.SSHProviderPrefix + server.ID, Label: server.Name,
 		Defaults: run.ProjectSandboxConfig{Template: server.Template}}
 }
 
-func (r *runtime) SSHServers(ctx context.Context) ([]settings.SSHServer, error) {
+func (r *sshRuntime) SSHServers(ctx context.Context) ([]settings.SSHServerInfo, error) {
 	return r.repo.SSHServers(ctx, auth.CurrentUser(ctx).ID)
 }
 
-func (r *runtime) sshConnectionSettings(ctx context.Context, owner string, server settings.SSHServer) (settings.SSHServer, error) {
+func (r *sshRuntime) sshConnectionSettings(ctx context.Context, owner string, server settings.SSHServer) (settings.SSHServer, error) {
 	server.User = strings.TrimSpace(server.User)
 	server.Template = strings.TrimSpace(server.Template)
 	server.HostFingerprint = strings.TrimSpace(server.HostFingerprint)
@@ -219,35 +222,37 @@ func (r *runtime) sshConnectionSettings(ctx context.Context, owner string, serve
 	return server, nil
 }
 
-func (r *runtime) SaveSSHServer(ctx context.Context, server settings.SSHServer) (settings.SSHServer, error) {
-	r.sshMu.Lock()
-	defer r.sshMu.Unlock()
-
+func (r *sshRuntime) SaveSSHServer(ctx context.Context, server settings.SSHServer) (settings.SSHServerInfo, error) {
 	owner := auth.CurrentUser(ctx).ID
+	keepKey := server.ID != "" && strings.TrimSpace(server.PrivateKey) == ""
 	server, err := r.sshConnectionSettings(ctx, owner, server)
 	if err != nil {
-		return settings.SSHServer{}, err
+		return settings.SSHServerInfo{}, err
 	}
 	server.Name = strings.Join(strings.Fields(server.Name), " ")
 	if server.Name == "" || len(server.Name) > 160 || !sshImageName.MatchString(server.Template) {
-		return settings.SSHServer{}, settings.Invalid("INVALID_PERSONAL_SSH", "enter a server name and a valid Docker image")
+		return settings.SSHServerInfo{}, settings.Invalid("INVALID_PERSONAL_SSH", "enter a server name and a valid Docker image")
 	}
 	create := server.ID == ""
 	if create {
 		server.ID = uuid.NewString()
 	}
 	if _, err := r.personalSSH(server); err != nil {
-		return settings.SSHServer{}, err
+		return settings.SSHServerInfo{}, err
+	}
+	if keepKey {
+		// The saved key above is used for validation only. A concurrent
+		// rotation must keep the latest key when an edit omits this field.
+		server.PrivateKey = ""
 	}
 	if err := r.repo.SaveSSHServer(ctx, owner, server, create); err != nil {
-		return settings.SSHServer{}, err
+		return settings.SSHServerInfo{}, err
 	}
-	r.sshProviders.forget(personalSSHKey{owner, server.ID})
-	server.PrivateKey = ""
-	return server, nil
+	r.providers.Delete(personalSSHKey{owner, server.ID})
+	return server.SSHServerInfo, nil
 }
 
-func (r *runtime) TestSSHServer(ctx context.Context, server settings.SSHServer) error {
+func (r *sshRuntime) TestSSHServer(ctx context.Context, server settings.SSHServer) error {
 	// The connection test uses only the SSH fields, including the saved key when omitted.
 	server.Template = settings.DefaultSSHImage
 	server, err := r.sshConnectionSettings(ctx, auth.CurrentUser(ctx).ID, server)
@@ -305,13 +310,11 @@ func sshTestError(err error) error {
 	}
 }
 
-func (r *runtime) RemoveSSHServer(ctx context.Context, id string) error {
-	r.sshMu.Lock()
-	defer r.sshMu.Unlock()
+func (r *sshRuntime) RemoveSSHServer(ctx context.Context, id string) error {
 	owner := auth.CurrentUser(ctx).ID
 	if err := r.repo.RemoveSSHServer(ctx, owner, id); err != nil {
 		return err
 	}
-	r.sshProviders.forget(personalSSHKey{owner, id})
+	r.providers.Delete(personalSSHKey{owner, id})
 	return nil
 }

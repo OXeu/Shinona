@@ -11,10 +11,14 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-type Application interface {
+type InstanceSettings interface {
 	Mode() string
 	Fields() []settings.Field
 	Update(context.Context, []settings.Change) ([]settings.Field, error)
+}
+
+type Application interface {
+	InstanceSettings
 	ModelFields(context.Context) ([]settings.Field, error)
 	UpdateModelSettings(context.Context, []settings.Change) ([]settings.Field, error)
 	ComposerOptions(context.Context) (ComposerOptions, error)
@@ -23,8 +27,8 @@ type Application interface {
 	SaveMCPServer(context.Context, settings.MCPServerInput) (settings.MCPSettings, error)
 	RemoveMCPServer(context.Context, string) (settings.MCPSettings, error)
 	ResetMCPSettings(context.Context) (settings.MCPSettings, error)
-	SSHServers(context.Context) ([]settings.SSHServer, error)
-	SaveSSHServer(context.Context, settings.SSHServer) (settings.SSHServer, error)
+	SSHServers(context.Context) ([]settings.SSHServerInfo, error)
+	SaveSSHServer(context.Context, settings.SSHServer) (settings.SSHServerInfo, error)
 	TestSSHServer(context.Context, settings.SSHServer) error
 	RemoveSSHServer(context.Context, string) error
 }

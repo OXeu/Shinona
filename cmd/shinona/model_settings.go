@@ -6,24 +6,26 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/OXeu/shinona/internal/adapter/httpclient"
-	"github.com/OXeu/shinona/internal/adapter/mcp"
 	"github.com/OXeu/shinona/internal/adapter/pigo"
 	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/keylock"
+	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
+const modelEndpointCacheSize = 128
+
 type modelRuntime struct {
 	repo   settings.ModelRepository
 	client *http.Client
-	mu     sync.Mutex
-	cache  map[string]modelEndpoint
+	policy httpclient.ModelPolicy
+	cache  *responsecache.Cache[string, modelEndpoint]
 	owners keylock.Locks[string]
+	mcp    *mcpRuntime
 }
 
 type modelEndpoint struct {
@@ -32,8 +34,11 @@ type modelEndpoint struct {
 	endpoint *pigo.Endpoint
 }
 
-func newModelRuntime(repo settings.ModelRepository, client *http.Client) *modelRuntime {
-	return &modelRuntime{repo: repo, client: client, cache: make(map[string]modelEndpoint)}
+func newModelRuntime(repo settings.ModelRepository, policy httpclient.ModelPolicy, mcpSettings *mcpRuntime) *modelRuntime {
+	return &modelRuntime{
+		repo: repo, client: policy.Client(), policy: policy, mcp: mcpSettings,
+		cache: responsecache.New[string, modelEndpoint](modelEndpointCacheSize, modelEndpointCacheSize),
+	}
 }
 
 func (m *modelRuntime) settings(ctx context.Context, owner string) (settings.Values, error) {
@@ -57,26 +62,14 @@ func (m *modelRuntime) load(ctx context.Context, owner string) (settings.Values,
 	if base == "" {
 		return values, nil, nil
 	}
-	m.mu.Lock()
-	cached := m.cache[owner]
-	m.mu.Unlock()
-	if cached.endpoint != nil && cached.base == base && cached.key == key {
+	if cached, ok := m.cache.Get(owner); ok && cached.base == base && cached.key == key {
 		return values, cached.endpoint, nil
 	}
 	endpoint, err := m.endpoint(base, key)
 	if err != nil {
 		return nil, nil, err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	// Bound in-memory catalogs independently of the number of stored accounts.
-	if len(m.cache) >= 128 {
-		for account := range m.cache {
-			delete(m.cache, account)
-			break
-		}
-	}
-	m.cache[owner] = modelEndpoint{base: base, key: key, endpoint: endpoint}
+	m.cache.Put(owner, modelEndpoint{base: base, key: key, endpoint: endpoint}, 1)
 	return values, endpoint, nil
 }
 
@@ -85,23 +78,22 @@ func (m *modelRuntime) endpoint(base, key string) (*pigo.Endpoint, error) {
 	if err != nil {
 		return nil, settings.Invalid("INVALID_MODEL_BASE_URL", err.Error())
 	}
-	if err := httpclient.CheckModelEndpoint(m.client, base); err != nil {
+	if err := m.policy.CheckEndpoint(base); err != nil {
 		return nil, settings.Invalid("PRIVATE_ENDPOINT", err.Error())
 	}
 	return endpoint, nil
 }
 
-func (r *runtime) ModelFields(ctx context.Context) ([]settings.Field, error) {
-	values, err := r.models.settings(ctx, auth.CurrentUser(ctx).ID)
+func (m *modelRuntime) ModelFields(ctx context.Context) ([]settings.Field, error) {
+	values, err := m.settings(ctx, auth.CurrentUser(ctx).ID)
 	if err != nil {
 		return nil, err
 	}
 	return settings.ModelFields(values), nil
 }
 
-func (r *runtime) UpdateModelSettings(ctx context.Context, changes []settings.Change) ([]settings.Field, error) {
+func (m *modelRuntime) UpdateModelSettings(ctx context.Context, changes []settings.Change) ([]settings.Field, error) {
 	owner := auth.CurrentUser(ctx).ID
-	m := r.models
 	release, err := m.owners.Acquire(ctx, owner, false)
 	if err != nil {
 		return nil, err
@@ -129,14 +121,12 @@ func (r *runtime) UpdateModelSettings(ctx context.Context, changes []settings.Ch
 	if err := m.repo.SaveModelSettings(ctx, owner, next); err != nil {
 		return nil, err
 	}
-	m.mu.Lock()
-	delete(m.cache, owner)
-	m.mu.Unlock()
+	m.cache.Delete(owner)
 	return settings.ModelFields(next), nil
 }
 
-func (r *runtime) resolveAgent(ctx context.Context, owner string) (run.Agent, error) {
-	values, endpoint, err := r.models.load(ctx, owner)
+func (m *modelRuntime) resolveAgent(ctx context.Context, owner string) (run.Agent, error) {
+	values, endpoint, err := m.load(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -144,25 +134,25 @@ func (r *runtime) resolveAgent(ctx context.Context, owner string) (run.Agent, er
 	if endpoint == nil || id == "" || values[settings.ModelAPIKey] == "" {
 		return nil, run.ErrModelConfig
 	}
-	servers, err := r.accountMCP(ctx, owner)
+	tools, err := m.mcp.tools(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
-	return pigo.New(endpoint, id, mcp.NewServers(servers, r.accountHTTP, r.mcpOAuth)), nil
+	return pigo.New(endpoint, id, tools), nil
 }
 
-func (r *runtime) ComposerOptions(ctx context.Context) (rest.ComposerOptions, error) {
+func (m *modelRuntime) ComposerOptions(ctx context.Context) (rest.ComposerOptions, error) {
 	owner := auth.CurrentUser(ctx).ID
-	values, endpoint, err := r.models.load(ctx, owner)
+	values, endpoint, err := m.load(ctx, owner)
 	if err != nil {
 		return rest.ComposerOptions{}, err
 	}
-	servers, err := r.accountMCP(ctx, owner)
+	tools, err := m.mcp.tools(ctx, owner)
 	if err != nil {
 		return rest.ComposerOptions{}, err
 	}
 	options := rest.ComposerOptions{
-		Models: []rest.ModelInfo{}, MCPServers: mcp.NewServers(servers, r.accountHTTP, r.mcpOAuth).Names(ctx, owner),
+		Models: []rest.ModelInfo{}, MCPServers: tools.Names(ctx, owner),
 	}
 	if endpoint == nil {
 		return options, nil
@@ -185,8 +175,8 @@ func (r *runtime) ComposerOptions(ctx context.Context) (rest.ComposerOptions, er
 	return options, nil
 }
 
-func (r *runtime) FetchModels(ctx context.Context, base, key *string) ([]rest.ModelInfo, error) {
-	values, endpoint, err := r.models.load(ctx, auth.CurrentUser(ctx).ID)
+func (m *modelRuntime) FetchModels(ctx context.Context, base, key *string) ([]rest.ModelInfo, error) {
+	values, endpoint, err := m.load(ctx, auth.CurrentUser(ctx).ID)
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +192,7 @@ func (r *runtime) FetchModels(ctx context.Context, base, key *string) ([]rest.Mo
 		token = savedKey
 	}
 	if endpoint == nil || !sameModelBase(target, savedBase) || token != savedKey {
-		endpoint, err = r.models.endpoint(target, token)
+		endpoint, err = m.endpoint(target, token)
 		if err != nil {
 			return nil, err
 		}

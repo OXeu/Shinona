@@ -2,26 +2,13 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/http"
-	"net/mail"
-	"net/url"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/OXeu/shinona/internal/adapter/e2b"
-	"github.com/OXeu/shinona/internal/adapter/email"
-	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/httpclient"
 	"github.com/OXeu/shinona/internal/adapter/mcp"
-	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
-	"github.com/OXeu/shinona/internal/auth"
-	"github.com/OXeu/shinona/internal/run"
-	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
@@ -34,31 +21,11 @@ type runtimeRepository interface {
 	mcp.OAuthStore
 }
 
-// runtime publishes immutable configurations after validation and persistence.
 type runtime struct {
-	repo         runtimeRepository
-	defaults     settings.Values
-	origin       *url.URL
-	client       *http.Client
-	mcpOAuth     *mcp.OAuth
-	models       *modelRuntime
-	accountHTTP  *http.Client
-	sshMu        sync.Mutex
-	sshProjects  sshsandbox.ProjectConnections
-	sshContainer sshsandbox.ContainerConfig
-	sshProviders personalSSHProviders
-	trustedSSH   map[string]bool
-	mu           sync.Mutex
-	current      atomic.Pointer[runtimeConfig]
-}
-
-type runtimeConfig struct {
-	overrides settings.Values
-	values    settings.Values
-	oauth     httpauth.OAuthProvider
-	mailer    auth.VerificationMailer
-	e2b       run.Target
-	ssh       run.Target
+	*instanceSettings
+	*modelRuntime
+	*mcpRuntime
+	*sshRuntime
 }
 
 func newRuntime(ctx context.Context, repo runtimeRepository, environment environment) (*runtime, error) {
@@ -66,174 +33,27 @@ func newRuntime(ctx context.Context, repo runtimeRepository, environment environ
 	if err != nil {
 		return nil, err
 	}
-	accountHTTP := httpclient.Public()
-	modelHTTP, err := httpclient.ForModels(environment.value("SHINONA_TRUSTED_MODEL_ORIGINS", ""))
+	modelPolicy, err := httpclient.ParseModelPolicy(environment.value("SHINONA_TRUSTED_MODEL_ORIGINS", ""))
 	if err != nil {
 		return nil, fmt.Errorf("SHINONA_TRUSTED_MODEL_ORIGINS: %w", err)
 	}
-	trustedSSH, err := trustedSSHAddresses(environment.value("SHINONA_TRUSTED_SSH_ADDRESSES", ""))
+	sshSettings, err := newSSHRuntime(repo, environment)
 	if err != nil {
 		return nil, err
 	}
-	sshContainer, err := sshContainerConfig(environment)
-	if err != nil {
-		return nil, fmt.Errorf("SSH container configuration: %w", err)
-	}
-	config := &runtime{
-		repo: repo, defaults: settings.Defaults(environment.lookup), origin: origin,
-		mcpOAuth:     mcp.NewOAuth(repo, origin.String()),
-		models:       newModelRuntime(repo, modelHTTP),
-		accountHTTP:  accountHTTP,
-		trustedSSH:   trustedSSH,
-		sshContainer: sshContainer,
-		client: &http.Client{
+	publicHTTP := httpclient.Public()
+	mcpSettings := &mcpRuntime{repo: repo, oauth: mcp.NewOAuth(repo, origin.String()), client: publicHTTP}
+	models := newModelRuntime(repo, modelPolicy, mcpSettings)
+	instance := &instanceSettings{
+		repo: repo, defaults: settings.Defaults(environment.lookup), origin: origin, publicHTTP: publicHTTP,
+		e2bStore: repo, buildSSH: sshSettings.sshSandboxProvider, agent: models.resolveAgent,
+		e2bHTTP: &http.Client{
 			Timeout:       35 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}
-	stored, err := repo.SettingOverrides(ctx)
-	if err != nil {
+	if err := instance.initialize(ctx); err != nil {
 		return nil, err
 	}
-	overrides, err := settings.Apply(stored, nil)
-	if err != nil {
-		return nil, err
-	}
-	next, err := config.prepare(ctx, overrides, nil)
-	if err != nil {
-		return nil, err
-	}
-	if len(overrides) != len(stored) {
-		if err := repo.SaveSettingOverrides(ctx, overrides); err != nil {
-			return nil, err
-		}
-	}
-	config.current.Store(next)
-	return config, nil
-}
-
-func (r *runtime) prepare(ctx context.Context, overrides settings.Values, previous *runtimeConfig) (*runtimeConfig, error) {
-	values := settings.Effective(r.defaults, overrides)
-	var mailer auth.VerificationMailer
-	from, mailKey := values[settings.MailFrom], values[settings.MailAPIKey]
-	if from != "" {
-		if address, err := mail.ParseAddress(from); err != nil || !strings.Contains(address.Address, "@") || strings.ContainsAny(from, "\r\n") {
-			return nil, settings.Invalid("INVALID_MAIL_FROM", "enter a valid sender email address")
-		}
-		if mailKey != "" {
-			mailer = email.Resend{APIKey: mailKey, From: from, Client: r.accountHTTP}
-		}
-	}
-	e2bDefaults, err := e2bSandboxDefaults(values)
-	if err != nil {
-		return nil, err
-	}
-	e2bTarget := run.Target{Name: sandbox.ProviderE2B, Defaults: e2bDefaults, ResolveAgent: r.resolveAgent}
-	sshTarget := run.Target{Name: sandbox.ProviderSSH, ResolveAgent: r.resolveAgent,
-		Defaults: run.ProjectSandboxConfig{Template: values[settings.SSHTemplate]}}
-	if previous != nil && sameSettings(previous.values, values, settings.E2BAPIKey, settings.E2BTemplate,
-		settings.E2BBaseURL, settings.E2BProxyURL, settings.E2BDomain, settings.E2BTimeout, settings.E2BOnTimeout,
-		settings.E2BAPIVersion, settings.E2BWorkspaceUser, settings.E2BWorkDirectory) {
-		e2bTarget.Provider = previous.e2b.Provider
-	} else {
-		e2bTarget.Provider, err = e2bSandboxProvider(values, e2bDefaults, r.client, r.repo)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if previous != nil && sameSettings(previous.values, values, settings.SSHAddress, settings.SSHUser,
-		settings.SSHKeyPath, settings.SSHHostFingerprint, settings.SSHTemplate) {
-		sshTarget.Provider = previous.ssh.Provider
-	} else {
-		sshTarget.Provider, err = r.sshSandboxProvider(values)
-		if err != nil {
-			return nil, err
-		}
-	}
-	var oauth httpauth.OAuthProvider
-	if previous != nil && sameSettings(previous.values, values, settings.OAuthIssuer, settings.OAuthClientID, settings.OAuthSecret) {
-		oauth = previous.oauth
-	} else {
-		oauth, err = oauthProvider(ctx, values, r.origin)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return &runtimeConfig{overrides: overrides, values: values,
-		e2b: e2bTarget, ssh: sshTarget, oauth: oauth, mailer: mailer}, nil
-}
-
-func sameSettings(a, b settings.Values, keys ...settings.Key) bool {
-	for _, key := range keys {
-		if a[key] != b[key] {
-			return false
-		}
-	}
-	return true
-}
-
-func (r *runtime) Resolve(name string) run.Target {
-	config := r.current.Load()
-	switch name {
-	case "":
-		if config.e2b.Provider == nil && config.ssh.Provider != nil {
-			return config.ssh
-		}
-		return config.e2b
-	case sandbox.ProviderE2B:
-		return config.e2b
-	case sandbox.ProviderSSH:
-		return config.ssh
-	default:
-		return run.Target{Name: name}
-	}
-}
-
-func (r *runtime) Mode() string { return r.Resolve("").Name }
-
-func (r *runtime) Host() string { return r.origin.Host }
-
-func (r *runtime) Auth() httpauth.Config {
-	config := r.current.Load()
-	fingerprint := sha256.Sum256([]byte(strings.Join([]string{
-		r.origin.String(), config.values[settings.OAuthIssuer], config.values[settings.OAuthClientID],
-	}, "\x00")))
-	return httpauth.Config{OAuth: config.oauth, Mailer: config.mailer, Secure: r.origin.Scheme == "https",
-		FlowVersion: hex.EncodeToString(fingerprint[:])}
-}
-
-func (r *runtime) Fields() []settings.Field {
-	config := r.current.Load()
-	return settings.Fields(config.values, config.overrides)
-}
-
-func (r *runtime) Update(ctx context.Context, changes []settings.Change) ([]settings.Field, error) {
-	for {
-		current := r.current.Load()
-		overrides, err := settings.Apply(current.overrides, changes)
-		if err != nil {
-			return nil, err
-		}
-		next, err := r.prepare(ctx, overrides, current)
-		if err != nil {
-			return nil, err
-		}
-		r.mu.Lock()
-		if r.current.Load() != current {
-			r.mu.Unlock()
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		err = r.repo.SaveSettingOverrides(ctx, next.overrides)
-		if err == nil {
-			r.current.Store(next)
-		}
-		r.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return settings.Fields(next.values, next.overrides), nil
-	}
+	return &runtime{instanceSettings: instance, modelRuntime: models, mcpRuntime: mcpSettings, sshRuntime: sshSettings}, nil
 }

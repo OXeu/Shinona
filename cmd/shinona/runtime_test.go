@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -18,6 +21,70 @@ import (
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
+
+type pausedRuntimeSettingsCommit struct {
+	*sqlite.Repository
+	committed chan struct{}
+	publish   chan struct{}
+}
+
+func (repo *pausedRuntimeSettingsCommit) SaveSettingOverrides(ctx context.Context, revision int64, values settings.Values) (bool, error) {
+	saved, err := repo.Repository.SaveSettingOverrides(ctx, revision, values)
+	if saved && revision == 0 {
+		close(repo.committed)
+		<-repo.publish
+	}
+	return saved, err
+}
+
+func TestInstanceSettingsRebaseWhileEarlierCommitAwaitsPublication(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	db, err := sqlite.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := &pausedRuntimeSettingsCommit{Repository: db, committed: make(chan struct{}), publish: make(chan struct{})}
+	app, err := newRuntime(ctx, repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := app.Update(ctx, []settings.Change{{Key: settings.MailFrom, Value: new("one@example.test")}})
+		firstDone <- err
+	}()
+	release := sync.OnceFunc(func() { close(repo.publish) })
+	defer release()
+	select {
+	case <-repo.committed:
+	case <-ctx.Done():
+		t.Fatal("the first write did not commit")
+	}
+	if app.current.Load().revision != 0 {
+		t.Fatal("test did not pause the first publication")
+	}
+	if _, err := app.Update(ctx, []settings.Change{{Key: settings.E2BTemplate, Value: new("second-template")}}); err != nil {
+		t.Fatalf("later update could not proceed while an earlier publication was paused: %v", err)
+	}
+	release()
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the earlier update did not finish")
+	}
+	stored, err := db.SettingOverrides(ctx)
+	current := app.current.Load()
+	if err != nil || current.revision != 2 || stored.Revision != 2 ||
+		stored.Values[settings.MailFrom] != "one@example.test" || current.values[settings.MailFrom] != "one@example.test" ||
+		stored.Values[settings.E2BTemplate] != "second-template" || current.e2b.Defaults.Template != "second-template" {
+		t.Fatalf("later publication did not preserve both committed changes: %v", err)
+	}
+}
 
 func TestDotEnvFallbackAndSavedOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
@@ -90,14 +157,14 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 		"webOrigin": "https://old.example", "projectName": "Old project", "machineName": "Old machine",
 		"projectBranch": "main", "projectRemoteUrl": "invalid legacy URL",
 	}
-	if err := repository.SaveSettingOverrides(ctx, obsolete); err != nil {
-		t.Fatal(err)
+	if saved, err := repository.SaveSettingOverrides(ctx, 0, obsolete); err != nil || !saved {
+		t.Fatalf("seed obsolete instance overrides: %t, %v", saved, err)
 	}
 	app, err := newRuntime(ctx, repository, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if overrides, err := repository.SettingOverrides(ctx); err != nil || len(overrides) != 0 {
+	if overrides, err := repository.SettingOverrides(ctx); err != nil || len(overrides.Values) != 0 {
 		t.Fatalf("obsolete instance overrides survived startup: %v", err)
 	}
 	service := run.NewService(repository, app.ResolveForAccount, uuid.NewString, &run.Controls{}, nil)
@@ -168,7 +235,7 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 		t.Fatal("bootstrap setting was accepted")
 	}
 	persisted, err := repository.SettingOverrides(ctx)
-	if err != nil || persisted["envdBrokerUrl"] != "" || persisted[settings.E2BBaseURL] != "http://127.0.0.1:3000" {
+	if err != nil || persisted.Values["envdBrokerUrl"] != "" || persisted.Values[settings.E2BBaseURL] != "http://127.0.0.1:3000" {
 		t.Fatalf("provider settings lost or partially written: %v", err)
 	}
 }

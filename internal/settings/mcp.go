@@ -2,7 +2,6 @@ package settings
 
 import (
 	"context"
-	"encoding/json"
 	"net/url"
 	"slices"
 	"strings"
@@ -50,23 +49,6 @@ type MCPServerInput struct {
 	OAuth        *bool
 }
 
-// ParseMCP validates the persisted settings format.
-func ParseMCP(value string) (MCPConfig, error) {
-	var entries MCPConfig
-	if strings.TrimSpace(value) != "" {
-		decoder := json.NewDecoder(strings.NewReader(value))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&entries); err != nil || !json.Valid([]byte(value)) {
-			return nil, Invalid("INVALID_MCP_SERVERS", "MCP servers must be a JSON array of names, URLs and optional tokens")
-		}
-	}
-	entries = append(MCPConfig{}, entries...)
-	for i := range entries {
-		entries[i].Name = strings.TrimSpace(entries[i].Name)
-	}
-	return entries, entries.validate()
-}
-
 func (servers MCPConfig) Info(overridden bool) MCPSettings {
 	result := MCPSettings{Servers: make([]MCPServerInfo, len(servers)), Overridden: overridden}
 	for i, server := range servers {
@@ -111,7 +93,7 @@ func (servers MCPConfig) Save(input MCPServerInput) (MCPConfig, error) {
 		}
 		next[i] = entry
 	}
-	return next, next.validate()
+	return next, next.Validate()
 }
 
 func (servers MCPConfig) Remove(name string) (MCPConfig, error) {
@@ -130,7 +112,7 @@ func mcpServerNotFound() error {
 	return Invalid("MCP_SERVER_NOT_FOUND", "the MCP server no longer exists")
 }
 
-func (servers MCPConfig) validate() error {
+func (servers MCPConfig) Validate() error {
 	if len(servers) > maxMCPServers {
 		return Invalid("MCP_SERVER_LIMIT", "configure at most 16 MCP servers")
 	}

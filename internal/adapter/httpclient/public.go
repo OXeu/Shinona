@@ -40,14 +40,22 @@ var ErrInvalidEndpoint = errors.New("the endpoint must be an absolute HTTP or HT
 // CheckEndpoint rejects private literal addresses before persisting a URL.
 // The dialer also checks each resolved address before opening a connection.
 func CheckEndpoint(raw string) error {
-	target, err := url.Parse(raw)
+	target, err := endpointURL(raw)
 	if err != nil {
 		return err
 	}
-	if (target.Scheme != "https" && target.Scheme != "http") || target.User != nil || target.Hostname() == "" {
-		return ErrInvalidEndpoint
-	}
 	return CheckHost(target.Hostname())
+}
+
+func endpointURL(raw string) (*url.URL, error) {
+	target, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if (target.Scheme != "https" && target.Scheme != "http") || target.User != nil || target.Hostname() == "" {
+		return nil, ErrInvalidEndpoint
+	}
+	return target, nil
 }
 
 // CheckHost applies the same literal and hostname rules to non-HTTP transports.
@@ -71,50 +79,59 @@ func Public() *http.Client {
 	}}
 }
 
-// ForModels permits private addresses for the operator's exact HTTPS origins.
-// Requests to other origins continue through the public address policy.
-func ForModels(allowed string) (*http.Client, error) {
-	client := Public()
+// ModelPolicy permits private addresses for the operator's exact HTTPS origins.
+type ModelPolicy struct {
+	origins map[string]bool
+}
+
+func ParseModelPolicy(allowed string) (ModelPolicy, error) {
 	origins := make(map[string]bool)
 	for _, raw := range strings.Fields(strings.ReplaceAll(allowed, ",", " ")) {
 		u, err := url.Parse(raw)
 		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
 			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-			return nil, errors.New("trusted model origins must be HTTPS origins without a path, credentials, query, or fragment")
+			return ModelPolicy{}, errors.New("trusted model origins must be HTTPS origins without a path, credentials, query, or fragment")
 		}
 		origins[httpsAuthority(u)] = true
 	}
-	if len(origins) > 0 {
+	return ModelPolicy{origins: origins}, nil
+}
+
+func (p ModelPolicy) Client() *http.Client {
+	client := Public()
+	if len(p.origins) > 0 {
 		trusted := http.DefaultTransport.(*http.Transport).Clone()
 		trusted.Proxy = nil
-		client.Transport = modelTransport{public: client.Transport, trusted: trusted, origins: origins}
+		client.Transport = modelTransport{public: client.Transport, trusted: trusted, policy: p}
 	}
-	return client, nil
+	return client
 }
 
 type modelTransport struct {
 	public, trusted http.RoundTripper
-	origins         map[string]bool
+	policy          ModelPolicy
 }
 
 func (t modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.trusts(req.URL) {
+	if t.policy.trusts(req.URL) {
 		return t.trusted.RoundTrip(req)
 	}
 	return t.public.RoundTrip(req)
 }
 
-func (t modelTransport) trusts(u *url.URL) bool {
-	return u.Scheme == "https" && t.origins[httpsAuthority(u)]
+func (p ModelPolicy) trusts(u *url.URL) bool {
+	return u.Scheme == "https" && u.User == nil && p.origins[httpsAuthority(u)]
 }
 
-func CheckModelEndpoint(client *http.Client, raw string) error {
-	if transport, ok := client.Transport.(modelTransport); ok {
-		if u, err := url.Parse(raw); err == nil && transport.trusts(u) {
-			return nil
-		}
+func (p ModelPolicy) CheckEndpoint(raw string) error {
+	target, err := endpointURL(raw)
+	if err != nil {
+		return err
 	}
-	return CheckEndpoint(raw)
+	if p.trusts(target) {
+		return nil
+	}
+	return CheckHost(target.Hostname())
 }
 
 func httpsAuthority(u *url.URL) string {

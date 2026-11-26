@@ -18,7 +18,14 @@ import (
 // database may be empty or contain the pre-migration Shinona schema.
 var migrations = [...]func(*gorm.DB) error{
 	initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime, deleteRevokedMCPGrants,
-	migrateOwnership,
+	migrateOwnership, migrateSettingsStorage, addInstanceSettingsRevision,
+}
+
+func addInstanceSettingsRevision(db *gorm.DB) error {
+	return db.Exec(`CREATE TABLE instance_settings_revision (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		revision INTEGER NOT NULL CHECK (revision >= 0)
+	); INSERT INTO instance_settings_revision (id, revision) VALUES (1, 0)`).Error
 }
 
 func migrate(db *gorm.DB) error {
@@ -89,9 +96,9 @@ func initializeSchema(db *gorm.DB) error {
 		return err
 	}
 	if err := db.AutoMigrate(
-		&userRow{}, &instanceSettingsRow{},
+		&userRow{}, &legacyInstanceSettingsRow{},
 		&row{}, &workspaceRootRow{}, &legacyWorkspaceRootRow{}, &sessionRow{}, &projectRow{},
-		&settingsRow{}, &composerDefaultsRow{}, &modelSettingsRow{}, &mcpSettingsRow{}, &mcpGrantRow{},
+		&settingsRow{}, &composerDefaultsRow{}, &legacyModelSettingsRow{}, &legacyMCPSettingsRow{}, &mcpGrantRow{},
 		&e2bWorkspaceRow{}, &projectSandboxRow{}, &sshServerRow{},
 		&avatarRow{}, &emailChallengeRow{}, &identityRow{}, &loginRow{}, &flowRow{},
 	); err != nil {

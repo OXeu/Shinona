@@ -45,10 +45,10 @@ func (r *handler) UpdateApplicationSettings(ctx context.Context, args struct{ Ch
 }
 
 type settingsOverview struct {
-	Application []settings.Field     `json:"applicationSettings"`
-	Model       []settings.Field     `json:"modelSettings"`
-	MCP         settings.MCPSettings `json:"mcpSettings"`
-	SSH         []sshServerResponse  `json:"sshServers"`
+	Application []settings.Field         `json:"applicationSettings"`
+	Model       []settings.Field         `json:"modelSettings"`
+	MCP         settings.MCPSettings     `json:"mcpSettings"`
+	SSH         []settings.SSHServerInfo `json:"sshServers"`
 }
 
 func (r *handler) settingsOverview(ctx context.Context) (settingsOverview, error) {

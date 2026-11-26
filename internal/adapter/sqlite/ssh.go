@@ -23,17 +23,21 @@ type sshServerRow struct {
 
 func (sshServerRow) TableName() string { return "ssh_servers" }
 
-func (r *Repository) SSHServers(ctx context.Context, owner string) ([]settings.SSHServer, error) {
-	var records []sshServerRow
-	err := r.read.WithContext(ctx).Omit("private_key").Where("owner_id = ?", owner).Order("name COLLATE NOCASE, id").Find(&records).Error
+const sshServerOrder = "name COLLATE NOCASE, id"
+
+func (r *Repository) SSHServers(ctx context.Context, owner string) ([]settings.SSHServerInfo, error) {
+	servers := make([]settings.SSHServerInfo, 0)
+	err := r.read.WithContext(ctx).Model(&sshServerRow{}).Select("id", "name", "address", "user", "host_fingerprint", "template").
+		Where("owner_id = ?", owner).Order(sshServerOrder).Find(&servers).Error
 	if err != nil {
 		return nil, err
 	}
-	servers := make([]settings.SSHServer, len(records))
-	for i, record := range records {
-		servers[i] = record.server()
-	}
 	return servers, nil
+}
+
+func (r *Repository) DefaultSSHServer(ctx context.Context, owner string) (settings.SSHServer, error) {
+	record, err := readSSHServer(r.read.WithContext(ctx).Where("owner_id = ?", owner).Order(sshServerOrder))
+	return record.server(), err
 }
 
 func (r *Repository) SSHServer(ctx context.Context, owner, id string) (settings.SSHServer, error) {
@@ -65,10 +69,14 @@ func (r *Repository) SaveSSHServer(ctx context.Context, owner string, server set
 		if duplicates != 0 {
 			return settings.ErrSSHServerName
 		}
-		return tx.Model(&current).UpdateColumns(map[string]any{
+		columns := map[string]any{
 			"name": server.Name, "address": server.Address, "user": server.User,
-			"host_fingerprint": server.HostFingerprint, "template": server.Template, "private_key": server.PrivateKey,
-		}).Error
+			"host_fingerprint": server.HostFingerprint, "template": server.Template,
+		}
+		if server.PrivateKey != "" {
+			columns["private_key"] = server.PrivateKey
+		}
+		return tx.Model(&current).UpdateColumns(columns).Error
 	})
 }
 
@@ -97,8 +105,12 @@ func ensureSSHServerUnused(tx *gorm.DB, owner, id string) error {
 }
 
 func findSSHServer(db *gorm.DB, owner, id string) (sshServerRow, error) {
+	return readSSHServer(db.Where("owner_id = ? AND id = ?", owner, id))
+}
+
+func readSSHServer(db *gorm.DB) (sshServerRow, error) {
 	var record sshServerRow
-	err := db.Take(&record, "owner_id = ? AND id = ?", owner, id).Error
+	err := db.Take(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		err = settings.ErrSSHServer
 	}
@@ -107,7 +119,10 @@ func findSSHServer(db *gorm.DB, owner, id string) (sshServerRow, error) {
 
 func (r sshServerRow) server() settings.SSHServer {
 	return settings.SSHServer{
-		ID: r.ID, Name: r.Name, Address: r.Address, User: r.User,
-		HostFingerprint: r.HostFingerprint, Template: r.Template, PrivateKey: r.PrivateKey,
+		SSHServerInfo: settings.SSHServerInfo{
+			ID: r.ID, Name: r.Name, Address: r.Address, User: r.User,
+			HostFingerprint: r.HostFingerprint, Template: r.Template,
+		},
+		PrivateKey: r.PrivateKey,
 	}
 }

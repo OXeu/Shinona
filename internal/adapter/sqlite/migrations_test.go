@@ -26,7 +26,7 @@ func openSchemaFixture(t *testing.T, filename string, version int) *Repository {
 	if err := migrateTo(db.WithContext(t.Context()), version); err != nil {
 		t.Fatal(err)
 	}
-	return &Repository{db: db, read: db}
+	return newRepository(db)
 }
 
 func markUnversioned(t *testing.T, repo *Repository) {
@@ -161,7 +161,7 @@ func TestOwnershipMigrationKeepsValidDataAndRemovesLegacyGuards(t *testing.T) {
 	if err != nil || expectedRevision == 0 {
 		t.Fatalf("fixture revision = %d, %v", expectedRevision, err)
 	}
-	if err := migrate(repo.db.WithContext(ctx)); err != nil {
+	if err := migrateTo(repo.db.WithContext(ctx), 6); err != nil {
 		t.Fatal(err)
 	}
 	if version, err := schemaVersion(repo.db); err != nil || version != 6 {

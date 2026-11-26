@@ -2,87 +2,152 @@ package sqlite
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/OXeu/shinona/internal/settings"
 )
 
-type instanceSettingsRow struct {
-	ID   uint   `gorm:"primaryKey;autoIncrement:false"`
-	Data []byte `gorm:"not null"`
+type settingValue struct {
+	Key   settings.Key
+	Value string
 }
 
-const instanceSettingsID = 1
-
-func (*instanceSettingsRow) TableName() string { return "instance_settings" }
-
-type modelSettingsRow struct {
-	OwnerID string `gorm:"primaryKey"`
-	Data    []byte `gorm:"not null"`
+type modelSettingValue struct {
+	OwnerID string
+	Key     settings.Key
+	Value   string
 }
 
-func (*modelSettingsRow) TableName() string { return "model_settings" }
-
-func (r *Repository) ModelSettings(ctx context.Context, owner string) (settings.Values, error) {
-	values := make(settings.Values)
-	var record modelSettingsRow
-	err := r.read.WithContext(ctx).First(&record, "owner_id = ?", owner).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return values, nil
+func (r *Repository) SettingOverrides(ctx context.Context) (settings.OverrideSnapshot, error) {
+	var rows []struct {
+		Revision int64
+		Key      *settings.Key
+		Value    string
 	}
+	err := r.read.WithContext(ctx).Raw(`
+		SELECT revision, key, COALESCE(value, '') AS value
+		FROM instance_settings_revision
+		LEFT JOIN (
+			SELECT key, value FROM instance_setting_values
+			UNION ALL
+			SELECT key, value FROM instance_setting_secrets
+		) ON TRUE
+		WHERE id = 1
+	`).Scan(&rows).Error
 	if err != nil {
-		return nil, err
+		return settings.OverrideSnapshot{}, err
 	}
-	if err := json.Unmarshal(record.Data, &values); err != nil {
-		return nil, err
+	if len(rows) == 0 {
+		return settings.OverrideSnapshot{}, errors.New("missing instance settings revision")
 	}
-	return values, nil
-}
-
-func (r *Repository) SaveModelSettings(ctx context.Context, owner string, values settings.Values) error {
-	data, err := json.Marshal(values)
-	if err != nil {
-		return err
-	}
-	record := modelSettingsRow{OwnerID: owner, Data: data}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "owner_id"}}, DoUpdates: clause.AssignmentColumns([]string{"data"}),
-	}).Create(&record).Error
-}
-
-func (r *Repository) SettingOverrides(ctx context.Context) (settings.Values, error) {
-	result := make(settings.Values)
-	var record instanceSettingsRow
-	err := r.read.WithContext(ctx).First(&record, instanceSettingsID).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return result, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(record.Data, &result); err != nil {
-		return nil, err
+	result := settings.OverrideSnapshot{Revision: rows[0].Revision, Values: make(settings.Values, len(rows))}
+	for _, row := range rows {
+		if row.Key != nil {
+			result.Values[*row.Key] = row.Value
+		}
 	}
 	return result, nil
 }
 
-func (r *Repository) SaveSettingOverrides(ctx context.Context, values settings.Values) error {
-	return saveSettingOverrides(r.db.WithContext(ctx), values)
+func (r *Repository) SaveSettingOverrides(ctx context.Context, expectedRevision int64, values settings.Values) (bool, error) {
+	var updated bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Exec(`UPDATE instance_settings_revision SET revision = revision + 1
+			WHERE id = 1 AND revision = ?`, expectedRevision)
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		if err := tx.Exec(`DELETE FROM instance_setting_values; DELETE FROM instance_setting_secrets`).Error; err != nil {
+			return err
+		}
+		if err := insertInstanceSettings(tx, values); err != nil {
+			return err
+		}
+		updated = true
+		return nil
+	})
+	return err == nil && updated, err
 }
 
-func saveSettingOverrides(db *gorm.DB, values settings.Values) error {
-	data, err := json.Marshal(values)
-	if err != nil {
-		return err
+func (r *Repository) ModelSettings(ctx context.Context, owner string) (settings.Values, error) {
+	return readSettingValues(r.read.WithContext(ctx).Raw(`
+		SELECT key, value FROM model_setting_values WHERE owner_id = ?
+		UNION ALL
+		SELECT key, value FROM model_setting_secrets WHERE owner_id = ?
+	`, owner, owner))
+}
+
+func (r *Repository) SaveModelSettings(ctx context.Context, owner string, values settings.Values) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if len(values) == 0 {
+			if err := tx.Select("id").Take(&userRow{}, "id = ?", owner).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Exec("DELETE FROM model_setting_values WHERE owner_id = ?", owner).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec("DELETE FROM model_setting_secrets WHERE owner_id = ?", owner).Error; err != nil {
+			return err
+		}
+		return insertModelSettings(tx, owner, values)
+	})
+}
+
+func readSettingValues(query *gorm.DB) (settings.Values, error) {
+	var rows []settingValue
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, err
 	}
-	record := instanceSettingsRow{ID: instanceSettingsID, Data: data}
-	return db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns([]string{"data"}),
-	}).Create(&record).Error
+	values := make(settings.Values, len(rows))
+	for _, row := range rows {
+		values[row.Key] = row.Value
+	}
+	return values, nil
+}
+
+func insertInstanceSettings(tx *gorm.DB, values settings.Values) error {
+	var public, secrets []settingValue
+	for key, value := range values {
+		entry := settingValue{Key: key, Value: value}
+		if key.IsPublic() {
+			public = append(public, entry)
+		} else {
+			secrets = append(secrets, entry)
+		}
+	}
+	if len(public) != 0 {
+		if err := tx.Table("instance_setting_values").CreateInBatches(public, 100).Error; err != nil {
+			return err
+		}
+	}
+	if len(secrets) != 0 {
+		return tx.Table("instance_setting_secrets").CreateInBatches(secrets, 100).Error
+	}
+	return nil
+}
+
+func insertModelSettings(tx *gorm.DB, owner string, values settings.Values) error {
+	var public, secrets []modelSettingValue
+	for key, value := range values {
+		entry := modelSettingValue{OwnerID: owner, Key: key, Value: value}
+		if key.IsPublic() {
+			public = append(public, entry)
+		} else {
+			secrets = append(secrets, entry)
+		}
+	}
+	if len(public) != 0 {
+		if err := tx.Table("model_setting_values").CreateInBatches(public, 100).Error; err != nil {
+			return err
+		}
+	}
+	if len(secrets) != 0 {
+		return tx.Table("model_setting_secrets").CreateInBatches(secrets, 100).Error
+	}
+	return nil
 }
 
 var _ settings.Repository = (*Repository)(nil)

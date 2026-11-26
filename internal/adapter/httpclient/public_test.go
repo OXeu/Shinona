@@ -37,18 +37,22 @@ func TestEndpointMustHaveHTTPAuthority(t *testing.T) {
 	}
 }
 
+type wrappedModelTransport struct{ http.RoundTripper }
+
 func TestTrustedModelOriginAllowsOnlyMatchingHTTPS(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
-	client, err := ForModels(server.URL)
+	policy, err := ParseModelPolicy(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
+	client := policy.Client()
 	transport := client.Transport.(modelTransport)
 	transport.trusted.(*http.Transport).TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
-	if err := CheckModelEndpoint(client, server.URL+"/v1"); err != nil {
+	client.Transport = wrappedModelTransport{client.Transport}
+	if err := policy.CheckEndpoint(server.URL + "/v1"); err != nil {
 		t.Fatal(err)
 	}
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/v1/models", nil)
@@ -64,8 +68,23 @@ func TestTrustedModelOriginAllowsOnlyMatchingHTTPS(t *testing.T) {
 		t.Fatalf("trusted endpoint status: %d", response.StatusCode)
 	}
 	for _, blocked := range []string{"https://127.0.0.1:1/v1", strings.Replace(server.URL, "https://", "http://", 1)} {
-		if err := CheckModelEndpoint(client, blocked); !errors.Is(err, ErrPrivateEndpoint) {
+		if err := policy.CheckEndpoint(blocked); !errors.Is(err, ErrPrivateEndpoint) {
 			t.Errorf("different model origin %q returned %v", blocked, err)
 		}
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, blocked, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Do(request)
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		if !errors.Is(err, ErrPrivateEndpoint) {
+			t.Errorf("wrapped transport allowed a request to %q: %v", blocked, err)
+		}
+	}
+	credentials := strings.Replace(server.URL, "https://", "https://user@", 1)
+	if err := policy.CheckEndpoint(credentials); !errors.Is(err, ErrInvalidEndpoint) {
+		t.Errorf("trusted origin accepted embedded credentials: %v", err)
 	}
 }

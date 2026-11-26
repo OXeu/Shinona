@@ -86,7 +86,7 @@ func TestMCPSettingsBelongToTheAccount(t *testing.T) {
 		t.Fatalf("clearing alice's config changed bob's config: %s", response)
 	}
 	legacy, err := repo.SettingOverrides(ctx)
-	if err != nil || legacy[settings.MCPServers] != "" {
+	if err != nil || legacy.Values[settings.MCPServers] != "" {
 		t.Fatalf("account MCP writes changed instance settings: %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -14,16 +15,91 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 	"github.com/OXeu/shinona/internal/timing"
 )
+
+type pausedSSHMetadataWrite struct {
+	settings.SSHRepository
+	started chan struct{}
+	resume  chan struct{}
+}
+
+func (repo *pausedSSHMetadataWrite) SaveSSHServer(ctx context.Context, owner string, server settings.SSHServer, create bool) error {
+	if server.Name == "Metadata edit" {
+		close(repo.started)
+		<-repo.resume
+	}
+	return repo.SSHRepository.SaveSSHServer(ctx, owner, server, create)
+}
+
+func TestSSHMetadataEditDoesNotOverwriteConcurrentKeyRotation(t *testing.T) {
+	app, repo, _ := settingsTestApp(t, nil)
+	ctx, cancel := context.WithTimeout(auth.WithUser(t.Context(), auth.User{ID: "alice"}), 3*time.Second)
+	defer cancel()
+	hostKey, oldKey := sshTestKey(t)
+	_, newKey := sshTestKey(t)
+	saved, err := app.SaveSSHServer(ctx, settings.SSHServer{
+		SSHServerInfo: settings.SSHServerInfo{Name: "Original", Address: "test.example.com:22", User: "worker",
+			HostFingerprint: ssh.FingerprintSHA256(hostKey.PublicKey())},
+		PrivateKey: oldKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused := &pausedSSHMetadataWrite{SSHRepository: repo, started: make(chan struct{}), resume: make(chan struct{})}
+	app.sshRuntime.repo = paused
+	release := sync.OnceFunc(func() { close(paused.resume) })
+	defer release()
+	mutated := saved
+	mutated.Name = "Metadata edit"
+	metadataDone := make(chan error, 1)
+	go func() {
+		_, err := app.SaveSSHServer(ctx, settings.SSHServer{SSHServerInfo: mutated})
+		metadataDone <- err
+	}()
+	select {
+	case <-paused.started:
+	case <-ctx.Done():
+		t.Fatal("the metadata write did not reach persistence")
+	}
+	rotationDone := make(chan error, 1)
+	go func() {
+		_, err := app.SaveSSHServer(ctx, settings.SSHServer{SSHServerInfo: saved, PrivateKey: newKey})
+		rotationDone <- err
+	}()
+	select {
+	case err := <-rotationDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the pending metadata write blocked key rotation")
+	}
+	release()
+	select {
+	case err := <-metadataDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the metadata update did not finish")
+	}
+	server, err := repo.SSHServer(ctx, "alice", saved.ID)
+	if err != nil || server.Name != mutated.Name || server.PrivateKey != strings.TrimSpace(newKey) {
+		t.Fatalf("SSH metadata save lost an update or rewrote the key: %v", err)
+	}
+}
 
 func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 	app, repo, query := settingsTestApp(t, nil)
@@ -58,6 +134,13 @@ func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 	}
 	if bob := list("bob"); strings.Contains(bob, "East") || strings.Contains(bob, "West") || strings.Contains(bob, "errors") {
 		t.Fatalf("cross-account SSH servers: %s", bob)
+	}
+	defaultServer, err := repo.DefaultSSHServer(t.Context(), "alice")
+	if err != nil || defaultServer.ID != first || defaultServer.PrivateKey != key {
+		t.Fatal("default SSH server did not resolve with the expected credential")
+	}
+	if serialized, err := json.Marshal(defaultServer); err != nil || bytes.Contains(serialized, []byte("PRIVATE KEY")) {
+		t.Fatal("SSH server could expose its credential when serialized")
 	}
 	provider := settings.SSHProviderPrefix + second
 	if response := query("bob", http.MethodPut, "/projects/default/sandbox/config", sandboxInput(provider, "")); !strings.Contains(response, "SANDBOX_PROVIDER_UNAVAILABLE") {
@@ -209,8 +292,11 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	t.Setenv("SHINONA_TRUSTED_SSH_ADDRESSES", listener.Addr().String())
 	app, repo, query := settingsTestApp(t, nil)
 	server := settings.SSHServer{
-		ID: "test-host", Name: "Test host", Address: listener.Addr().String(), User: "worker",
-		Template: "alpine:3", HostFingerprint: ssh.FingerprintSHA256(hostKey.PublicKey()), PrivateKey: key,
+		SSHServerInfo: settings.SSHServerInfo{
+			ID: "test-host", Name: "Test host", Address: listener.Addr().String(), User: "worker",
+			Template: "alpine:3", HostFingerprint: ssh.FingerprintSHA256(hostKey.PublicKey()),
+		},
+		PrivateKey: key,
 	}
 	for _, owner := range []string{"alice", "bob"} {
 		if err := repo.SaveSSHServer(t.Context(), owner, server, true); err != nil {

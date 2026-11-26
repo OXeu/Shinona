@@ -36,8 +36,8 @@ func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Re
 		}
 	})
 	if legacy != nil {
-		if err := repo.SaveSettingOverrides(t.Context(), legacy); err != nil {
-			t.Fatal(err)
+		if saved, err := repo.SaveSettingOverrides(t.Context(), 0, legacy); err != nil || !saved {
+			t.Fatalf("seed instance overrides: %t, %v", saved, err)
 		}
 	}
 	for _, id := range []string{"alice", "bob"} {
@@ -83,13 +83,34 @@ type modelTransport func(*http.Request) (*http.Response, error)
 
 func (f modelTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
+func TestModelSettingsKeepTrustedOriginsWithWrappedTransport(t *testing.T) {
+	const trusted = "https://127.0.0.1:43210"
+	t.Setenv("SHINONA_TRUSTED_MODEL_ORIGINS", trusted)
+	app, repo, query := settingsTestApp(t, nil)
+	app.modelRuntime.client.Transport = modelTransport(app.modelRuntime.client.Transport.RoundTrip)
+	save := func(base string) string {
+		return query("alice", http.MethodPatch, "/settings/model", map[string]any{
+			"changes": []map[string]string{{"key": "modelBaseUrl", "value": base}},
+		})
+	}
+	if response := save(trusted + "/v1"); !strings.Contains(response, trusted+"/v1") {
+		t.Fatalf("saving the trusted origin failed with a wrapped transport: %s", response)
+	}
+	if response := save("https://127.0.0.1:43211/v1"); !strings.Contains(response, "PRIVATE_ENDPOINT") {
+		t.Fatalf("a different private origin was accepted: %s", response)
+	}
+	if values, err := repo.ModelSettings(t.Context(), "alice"); err != nil || values[settings.ModelBaseURL] != trusted+"/v1" {
+		t.Fatalf("failed validation changed the stored base URL: %v", err)
+	}
+}
+
 func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 	t.Setenv("SHINONA_MODEL_API_KEY", "legacy-env-key")
 	app, repo, query := settingsTestApp(t, settings.Values{
 		settings.ModelBaseURL: "https://legacy.example.test/v1", settings.ModelAPIKey: "legacy-db-key", settings.ModelID: "legacy-model",
 	})
 	completions := make(chan string, 2)
-	app.models.client = &http.Client{Transport: modelTransport(func(req *http.Request) (*http.Response, error) {
+	app.modelRuntime.client = &http.Client{Transport: modelTransport(func(req *http.Request) (*http.Response, error) {
 		owner := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
 		var body string
 		switch {
