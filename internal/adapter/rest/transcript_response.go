@@ -83,7 +83,7 @@ func (r *handler) saveTranscriptResponse(c *gin.Context, key transcriptPageKey, 
 func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey, settings run.Settings) error {
 	ctx := c.Request.Context()
 	load := timing.Start(ctx, "transcript_load")
-	page, err := r.service.TranscriptSnapshot(ctx, key.owner, key.session, key.before)
+	page, err := r.service.TranscriptPage(ctx, key.owner, key.session, key.before)
 	load()
 	if err != nil {
 		return err
@@ -103,7 +103,7 @@ func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey,
 			return err
 		}
 		if page != nil {
-			return r.writeTranscriptTurns(ctx, w, page)
+			return r.writeTranscriptTurns(ctx, w, page.Turns)
 		}
 		return nil
 	})
@@ -168,12 +168,12 @@ func writeTranscriptHeader(w io.Writer, summary *run.Session, options *run.Optio
 	return err
 }
 
-func (r *handler) writeTranscriptTurns(ctx context.Context, w io.Writer, batch *run.TranscriptSnapshot) error {
-	for i, turn := range batch.Turns {
+func (r *handler) writeTranscriptTurns(ctx context.Context, w io.Writer, batch []run.Run) error {
+	for _, turn := range batch {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		body, err := r.transcriptTurns.encode(ctx, turn, batch.StoredTurns[i])
+		body, err := r.transcriptTurns.encode(ctx, turn)
 		if err != nil {
 			return err
 		}

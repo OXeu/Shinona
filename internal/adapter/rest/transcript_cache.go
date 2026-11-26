@@ -1,9 +1,7 @@
 package rest
 
 import (
-	"container/list"
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -12,6 +10,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
+	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -28,54 +27,30 @@ type transcriptTurnKey struct {
 	updatedAt          int64
 }
 
-type encodedTranscriptTurn struct {
-	key  transcriptTurnKey
-	body []byte
-	size int
-}
-
 // Completed turns are immutable and can appear in different transcript pages.
 // The repository still checks which turns the current request can see.
 type encodedTranscriptTurns struct {
-	mu      sync.Mutex
-	entries map[transcriptTurnKey]*list.Element
-	order   list.List
-	size    int
+	init    sync.Once
+	cache   *responsecache.Cache[transcriptTurnKey, []byte]
 	loading singleflight.Group
 }
 
 func (c *encodedTranscriptTurns) get(key transcriptTurnKey) []byte {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if element := c.entries[key]; element != nil {
-		c.order.MoveToFront(element)
-		return element.Value.(*encodedTranscriptTurn).body
-	}
-	return nil
+	c.init.Do(func() {
+		c.cache = responsecache.New[transcriptTurnKey, []byte](encodedTranscriptMaxCount, encodedTranscriptCapacity)
+	})
+	body, _ := c.cache.Get(key)
+	return body
 }
 
 func (c *encodedTranscriptTurns) add(key transcriptTurnKey, body []byte) {
 	size := cap(body) + len(key.owner) + len(key.session) + len(key.id) + 160
-	if size > encodedTranscriptMaxTurn {
-		return
+	if size <= encodedTranscriptMaxTurn {
+		c.cache.Put(key, body, size)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.entries == nil {
-		c.entries = make(map[transcriptTurnKey]*list.Element)
-	}
-	for len(c.entries) >= encodedTranscriptMaxCount || c.size+size > encodedTranscriptCapacity {
-		oldest := c.order.Back()
-		entry := oldest.Value.(*encodedTranscriptTurn)
-		delete(c.entries, entry.key)
-		c.order.Remove(oldest)
-		c.size -= entry.size
-	}
-	c.entries[key] = c.order.PushFront(&encodedTranscriptTurn{key: key, body: body, size: size})
-	c.size += size
 }
 
-func (c *encodedTranscriptTurns) encode(ctx context.Context, turn run.Run, stored run.StoredTurnJSON) ([]byte, error) {
+func (c *encodedTranscriptTurns) encode(ctx context.Context, turn run.Run) ([]byte, error) {
 	if !turn.Status.Completed() {
 		return marshalTranscriptTurn(turn)
 	}
@@ -91,7 +66,7 @@ func (c *encodedTranscriptTurns) encode(ctx context.Context, turn run.Run, store
 			return body, nil
 		}
 		defer timing.Start(ctx, "transcript_turn_encode")()
-		body, err := encodeStoredTurn(turn, stored)
+		body, err := marshalTranscriptTurn(turn)
 		if err != nil {
 			return nil, fmt.Errorf("encode transcript turn %s: %w", turn.ID, err)
 		}
@@ -102,20 +77,6 @@ func (c *encodedTranscriptTurns) encode(ctx context.Context, turn run.Run, store
 		return nil, err
 	}
 	return value.([]byte), nil
-}
-
-func encodeStoredTurn(turn run.Run, stored run.StoredTurnJSON) ([]byte, error) {
-	if stored.Parts != "" {
-		if err := json.Unmarshal([]byte(stored.Parts), &turn.Parts); err != nil {
-			return nil, err
-		}
-	}
-	if stored.TokenUsage != "" {
-		if err := json.Unmarshal([]byte(stored.TokenUsage), &turn.TokenUsage); err != nil {
-			return nil, err
-		}
-	}
-	return marshalTranscriptTurn(turn)
 }
 
 func marshalTranscriptTurn(turn run.Run) ([]byte, error) {

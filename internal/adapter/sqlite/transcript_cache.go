@@ -22,7 +22,6 @@ const (
 
 type latestTranscriptKey struct {
 	owner, session string
-	retainJSON     bool
 }
 
 type latestTranscriptPage struct {
@@ -32,7 +31,6 @@ type latestTranscriptPage struct {
 	updatedAt time.Time
 	turnCount int
 	turns     []run.Run
-	stored    []run.StoredTurnJSON
 	next      int
 	bytes     int
 }
@@ -54,17 +52,13 @@ func (c *latestTranscriptCache) get(key latestTranscriptKey) *latestTranscriptPa
 	return nil
 }
 
-func (c *latestTranscriptCache) put(key latestTranscriptKey, page *run.TranscriptSnapshot) {
+func (c *latestTranscriptCache) put(key latestTranscriptKey, page *run.Transcript) {
 	size := latestTranscriptSize(page.Turns)
-	for _, fields := range page.StoredTurns {
-		size += 32 + len(fields.Parts) + len(fields.TokenUsage)
-	}
 	if size > latestTranscriptPageMax {
 		return
 	}
 	entry := &latestTranscriptPage{
 		key: key, head: page.Turns[len(page.Turns)-1].ID, turns: cloneTranscriptTurns(page.Turns),
-		stored:    slices.Clone(page.StoredTurns),
 		createdAt: page.Session.CreatedAt, updatedAt: page.Session.UpdatedAt, turnCount: page.Session.TurnCount,
 		next: page.NextBeforeSequence, bytes: size,
 	}
@@ -99,7 +93,7 @@ func (c *latestTranscriptCache) removeLocked(element *list.Element) {
 	c.order.Remove(element)
 }
 
-func (r *Repository) validateCachedTranscript(ctx context.Context, key latestTranscriptKey, page *latestTranscriptPage) (*run.TranscriptSnapshot, bool, error) {
+func (r *Repository) validateCachedTranscript(ctx context.Context, key latestTranscriptKey, page *latestTranscriptPage) (*run.Transcript, bool, error) {
 	var current struct {
 		Session sessionRow `gorm:"embedded"`
 		HeadID  string
@@ -127,11 +121,8 @@ func (r *Repository) validateCachedTranscript(ctx context.Context, key latestTra
 		return nil, false, nil
 	}
 	defer timing.Start(ctx, "transcript_cache_hit")()
-	return &run.TranscriptSnapshot{
-		Transcript: run.Transcript{
-			Session: describeSession(current.Session), Turns: cloneTranscriptTurns(page.turns), NextBeforeSequence: page.next,
-		},
-		StoredTurns: slices.Clone(page.stored),
+	return &run.Transcript{
+		Session: describeSession(current.Session), Turns: cloneTranscriptTurns(page.turns), NextBeforeSequence: page.next,
 	}, true, nil
 }
 
@@ -163,7 +154,7 @@ func latestTranscriptSize(turns []run.Run) int {
 	size := 1024
 	for _, turn := range turns {
 		size += 512 + len(turn.ID) + len(turn.OwnerID) + len(turn.SessionID) + len(turn.Backend) +
-			len(turn.MachineID) + len(turn.Policy) + len(turn.Status) + len(turn.Prompt) + len(turn.Output) +
+			len(turn.Policy) + len(turn.Status) + len(turn.Prompt) + len(turn.Output) +
 			len(turn.AgentMessages) + len(turn.CompactedContext)
 		options := turn.Payload.Options
 		size += len(options.Model) + len(options.Permission) + len(options.Thinking) + len(options.MCP)

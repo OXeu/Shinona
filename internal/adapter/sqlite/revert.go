@@ -33,12 +33,16 @@ func (r *Repository) RevertTurn(ctx context.Context, ownerID, sessionID, turnID,
 			return err
 		}
 
-		var selected row
-		if err := conversationTurns(tx, ownerID, sessionID).Select("sequence", "prompt", "payload").
-			Take(&selected, "id = ?", turnID).Error; err != nil {
+		var items [1]row
+		selected := &items[0]
+		if err := conversationTurns(tx, ownerID, sessionID).Select("id", "sequence", "prompt", "payload").
+			Take(selected, "id = ?", turnID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return run.ErrHistoryChanged
 			}
+			return err
+		}
+		if err := hydrateRunAttachments(tx, items[:]); err != nil {
 			return err
 		}
 		if err := conversationTurns(tx, ownerID, sessionID).

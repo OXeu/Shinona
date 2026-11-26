@@ -62,25 +62,17 @@ type SessionChanges struct {
 }
 
 const TranscriptPageSize = 30
+const MaxLiveTranscriptTurns = 256
+const MaxActiveSessionTurns = 8
 
 const MaxTranscriptExportTurns = 5000
 
 var ErrTranscriptExportLimit = errors.New("the transcript is too large for an unpaged response")
 
-// MaxLiveTranscriptTurns bounds the initial live subscription snapshot.
-const MaxLiveTranscriptTurns = 256
-
 type Transcript struct {
 	Session            Session
 	Turns              []Run
 	NextBeforeSequence int
-}
-
-// TranscriptSnapshot retains the stored JSON for completed turns in a read
-// snapshot. StoredTurns is indexed in the same order as Turns.
-type TranscriptSnapshot struct {
-	Transcript
-	StoredTurns []StoredTurnJSON
 }
 
 // TranscriptStream reads forward from one durable snapshot. Next is valid
@@ -89,12 +81,7 @@ type TranscriptStream struct {
 	Session     *Session
 	LastOptions *Options
 	TurnCount   int
-	Next        func() (*TranscriptSnapshot, error)
-}
-
-type StoredTurnJSON struct {
-	Parts      string
-	TokenUsage string
+	Next        func() ([]Run, error)
 }
 
 func (t Transcript) LastOptions() *Options {
@@ -192,7 +179,6 @@ type Repository interface {
 	RemoveProject(ctx context.Context, ownerID, id string) error
 	Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*Transcript, error)
 	TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*Transcript, error)
-	TranscriptSnapshot(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*TranscriptSnapshot, error)
 	StreamTranscript(ctx context.Context, ownerID, sessionID string, write func(TranscriptStream) error) error
 	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Image, error)
 	AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error)

@@ -73,9 +73,9 @@ func TestRevertTurnRestoresDraftAndRemovesLaterTurnsFromContext(t *testing.T) {
 	if _, err := repo.RevertTurn(ctx, session.OwnerID, session.ID, second.ID, third.ID, now); !errors.Is(err, run.ErrHistoryChanged) {
 		t.Fatalf("repeat revert: %v", err)
 	}
-	workspace, err := repo.LatestWorkspaceRun(ctx, session.OwnerID, session.ID)
-	if err != nil || workspace == nil || workspace.ID != third.ID {
-		t.Fatalf("latest workspace run: %+v, %v", workspace, err)
+	var retained int64
+	if err := repo.db.WithContext(ctx).Model(&row{}).Where("id IN ? AND reverted_at IS NOT NULL", []string{second.ID, third.ID}).Count(&retained).Error; err != nil || retained != 2 {
+		t.Fatalf("reverted records were not retained: %d, %v", retained, err)
 	}
 	replacement := enqueue("replacement", run.Payload{})
 	complete(replacement)
@@ -93,10 +93,6 @@ func TestRevertTurnRestoresDraftAndRemovesLaterTurnsFromContext(t *testing.T) {
 	history, err := repo.History(ctx, run.Run{OwnerID: session.OwnerID, SessionID: session.ID, Sequence: 3}, 12)
 	if err != nil || len(history) != 2 || history[0].Output != "first reply" || history[1].Output != "replacement reply" {
 		t.Fatalf("model history after revert: %+v, %v", history, err)
-	}
-	workspace, err = repo.LatestWorkspaceRun(ctx, session.OwnerID, session.ID)
-	if err != nil || workspace == nil || workspace.ID != replacement.ID {
-		t.Fatalf("workspace lookup after replacement: %+v, %v", workspace, err)
 	}
 	empty, err := repo.RevertTurn(ctx, session.OwnerID, session.ID, first.ID, replacement.ID, now)
 	if err != nil || empty.Session.TurnCount != 0 || empty.Session.Title != run.DefaultSessionTitle {

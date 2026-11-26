@@ -298,6 +298,7 @@ func TestOpenMigratesSessionAndQueueIndexes(t *testing.T) {
 	if err := old.CreateSession(ctx, run.Session{ID: "stored", OwnerID: "owner", Title: "Stored session"}); err != nil {
 		t.Fatal(err)
 	}
+	asLegacyDatabase(t, old)
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}

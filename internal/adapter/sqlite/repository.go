@@ -86,39 +86,7 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 			return nil, errors.Join(fmt.Errorf("SQLite journal mode is %q, expected WAL", journal), pool.Close())
 		}
 	}
-	if err := migrateWorkspaceRoots(db.WithContext(ctx)); err != nil {
-		return nil, errors.Join(err, pool.Close())
-	}
-	models := []any{&userRow{}, &instanceSettingsRow{}, &deletedAccountRow{}}
-	for _, table := range ownedAccountTables {
-		models = append(models, table)
-	}
-	if err := db.WithContext(ctx).AutoMigrate(models...); err != nil {
-		return nil, errors.Join(err, pool.Close())
-	}
-	// The covering index also serves the old index's session and status lookups.
-	if err := db.WithContext(ctx).Exec("DROP INDEX IF EXISTS idx_runs_session_status").Error; err != nil {
-		return nil, errors.Join(err, pool.Close())
-	}
-	if err := db.WithContext(ctx).Exec(`CREATE INDEX IF NOT EXISTS idx_runs_executing_project
-		ON runs (owner_id, session_id) WHERE status = 'RUNNING'`).Error; err != nil {
-		return nil, errors.Join(err, pool.Close())
-	}
-	if err := protectDeletedAccounts(db.WithContext(ctx)); err != nil {
-		return nil, errors.Join(err, pool.Close())
-	}
-	if err := initSessionCache(db.WithContext(ctx)); err != nil {
-		return nil, errors.Join(err, pool.Close())
-	}
-	if err := initSessionListRevisions(db.WithContext(ctx)); err != nil {
-		return nil, errors.Join(err, pool.Close())
-	}
-	if err := retainE2BProjectProviders(db.WithContext(ctx)); err != nil {
-		return nil, errors.Join(err, pool.Close())
-	}
-	// Existing queued E2B turns should start with the project workspace after upgrade.
-	if err := db.WithContext(ctx).Model(&row{}).Where("backend = ? AND policy = ? AND status = ?", "e2b", sandbox.Fresh, run.Queued).
-		UpdateColumn("policy", sandbox.Shared).Error; err != nil {
+	if err := migrate(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
 	repo := &Repository{db: db, read: db}
@@ -146,6 +114,7 @@ func databaseDSNs(filename string) (write, read string, err error) {
 		return "", "", err
 	}
 	options.Set("_busy_timeout", "5000")
+	options.Set("_foreign_keys", "1")
 	if path == ":memory:" || path == "file::memory:" || options.Get("mode") == "memory" {
 		return path + "?" + options.Encode(), "", nil
 	}
@@ -196,7 +165,23 @@ func closeDB(db *gorm.DB) error {
 }
 
 func (r *Repository) ClaimNext(ctx context.Context, now time.Time) (*run.Run, error) {
-	db := r.db.WithContext(ctx)
+	var records []row
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		records, err = claimNext(tx, now)
+		if err != nil || len(records) == 0 {
+			return err
+		}
+		return hydrateRunAttachments(tx, records)
+	})
+	if err != nil || len(records) == 0 {
+		return nil, err
+	}
+	item := run.Run(records[0])
+	return &item, nil
+}
+
+func claimNext(db *gorm.DB, now time.Time) ([]row, error) {
 	next := db.Table("runs AS candidate").Select("candidate.id").
 		Joins("LEFT JOIN agent_sessions AS workspace ON workspace.id = candidate.session_id AND workspace.owner_id = candidate.owner_id").
 		Where("candidate.status = ? AND candidate.owner_id <> '' AND candidate.session_id <> ''", run.Queued).
@@ -216,11 +201,7 @@ func (r *Repository) ClaimNext(ctx context.Context, now time.Time) (*run.Run, er
 	result := db.Model(&records).Clauses(clause.Returning{}).
 		Where("id = (?) AND status = ?", next, run.Queued).
 		Updates(map[string]any{"status": run.Running, "started_at": now, "updated_at": now})
-	if result.Error != nil || len(records) == 0 {
-		return nil, result.Error
-	}
-	item := run.Run(records[0])
-	return &item, nil
+	return records, result.Error
 }
 
 func (r *Repository) Complete(ctx context.Context, id string, completion run.Completion) error {

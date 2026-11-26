@@ -47,7 +47,7 @@ func initSessionListRevisions(db *gorm.DB) error {
 				}
 				var changes string
 				for _, owner := range operation.owners {
-					predicate := owner + ".owner_id <> ''"
+					predicate := fmt.Sprintf("%[1]s.owner_id <> '' AND NOT EXISTS (SELECT 1 FROM deleted_accounts WHERE id = %[1]s.owner_id)", owner)
 					if operation.name == "update" && owner == "OLD" {
 						predicate += " AND NEW.owner_id <> OLD.owner_id"
 					}
@@ -55,8 +55,11 @@ func initSessionListRevisions(db *gorm.DB) error {
 						SELECT %[1]s.owner_id, 1 WHERE %[2]s
 						ON CONFLICT(owner_id) DO UPDATE SET revision = revision + 1; `, owner, predicate)
 				}
-				trigger := fmt.Sprintf(`CREATE TRIGGER IF NOT EXISTS session_list_%s_%s
-					AFTER %s ON %s %s BEGIN %s END`, table.name, operation.name, operation.event, table.name, when, changes)
+				name := fmt.Sprintf("session_list_%s_%s", table.name, operation.name)
+				if err := tx.Exec("DROP TRIGGER IF EXISTS " + name).Error; err != nil {
+					return err
+				}
+				trigger := fmt.Sprintf(`CREATE TRIGGER %s AFTER %s ON %s %s BEGIN %s END`, name, operation.event, table.name, when, changes)
 				if err := tx.Exec(trigger).Error; err != nil {
 					return err
 				}

@@ -75,20 +75,6 @@ func TestLatestTranscriptCacheTracksPersistedHeadAndSummary(t *testing.T) {
 	enqueue("first")
 	claim("first")
 	complete("first")
-	snapshot, err := reader.TranscriptSnapshot(ctx, owner, id, 0)
-	if err != nil || snapshot == nil || len(snapshot.StoredTurns) != 1 {
-		t.Fatalf("read completed snapshot: %+v, %v", snapshot, err)
-	}
-	stored := snapshot.StoredTurns[0]
-	if stored.Parts != `[{"kind":"text","text":"Original"}]` || stored.TokenUsage != `{"input":3,"cached":0,"output":0}` ||
-		snapshot.Turns[0].Parts != nil || snapshot.Turns[0].TokenUsage != nil {
-		t.Fatalf("snapshot did not retain the stored JSON: %+v", snapshot)
-	}
-	snapshot.StoredTurns[0].Parts = "changed by caller"
-	cached, err := reader.TranscriptSnapshot(ctx, owner, id, 0)
-	if err != nil || cached == nil || len(cached.StoredTurns) != 1 || cached.StoredTurns[0] != stored {
-		t.Fatalf("snapshot exposed mutable cache state: %+v, %v", cached, err)
-	}
 	cold := read(1, run.Succeeded, false)
 	cold.Turns[0].Parts[0].Text = "changed by caller"
 	cold.Turns[0].Payload.Options.MCPServers[0] = "changed by caller"
@@ -120,9 +106,9 @@ func TestLatestTranscriptCacheTracksPersistedHeadAndSummary(t *testing.T) {
 	read(2, run.Queued, false)
 	claim("second")
 	read(2, run.Running, false)
-	active, err := reader.TranscriptSnapshot(ctx, owner, id, 0)
+	active, err := reader.TranscriptPage(ctx, owner, id, 0)
 	if err != nil || active == nil || len(active.Turns) != 2 || active.Turns[1].Status != run.Running ||
-		active.StoredTurns[0] != stored || active.StoredTurns[1] != (run.StoredTurnJSON{}) {
+		active.Turns[0].Parts[0].Text != "Original" || len(active.Turns[1].Parts) != 0 {
 		t.Fatalf("snapshot did not distinguish completed and running turns: %+v, %v", active, err)
 	}
 	complete("second")
@@ -148,5 +134,21 @@ func TestLatestTranscriptCacheTracksPersistedHeadAndSummary(t *testing.T) {
 	}
 	if page, err := reader.TranscriptPage(ctx, owner, id, 0); err != nil || page != nil {
 		t.Fatalf("archived cached transcript: %+v, %v", page, err)
+	}
+}
+
+func TestStoredTranscriptPartsAreAnArray(t *testing.T) {
+	for _, stored := range []string{"", "null", "[]"} {
+		row := transcriptRow{Parts: []byte(stored), TokenUsage: []byte(`{"Input":7}`)}
+		turn, err := row.turn()
+		if err != nil || len(turn.Parts) != 0 || turn.TokenUsage == nil || turn.TokenUsage.Input != 7 {
+			t.Fatalf("parts %q: got %+v, %v", stored, turn, err)
+		}
+	}
+	for _, stored := range []string{`{}`, `[`, `[] {}`} {
+		row := transcriptRow{Parts: []byte(stored)}
+		if _, err := row.turn(); err == nil {
+			t.Errorf("accepted invalid parts %q", stored)
+		}
 	}
 }

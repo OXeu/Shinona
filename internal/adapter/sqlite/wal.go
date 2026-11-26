@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/mattn/go-sqlite3"
@@ -14,6 +16,8 @@ import (
 const (
 	walWriterDriver       = "shinona-sqlite-writer"
 	walCheckpointInterval = 250 * time.Millisecond
+	walCheckpointWarn     = 30 * time.Second
+	walLargeLogPages      = 4096
 )
 
 func init() {
@@ -29,7 +33,15 @@ func init() {
 // startWALCheckpoint moves checkpoint I/O to a dedicated connection. PASSIVE
 // checkpoints can make progress alongside requests and retry on the next tick.
 func startWALCheckpoint(ctx context.Context, dsn string) (func() error, error) {
-	pool, err := sql.Open(sqlite.DriverName, dsn)
+	path, query, _ := strings.Cut(dsn, "?")
+	options, err := url.ParseQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	options.Del("_query_only")
+	// A busy reader must not stall other requests during the fallback.
+	options.Set("_busy_timeout", "0")
+	pool, err := sql.Open(sqlite.DriverName, path+"?"+options.Encode())
 	if err != nil {
 		return nil, err
 	}
@@ -46,16 +58,36 @@ func startWALCheckpoint(ctx context.Context, dsn string) (func() error, error) {
 		ticker := time.NewTicker(walCheckpointInterval)
 		defer ticker.Stop()
 		var previousErr error
+		var stalledSince, warnedAt time.Time
 		for {
 			select {
 			case <-lifetime.Done():
 				return
-			case <-ticker.C:
-				_, err := pool.ExecContext(lifetime, "PRAGMA wal_checkpoint(PASSIVE)")
+			case now := <-ticker.C:
+				var busy, pages, checkpointed int
+				err := pool.QueryRowContext(lifetime, "PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &pages, &checkpointed)
 				if err != nil && previousErr == nil && lifetime.Err() == nil {
 					slog.Warn("SQLite WAL checkpoint failed", "error", err)
 				}
 				previousErr = err
+				if err != nil || pages < walLargeLogPages {
+					stalledSince = time.Time{}
+					continue
+				}
+				if busy == 0 && checkpointed >= pages {
+					err = pool.QueryRowContext(lifetime, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &pages, &checkpointed)
+					if err == nil && busy == 0 {
+						stalledSince = time.Time{}
+						continue
+					}
+				}
+				if stalledSince.IsZero() {
+					stalledSince = now
+				}
+				if now.Sub(stalledSince) >= walCheckpointWarn && now.Sub(warnedAt) >= walCheckpointWarn {
+					slog.Warn("SQLite WAL could not be reset", "pages", pages, "checkpointed", checkpointed, "busy", busy, "error", err)
+					warnedAt = now
+				}
 			}
 		}
 	}()

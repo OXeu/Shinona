@@ -182,6 +182,7 @@ func TestWorkspaceRootMigratesLegacyPreferencesOnce(t *testing.T) {
 	if err := repo.ArchiveSession(ctx, "owner", "archived", now); err != nil {
 		t.Fatal(err)
 	}
+	asLegacyDatabase(t, repo)
 	if err := repo.Close(); err != nil {
 		t.Fatal(err)
 	}

@@ -158,25 +158,16 @@ func (s *Service) TranscriptPage(ctx context.Context, owner, id string, beforeSe
 	return s.withTranscriptProgress(s.repo.TranscriptPage(ctx, owner, id, beforeSequence))
 }
 
-func (s *Service) TranscriptSnapshot(ctx context.Context, owner, id string, beforeSequence int) (*TranscriptSnapshot, error) {
-	snapshot, err := s.repo.TranscriptSnapshot(ctx, owner, id, beforeSequence)
-	if err != nil || snapshot == nil {
-		return snapshot, err
-	}
-	s.addTranscriptProgress(snapshot.Turns)
-	return snapshot, nil
-}
-
 func (s *Service) StreamTranscript(ctx context.Context, owner, id string, write func(TranscriptStream) error) error {
 	progress := s.controls.progress(sessionKey{owner, id})
 	return s.repo.StreamTranscript(ctx, owner, id, func(stream TranscriptStream) error {
 		if stream.Next != nil && progress.TurnID != "" {
 			next := stream.Next
-			stream.Next = func() (*TranscriptSnapshot, error) {
+			stream.Next = func() ([]Run, error) {
 				batch, err := next()
-				if err == nil && batch != nil {
-					for i := range batch.Turns {
-						turn := &batch.Turns[i]
+				if err == nil {
+					for i := range batch {
+						turn := &batch[i]
 						if turn.Status == Running && turn.ID == progress.TurnID {
 							turn.Parts, turn.Steering, turn.LiveContext = progress.Parts, progress.Steering, progress.Context
 						}

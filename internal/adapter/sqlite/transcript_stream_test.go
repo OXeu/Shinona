@@ -35,8 +35,15 @@ func TestTranscriptStreamReadsOrderedBatchesFromOneSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	reader, err := repo.read.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var batches, sequence int
 	err = repo.StreamTranscript(ctx, owner, session, func(stream run.TranscriptStream) error {
+		if inUse := reader.Stats().InUse; inUse != 0 {
+			t.Fatalf("export retained %d database readers while writing", inUse)
+		}
 		if stream.Session == nil || stream.TurnCount != count || stream.LastOptions == nil || stream.LastOptions.Model != fmt.Sprint(count) {
 			t.Fatalf("unexpected transcript header: %+v", stream)
 		}
@@ -45,11 +52,14 @@ func TestTranscriptStreamReadsOrderedBatchesFromOneSnapshot(t *testing.T) {
 			if page == nil || err != nil {
 				return err
 			}
-			batches++
-			if len(page.Turns) > run.TranscriptPageSize {
-				t.Fatalf("stream collected %d turns in one batch", len(page.Turns))
+			if inUse := reader.Stats().InUse; inUse != 0 {
+				t.Fatalf("batch retained %d database readers while writing", inUse)
 			}
-			for _, turn := range page.Turns {
+			batches++
+			if len(page) > run.TranscriptPageSize {
+				t.Fatalf("stream collected %d turns in one batch", len(page))
+			}
+			for _, turn := range page {
 				sequence++
 				if turn.Sequence != sequence {
 					t.Fatalf("turn %s has sequence %d, expected %d", turn.ID, turn.Sequence, sequence)

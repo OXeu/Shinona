@@ -1,11 +1,8 @@
 package sqlite
 
 import (
-	"fmt"
 	"sync"
 	"time"
-
-	"gorm.io/gorm"
 
 	"github.com/OXeu/shinona/internal/auth"
 )
@@ -73,30 +70,4 @@ func (c *sessionCache) invalidateOwner(owner string, err error) {
 			delete(c.entries, key)
 		}
 	}
-}
-
-// Preserve the revision used by older binaries that also access this database.
-func initSessionCache(db *gorm.DB) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec(`CREATE TABLE IF NOT EXISTS session_auth_revision (
-			id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL
-		)`).Error; err != nil {
-			return err
-		}
-		if err := tx.Exec("INSERT OR IGNORE INTO session_auth_revision (id, revision) VALUES (1, 0)").Error; err != nil {
-			return err
-		}
-		for _, table := range []string{"users", "login_sessions"} {
-			for _, op := range []string{"INSERT", "UPDATE", "DELETE"} {
-				query := fmt.Sprintf(`CREATE TRIGGER IF NOT EXISTS session_auth_%s_%s
-					AFTER %s ON %s BEGIN
-						UPDATE session_auth_revision SET revision = revision + 1 WHERE id = 1;
-					END`, table, op, op, table)
-				if err := tx.Exec(query).Error; err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
 }
