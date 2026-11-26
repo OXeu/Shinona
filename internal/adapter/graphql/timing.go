@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 
 	gql "github.com/graph-gophers/graphql-go"
@@ -35,6 +36,14 @@ func (h graphqlHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	response := h.schema.Exec(ctx, input.Query, input.OperationName, input.Variables)
 	executed()
 	encoded := timing.Start(ctx, "graphql_encode")
+	if len(response.Data) != 0 && len(response.Errors) == 0 && len(response.Extensions) == 0 {
+		// The executor has already encoded and escaped the successful result.
+		data := net.Buffers{[]byte(`{"data":`), response.Data, []byte("}")}
+		encoded()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = data.WriteTo(w)
+		return
+	}
 	data, err := json.Marshal(response)
 	encoded()
 	if err != nil {
