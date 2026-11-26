@@ -74,7 +74,7 @@ func (r *Repository) CreatePasswordUser(ctx context.Context, user auth.User, has
 
 func (r *Repository) PasswordUser(ctx context.Context, email string) (auth.User, []byte, error) {
 	var row userRow
-	err := r.db.WithContext(ctx).First(&row, "login = ?", email).Error
+	err := r.read.WithContext(ctx).First(&row, "login = ?", email).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return auth.User{}, nil, nil
 	}
@@ -140,17 +140,34 @@ func saveSession(tx *gorm.DB, key, ownerID string, expiresAt time.Time) error {
 }
 
 func (r *Repository) SessionUser(ctx context.Context, key string, now time.Time) (*auth.User, error) {
-	var user userRow
-	err := r.db.WithContext(ctx).
+	db := r.read.WithContext(ctx)
+	if cached, found := r.sessions.get(key, now); found {
+		var revision int64
+		if err := db.Raw(sessionRevisionSQL).Row().Scan(&revision); err != nil {
+			return nil, err
+		}
+		if revision == cached.revision {
+			return &cached.user, nil
+		}
+	}
+
+	var entry struct {
+		Account       userRow `gorm:"embedded"`
+		SessionExpiry time.Time
+		CacheRevision int64
+	}
+	err := db.Model(&userRow{}).
+		Select("users.*, login_sessions.expires_at AS session_expiry, ("+sessionRevisionSQL+") AS cache_revision").
 		Joins("JOIN login_sessions ON login_sessions.owner_id = users.id").
-		First(&user, "login_sessions.key = ? AND login_sessions.expires_at > ? AND users.disabled = ?", key, now, false).Error
+		Take(&entry, "login_sessions.key = ? AND login_sessions.expires_at > ? AND users.disabled = ?", key, now, false).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	account := user.user()
+	account := entry.Account.user()
+	r.sessions.put(key, cachedSession{user: account, expiresAt: entry.SessionExpiry, revision: entry.CacheRevision})
 	return &account, nil
 }
 

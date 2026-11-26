@@ -12,7 +12,7 @@ import (
 )
 
 func (r *Repository) Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*run.Image, error) {
-	db := r.db.WithContext(ctx)
+	db := r.read.WithContext(ctx)
 	// Keep image bytes out of the transcript and read only the requested attachment.
 	path := "$.images[" + strconv.Itoa(index) + "]"
 	session := sessionScope(db, ownerID).Select("id").Where("id = ?", sessionID)

@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"path/filepath"
@@ -13,6 +14,90 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
+
+func TestFileDatabaseReadsCommittedDataWhileWriting(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "shinona.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	if err := repo.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", Title: "before"}); err != nil {
+		t.Fatal(err)
+	}
+
+	tx := repo.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	if err := tx.Model(&sessionRow{}).Where("id = ?", "session").Update("title", "after").Error; err != nil {
+		t.Fatal(err)
+	}
+	assertTitle := func(want string) {
+		t.Helper()
+		sessions, err := repo.RecentSessions(ctx, "owner", nil, 10)
+		if err != nil || len(sessions) != 1 || sessions[0].Title != want {
+			t.Fatalf("expected title %q: %+v, %v", want, sessions, err)
+		}
+	}
+	assertTitle("before")
+	if err := tx.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	assertTitle("after")
+	if err := repo.read.WithContext(ctx).Exec("UPDATE agent_sessions SET title = 'read pool write'").Error; err == nil {
+		t.Fatal("the read pool accepted a write")
+	}
+}
+
+func TestSessionCacheObservesOtherRepositoryWrites(t *testing.T) {
+	ctx := t.Context()
+	filename := filepath.Join(t.TempDir(), "shinona.db")
+	open := func() *Repository {
+		t.Helper()
+		repo, err := Open(ctx, filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = repo.Close() })
+		return repo
+	}
+	repo, other := open(), open()
+	user := auth.User{ID: "cached-user", Email: "cached@example.test"}
+	now := time.Now().UTC()
+	if err := repo.CreatePasswordUser(ctx, user, []byte("test-digest")); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveSession(ctx, "session-key", user.ID, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	assertAdmin := func(want bool) {
+		t.Helper()
+		account, err := repo.SessionUser(ctx, "session-key", now)
+		if err != nil || account == nil || account.ID != user.ID || account.Admin != want {
+			t.Fatalf("unexpected account privileges: %+v, %v", account, err)
+		}
+	}
+	assertAdmin(false)
+	if _, ok := repo.sessions.get("session-key", now); !ok {
+		t.Fatal("expected the successful session lookup to populate the cache")
+	}
+	if account, err := repo.SessionUser(ctx, "session-key", now.Add(time.Hour)); err != nil || account != nil {
+		t.Fatalf("expired credential resolved to %+v, %v", account, err)
+	}
+	if err := other.SetAdmin(ctx, user.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	assertAdmin(true)
+	if err := other.DeleteSession(ctx, "session-key"); err != nil {
+		t.Fatal(err)
+	}
+	if account, err := repo.SessionUser(ctx, "session-key", now); err != nil || account != nil {
+		t.Fatalf("revoked credential resolved to %+v, %v", account, err)
+	}
+}
 
 func TestHistoryScopesEarlierTurnsAndSkipsCancelledQueueItems(t *testing.T) {
 	ctx := t.Context()

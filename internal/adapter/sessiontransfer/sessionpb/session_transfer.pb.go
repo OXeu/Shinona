@@ -1058,7 +1058,7 @@ type LiveRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	KnownTurns    []*TurnVersion         `protobuf:"bytes,2,rep,name=known_turns,json=knownTurns,proto3" json:"known_turns,omitempty"`
-	Paged         bool                   `protobuf:"varint,3,opt,name=paged,proto3" json:"paged,omitempty"`
+	Paged         *bool                  `protobuf:"varint,3,opt,name=paged,proto3,oneof" json:"paged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1108,8 +1108,8 @@ func (x *LiveRequest) GetKnownTurns() []*TurnVersion {
 }
 
 func (x *LiveRequest) GetPaged() bool {
-	if x != nil {
-		return x.Paged
+	if x != nil && x.Paged != nil {
+		return *x.Paged
 	}
 	return false
 }
@@ -1735,13 +1735,14 @@ const file_session_transfer_proto_rawDesc = "" +
 	"\x05input\x18\x04 \x01(\tR\x05input\x12\x16\n" +
 	"\x06output\x18\x05 \x01(\tR\x06output\x12\x16\n" +
 	"\x06status\x18\x06 \x01(\tR\x06status\x12)\n" +
-	"\x10estimated_tokens\x18\a \x01(\x05R\x0festimatedTokens\"\x85\x01\n" +
+	"\x10estimated_tokens\x18\a \x01(\x05R\x0festimatedTokens\"\x94\x01\n" +
 	"\vLiveRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12A\n" +
 	"\vknown_turns\x18\x02 \x03(\v2 .shinona.sessions.v1.TurnVersionR\n" +
-	"knownTurns\x12\x14\n" +
-	"\x05paged\x18\x03 \x01(\bR\x05paged\"T\n" +
+	"knownTurns\x12\x19\n" +
+	"\x05paged\x18\x03 \x01(\bH\x00R\x05paged\x88\x01\x01B\b\n" +
+	"\x06_paged\"T\n" +
 	"\vTurnVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -1863,6 +1864,7 @@ func file_session_transfer_proto_init() {
 	}
 	file_session_transfer_proto_msgTypes[8].OneofWrappers = []any{}
 	file_session_transfer_proto_msgTypes[9].OneofWrappers = []any{}
+	file_session_transfer_proto_msgTypes[14].OneofWrappers = []any{}
 	file_session_transfer_proto_msgTypes[16].OneofWrappers = []any{
 		(*LiveMessage_Sync)(nil),
 		(*LiveMessage_Progress)(nil),

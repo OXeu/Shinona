@@ -115,6 +115,21 @@ export type ComposerAction = 'send' | 'queue' | 'steer'
 
 const settingsFields = 'available selected'
 
+async function transcriptPage(id: string, signal: AbortSignal, beforeSequence?: number) {
+  return await sessionTransfer.detail(id, signal, beforeSequence) ??
+    graphql<{ session: AgentSession | null; sandboxSettings: SandboxSettings }>(`
+      query Session($id: ID!, $beforeSequence: Int) {
+        session(id: $id, beforeSequence: $beforeSequence) {
+          ${sessionFields}
+          nextBeforeSequence
+          lastOptions { model permission thinking mcpServers arrowJs }
+          turns { ${turnFields} }
+        }
+        sandboxSettings { ${settingsFields} }
+      }
+    `, { id, beforeSequence }, signal)
+}
+
 export const sessionApi = {
   recent: async (projectId: string | null, signal: AbortSignal) =>
     await sessionTransfer.recent(projectId, signal) ?? graphql<{
@@ -127,15 +142,9 @@ export const sessionApi = {
       }
     `, { projectId }, signal),
   closeRecent: sessionTransfer.closeRecent,
-  detail: async (id: string, signal: AbortSignal) =>
-    await sessionTransfer.detail(id, signal) ?? graphql<{ session: AgentSession | null; sandboxSettings: SandboxSettings }>(`
-      query Session($id: ID!) {
-        session(id: $id) { ${sessionFields} lastOptions { model permission thinking mcpServers arrowJs } turns { ${turnFields} } }
-        sandboxSettings { ${settingsFields} }
-      }
-    `, { id }, signal),
+  detail: (id: string, signal: AbortSignal) => transcriptPage(id, signal),
   olderTurns: (id: string, beforeSequence: number, signal: AbortSignal) =>
-    sessionTransfer.detail(id, signal, beforeSequence),
+    transcriptPage(id, signal, beforeSequence),
   create: (projectId: string | null, signal?: AbortSignal) =>
     graphql<{ createSession: SessionSummary }>(`
       mutation CreateSession($projectId: ID) { createSession(projectId: $projectId) { ${sessionFields} } }

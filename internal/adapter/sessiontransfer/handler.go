@@ -36,7 +36,7 @@ const (
 type Reader interface {
 	Projects(context.Context, string) ([]run.Project, error)
 	RecentSessions(context.Context, string, *string) ([]run.Session, error)
-	Transcript(context.Context, string, string) (*run.Transcript, error)
+	FullTranscript(context.Context, string, string) (*run.Transcript, error)
 	TranscriptPage(context.Context, string, string, int) (*run.Transcript, error)
 	Settings(context.Context, string) (run.Settings, error)
 }
@@ -201,13 +201,14 @@ func (h *Handler) Transcript(w http.ResponseWriter, r *http.Request) {
 	}
 	var request struct {
 		ID             string `json:"id"`
-		Paged          bool   `json:"paged"`
+		Paged          *bool  `json:"paged"`
 		BeforeSequence *int32 `json:"beforeSequence"`
 	}
 	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 1024))
 	decode := timing.Start(ctx, "transcript_decode")
 	valid := decoder.Decode(&request) == nil && request.ID != "" && errors.Is(decoder.Decode(new(any)), io.EOF)
-	valid = valid && (request.BeforeSequence == nil || (request.Paged && *request.BeforeSequence > 0))
+	paged := request.Paged == nil || *request.Paged
+	valid = valid && (request.BeforeSequence == nil || (paged && *request.BeforeSequence > 0))
 	decode()
 	if !valid {
 		http.Error(w, "Invalid transcript request.", http.StatusBadRequest)
@@ -216,14 +217,14 @@ func (h *Handler) Transcript(w http.ResponseWriter, r *http.Request) {
 	load := timing.Start(ctx, "transcript_load")
 	var transcript *run.Transcript
 	var err error
-	if request.Paged {
+	if paged {
 		before := 0
 		if request.BeforeSequence != nil {
 			before = int(*request.BeforeSequence)
 		}
 		transcript, err = h.reader.TranscriptPage(ctx, owner, request.ID, before)
 	} else {
-		transcript, err = h.reader.Transcript(ctx, owner, request.ID)
+		transcript, err = h.reader.FullTranscript(ctx, owner, request.ID)
 	}
 	load()
 	if err != nil {

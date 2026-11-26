@@ -43,6 +43,10 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	if err != nil {
 		return err
 	}
+	proxies, err := trustedProxyNetworks(environment.value("SHINONA_TRUSTED_PROXIES", ""))
+	if err != nil {
+		return err
+	}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", address)
 	if err != nil {
 		return err
@@ -83,6 +87,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	authConfig := func() httpauth.Config {
 		current := config.Auth()
 		current.AccountDeleted = service.AccountDeleted
+		current.TrustedProxies = proxies
 		return current
 	}
 	authHandler := httpauth.NewWithConfig(auth.New(repository, password.Argon2id{}, uuid.NewString), authConfig, logger)

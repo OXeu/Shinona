@@ -22,7 +22,7 @@ func (projectSandboxRow) TableName() string { return "project_sandbox_settings" 
 
 func (r *Repository) ProjectSandboxConfig(ctx context.Context, ownerID, projectID string) (*run.ProjectSandboxConfig, error) {
 	var record projectSandboxRow
-	err := r.db.WithContext(ctx).Take(&record, "owner_id = ? AND project_id = ?", ownerID, projectID).Error
+	err := r.read.WithContext(ctx).Take(&record, "owner_id = ? AND project_id = ?", ownerID, projectID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}

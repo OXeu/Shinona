@@ -14,7 +14,7 @@ type Query {
   projectSandbox(projectId: ID!): ProjectSandbox!
   # Omit projectId for all projects. An empty ID selects the default project.
   sessions(projectId: ID): [SessionSummary!]!
-  session(id: ID!): AgentSession
+  session(id: ID!, beforeSequence: Int, paged: Boolean): AgentSession
   sandboxSettings: SandboxSettings!
   workspaceRoot(sessionId: ID!): String!
   workspaceChanges(sessionId: ID!): WorkspaceChanges!
@@ -193,6 +193,7 @@ type AgentSession {
   active: Boolean!
   unread: Boolean!
   turns: [Run!]!
+  nextBeforeSequence: Int!
   lastOptions: RunOptions
 }
 

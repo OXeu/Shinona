@@ -116,7 +116,7 @@ message TurnPart {
 message LiveRequest {
   string session_id = 1;
   repeated TurnVersion known_turns = 2;
-  bool paged = 3;
+  optional bool paged = 3;
 }
 
 message TurnVersion {

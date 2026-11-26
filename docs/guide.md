@@ -41,6 +41,8 @@ Shinona supports English (US), Simplified Chinese (China), and Traditional Chine
 
 Set the listen address with `SHINONA_ADDR`, the SQLite path with `SHINONA_DATABASE`, and the browser origin with `SHINONA_WEB_ORIGIN` in the startup environment or `.env`. If upgrading from a release with a saved Web origin, copy its value to `SHINONA_WEB_ORIGIN` before restarting. Shinona removes retired settings from SQLite at startup.
 
+Password and OAuth sign-in limits are per IP. If you run Shinona behind a reverse proxy, set `SHINONA_TRUSTED_PROXIES` to the proxy's CIDR range and have the proxy append the client address to `X-Forwarded-For`.
+
 **Sandbox** and **Shinona SSO** configure the instance. These settings use saved SQLite overrides first, then the startup environment, then built-in defaults. **Use startup value** removes an individual override. Each account configures its own **Model** and **MCP servers**. Those endpoints use public network addresses by default. An operator can allow specific private model endpoints by listing their HTTPS origins in `SHINONA_TRUSTED_MODEL_ORIGINS`. After upgrading from shared settings, enter the model and MCP settings for each account. Save applies a validated change without restarting Shinona.
 
 Grant an existing account access to instance settings by ID. Use the ID printed by `create-user` or returned by `GET /auth/session` for a signed-in account.
@@ -157,7 +159,7 @@ The SSH provider creates one container per account and project and starts comman
 
 ## Session transfer
 
-Shinona reads the session list as a Brotli-compressed Protobuf page over a reusable WebSocket. It reads transcripts over HTTP as length-prefixed, Zstandard-compressed Protobuf frames with up to eight turns each. The browser applies a transcript after its completion frame arrives. Both use the existing authenticated read service. The transcript includes all visible turns in the session. GraphQL handles writes and provides compatible reads when the binary route is unavailable.
+Shinona reads the session list as a Brotli-compressed Protobuf page over a reusable WebSocket. It reads transcripts over HTTP as length-prefixed, Zstandard-compressed Protobuf frames with up to eight turns each. The browser applies a transcript after its completion frame arrives. Transcript reads default to the latest 30 turns and return a cursor that the browser uses to load older turns. GraphQL handles writes and provides the same pagination when the binary route is unavailable.
 
 An open conversation receives Zstandard-compressed Protobuf updates over a WebSocket. Growing text and tool output are sent as appended text. Changes to the turn list or status include changed turn records. The browser reconciles with the current transcript on reconnect and polls about once per second while an active session's live socket is unavailable. Intermediate progress can coalesce for slow viewers. The server sends a heartbeat every 15 seconds and checks the login cookie when it sends an update.
 
@@ -176,7 +178,7 @@ Firefox displays phase durations in the Network Timings panel in a secure contex
 | Sign-in and OAuth | Session lookup, password lookup and verification on successful sign-in, session creation, OIDC token exchange and verification, MCP resource and issuer discovery, registration, and grant persistence. |
 | GraphQL | JSON decoding and encoding, validation, execution, and each executed root field. Model discovery reports upstream HTTP, catalog decoding, normalization, and caller wait time. Workspace operations report sandbox acquisition, command execution, file reads, and release when used. |
 | SQLite-backed APIs | `sqlite` sums GORM statement durations, including row scanning, across the request. |
-| Transcript and attachments | Transcript request decoding, transcript and settings retrieval, and first-frame encoding. Attachments report retrieval and image decoding. The transcript's final `Server-Timing` trailer reports frame assembly, Protobuf encoding, Zstandard compression, and socket writes across the stream. Vite forwards this trailer. Use an HTTP client that reads trailers to inspect the full stream. |
+| Transcript and attachments | Transcript request decoding, transcript and settings retrieval, stored turn JSON decoding (`transcript_json`), and first-frame encoding. Attachments report retrieval and image decoding. The transcript's final `Server-Timing` trailer reports frame assembly, Protobuf encoding, Zstandard compression, and socket writes across the stream. Vite forwards this trailer. Use an HTTP client that reads trailers to inspect the full stream. |
 | Live sessions and terminals | The WebSocket handshake includes completed request phases. When a connection closes, the server logs aggregate phase durations and counts for session-list queries, bootstrap, resync, live deltas, encoding, compression, and socket writes as applicable. Terminal startup logs sandbox acquisition and PTY allocation when they finish, and terminal connections log input, resize, and output writes at close. |
 
 | Layer | Responsibility |
@@ -193,7 +195,7 @@ The API uses one Go process and one worker. A turn begins with one user submissi
 
 Shinona keeps a live preview and stores up to 48 thinking, intermediate text, or tool segments per turn. Preview text and tool output can use up to 8 KiB each, and tool input can use up to 4 KiB. These preview limits apply to the recorded trace.
 
-Model requests carry the prompts, images the model supports, delivered steering, and saved final answers from all earlier processed turns in the same session. Reverted turns and submissions cancelled before processing stay out of model history. The conversation list returns the newest 30 sessions. The transcript loads the entire session.
+Model requests carry the prompts, images the model supports, delivered steering, and saved final answers from all earlier processed turns in the same session. Reverted turns and submissions cancelled before processing stay out of model history. The conversation list returns the newest 30 sessions.
 
 The worker runs until the agent finishes or errors, the user stops it, or the server shuts down. Shinona sends model requests without a per-call deadline or token cap. Model endpoints still enforce their context windows, output defaults, and quotas.
 

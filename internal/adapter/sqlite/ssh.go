@@ -25,7 +25,7 @@ func (sshServerRow) TableName() string { return "ssh_servers" }
 
 func (r *Repository) SSHServers(ctx context.Context, owner string) ([]settings.SSHServer, error) {
 	var records []sshServerRow
-	err := r.db.WithContext(ctx).Omit("private_key").Where("owner_id = ?", owner).Order("name COLLATE NOCASE, id").Find(&records).Error
+	err := r.read.WithContext(ctx).Omit("private_key").Where("owner_id = ?", owner).Order("name COLLATE NOCASE, id").Find(&records).Error
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func (r *Repository) SSHServers(ctx context.Context, owner string) ([]settings.S
 }
 
 func (r *Repository) SSHServer(ctx context.Context, owner, id string) (settings.SSHServer, error) {
-	record, err := findSSHServer(r.db.WithContext(ctx), owner, id)
+	record, err := findSSHServer(r.read.WithContext(ctx), owner, id)
 	return record.server(), err
 }
 

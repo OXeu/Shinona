@@ -61,7 +61,7 @@ func (r *Repository) UpdateProfile(ctx context.Context, owner string, change aut
 
 func (r *Repository) AccountAvatar(ctx context.Context, owner, version string) (*auth.Avatar, error) {
 	var row avatarRow
-	err := r.db.WithContext(ctx).First(&row, "owner_id = ? AND version = ?", owner, version).Error
+	err := r.read.WithContext(ctx).First(&row, "owner_id = ? AND version = ?", owner, version).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, auth.ErrAccountMissing
 	}
@@ -72,7 +72,7 @@ func (r *Repository) AccountAvatar(ctx context.Context, owner, version string) (
 }
 
 func (r *Repository) AccountCredentials(ctx context.Context, owner, sessionKey string, now time.Time) (auth.CredentialState, error) {
-	return accountCredentials(r.db.WithContext(ctx), owner, sessionKey, now)
+	return accountCredentials(r.read.WithContext(ctx), owner, sessionKey, now)
 }
 
 func accountCredentials(db *gorm.DB, owner, sessionKey string, now time.Time) (auth.CredentialState, error) {
@@ -177,7 +177,7 @@ func (r *Repository) VerifyEmailChallenge(ctx context.Context, owner, sessionKey
 
 func (r *Repository) ListAccounts(ctx context.Context, search string, offset, limit int) (auth.AccountPage, error) {
 	page := auth.AccountPage{Users: make([]auth.User, 0)}
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		query := tx.Model(&userRow{})
 		if search != "" {
 			escaped := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(search)

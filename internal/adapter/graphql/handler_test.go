@@ -181,6 +181,46 @@ func TestComposerDefaultsAreAccountScopedAndValidated(t *testing.T) {
 	}
 }
 
+func TestSessionTranscriptDefaultsToLatestPage(t *testing.T) {
+	ctx := auth.WithUser(t.Context(), auth.User{ID: "alice"})
+	repo, err := sqlite.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	service := run.NewService(repo, nil, nil, &run.Controls{}, nil)
+	handler, err := graphql.NewHandler(service, application{}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := repo.CreateSession(ctx, run.Session{ID: "history", OwnerID: "alice", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for range run.TranscriptPageSize + 1 {
+		item := run.Run{ID: uuid.NewString(), OwnerID: "alice", SessionID: "history", Status: run.Queued, CreatedAt: now, UpdatedAt: now}
+		if _, err := repo.Enqueue(ctx, item, "History", false); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.ClaimNext(ctx, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.Complete(ctx, item.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest := query(t, handler, ctx, `{ session(id:"history") { turnCount nextBeforeSequence turns { sequence } } }`, nil)
+	if page := latest.Data.Session; len(latest.Errors) != 0 || page == nil || page.TurnCount != run.TranscriptPageSize+1 ||
+		len(page.Turns) != run.TranscriptPageSize || page.Turns[0].Sequence != 2 || page.NextBeforeSequence != 2 {
+		t.Fatalf("latest transcript page: %+v", latest)
+	}
+	older := query(t, handler, ctx, `{ session(id:"history", beforeSequence:2) { nextBeforeSequence turns { sequence } } }`, nil)
+	if page := older.Data.Session; len(older.Errors) != 0 || page == nil || len(page.Turns) != 1 ||
+		page.Turns[0].Sequence != 1 || page.NextBeforeSequence != 0 {
+		t.Fatalf("older transcript page: %+v", older)
+	}
+}
+
 func TestProjectSessionsAndOwnership(t *testing.T) {
 	repo, err := sqlite.Open(t.Context(), ":memory:")
 	if err != nil {
@@ -312,6 +352,7 @@ func waitForTurn(t *testing.T, handler http.Handler, ctx context.Context, id str
 
 type turnResult struct {
 	ID        string
+	Sequence  int
 	Status    run.Status
 	Output    string
 	Policy    string
@@ -320,13 +361,14 @@ type turnResult struct {
 }
 
 type sessionResult struct {
-	ID           string
-	ProjectID    *string
-	DefaultTitle bool
-	Title        string
-	TurnCount    int
-	LastOptions  *struct{ ArrowJS bool }
-	Turns        []turnResult
+	ID                 string
+	ProjectID          *string
+	DefaultTitle       bool
+	Title              string
+	TurnCount          int
+	NextBeforeSequence int
+	LastOptions        *struct{ ArrowJS bool }
+	Turns              []turnResult
 }
 
 type projectResult struct {

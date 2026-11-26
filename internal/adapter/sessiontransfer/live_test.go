@@ -144,7 +144,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		payload, err := proto.Marshal(&sessionpb.LiveRequest{SessionId: entry.ID, KnownTurns: known, Paged: true})
+		payload, err := proto.Marshal(&sessionpb.LiveRequest{SessionId: entry.ID, KnownTurns: known})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -30,7 +30,7 @@ func (*modelSettingsRow) TableName() string { return "model_settings" }
 func (r *Repository) ModelSettings(ctx context.Context, owner string) (settings.Values, error) {
 	values := make(settings.Values)
 	var record modelSettingsRow
-	err := r.db.WithContext(ctx).First(&record, "owner_id = ?", owner).Error
+	err := r.read.WithContext(ctx).First(&record, "owner_id = ?", owner).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return values, nil
 	}
@@ -57,7 +57,7 @@ func (r *Repository) SaveModelSettings(ctx context.Context, owner string, values
 func (r *Repository) SettingOverrides(ctx context.Context) (settings.Values, error) {
 	result := make(settings.Values)
 	var record instanceSettingsRow
-	err := r.db.WithContext(ctx).First(&record, instanceSettingsID).Error
+	err := r.read.WithContext(ctx).First(&record, instanceSettingsID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return result, nil
 	}

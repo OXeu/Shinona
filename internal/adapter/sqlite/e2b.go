@@ -20,7 +20,7 @@ func (e2bWorkspaceRow) TableName() string { return "e2b_project_workspaces" }
 
 func (r *Repository) E2BSandbox(ctx context.Context, ownerID, projectID, endpoint string) (string, []byte, error) {
 	var record e2bWorkspaceRow
-	err := r.db.WithContext(ctx).Select("sandbox_id", "credentials").Take(&record,
+	err := r.read.WithContext(ctx).Select("sandbox_id", "credentials").Take(&record,
 		"owner_id = ? AND project_id = ? AND endpoint = ?", ownerID, projectID, endpoint).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", nil, nil

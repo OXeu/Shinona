@@ -3,9 +3,13 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"runtime"
+	"strings"
 	"time"
 
 	"gorm.io/driver/sqlite"
@@ -47,7 +51,9 @@ type row struct {
 func (row) TableName() string { return "runs" }
 
 type Repository struct {
-	db *gorm.DB
+	db       *gorm.DB
+	read     *gorm.DB
+	sessions sessionCache
 }
 
 type timingLogger struct{ logger.Interface }
@@ -57,16 +63,23 @@ func (timingLogger) Trace(ctx context.Context, begin time.Time, _ func() (string
 }
 
 func Open(ctx context.Context, filename string) (*Repository, error) {
-	db, err := gorm.Open(sqlite.Open(filename), &gorm.Config{Logger: timingLogger{logger.Default.LogMode(logger.Silent)}})
+	writeDSN, readDSN, err := databaseDSNs(filename)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := db.DB()
+	db, pool, err := openDB(writeDSN, 1)
 	if err != nil {
 		return nil, err
 	}
-	// A single connection serializes SQLite writes and supports in-memory tests.
-	pool.SetMaxOpenConns(1)
+	if readDSN != "" {
+		var journal string
+		if err := db.WithContext(ctx).Raw("PRAGMA journal_mode").Row().Scan(&journal); err != nil {
+			return nil, errors.Join(err, pool.Close())
+		}
+		if journal != "wal" {
+			return nil, errors.Join(fmt.Errorf("SQLite journal mode is %q, expected WAL", journal), pool.Close())
+		}
+	}
 	models := []any{&userRow{}, &instanceSettingsRow{}, &deletedAccountRow{}}
 	for _, table := range ownedAccountTables {
 		models = append(models, table)
@@ -77,6 +90,9 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 	if err := protectDeletedAccounts(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
+	if err := initSessionCache(db.WithContext(ctx)); err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
 	if err := retainE2BProjectProviders(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
@@ -85,11 +101,66 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 		UpdateColumn("policy", sandbox.Shared).Error; err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
-	return &Repository{db: db}, nil
+	read := db
+	if readDSN != "" {
+		read, _, err = openDB(readDSN, min(max(runtime.GOMAXPROCS(0), 2), 16))
+		if err != nil {
+			return nil, errors.Join(err, pool.Close())
+		}
+	}
+	return &Repository{db: db, read: read}, nil
+}
+
+func databaseDSNs(filename string) (write, read string, err error) {
+	path, query, _ := strings.Cut(filename, "?")
+	if path == "" {
+		return filename, "", nil
+	}
+	options, err := url.ParseQuery(query)
+	if err != nil {
+		return "", "", err
+	}
+	options.Set("_busy_timeout", "5000")
+	if path == ":memory:" || path == "file::memory:" || options.Get("mode") == "memory" {
+		return path + "?" + options.Encode(), "", nil
+	}
+
+	options.Del("_journal")
+	options.Del("_sync")
+	options.Set("_journal_mode", "WAL")
+	options.Set("_synchronous", "NORMAL")
+	options.Set("_txlock", "immediate")
+	write = path + "?" + options.Encode()
+	options.Del("_journal_mode")
+	options.Set("_txlock", "deferred")
+	options.Set("_query_only", "1")
+	return write, path + "?" + options.Encode(), nil
+}
+
+func openDB(dsn string, maxConnections int) (*gorm.DB, *sql.DB, error) {
+	pool, err := sql.Open(sqlite.DriverName, dsn)
+	if err != nil {
+		return nil, nil, err
+	}
+	pool.SetMaxOpenConns(maxConnections)
+	pool.SetMaxIdleConns(maxConnections)
+	db, err := gorm.Open(sqlite.New(sqlite.Config{Conn: pool}), &gorm.Config{Logger: timingLogger{logger.Default.LogMode(logger.Silent)}})
+	if err != nil {
+		return nil, nil, errors.Join(err, pool.Close())
+	}
+	return db, pool, nil
 }
 
 func (r *Repository) Close() error {
-	pool, err := r.db.DB()
+	var readErr error
+	if r.read != r.db {
+		readErr = closeDB(r.read)
+	}
+	return errors.Join(readErr, closeDB(r.db))
+}
+
+func closeDB(db *gorm.DB) error {
+	pool, err := db.DB()
 	if err != nil {
 		return err
 	}

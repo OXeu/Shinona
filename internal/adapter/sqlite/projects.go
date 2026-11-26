@@ -34,7 +34,7 @@ func (r *Repository) CreateProject(ctx context.Context, project run.Project) err
 
 func (r *Repository) Projects(ctx context.Context, ownerID string) ([]run.Project, error) {
 	var records []projectRow
-	if err := r.db.WithContext(ctx).Where("owner_id = ?", ownerID).Order("name COLLATE NOCASE, id").Find(&records).Error; err != nil {
+	if err := r.read.WithContext(ctx).Where("owner_id = ?", ownerID).Order("name COLLATE NOCASE, id").Find(&records).Error; err != nil {
 		return nil, err
 	}
 	projects := make([]run.Project, len(records))
@@ -46,7 +46,7 @@ func (r *Repository) Projects(ctx context.Context, ownerID string) ([]run.Projec
 
 func (r *Repository) Project(ctx context.Context, ownerID, id string) (run.Project, error) {
 	var record projectRow
-	err := r.db.WithContext(ctx).Take(&record, "owner_id = ? AND id = ?", ownerID, id).Error
+	err := r.read.WithContext(ctx).Take(&record, "owner_id = ? AND id = ?", ownerID, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return run.Project{}, run.ErrProject
 	}

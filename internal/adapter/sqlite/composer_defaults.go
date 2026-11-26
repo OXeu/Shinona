@@ -21,7 +21,7 @@ func (composerDefaultsRow) TableName() string { return "composer_defaults" }
 
 func (r *Repository) ComposerDefaults(ctx context.Context, ownerID string) (*run.ComposerDefaults, error) {
 	var record composerDefaultsRow
-	err := r.db.WithContext(ctx).Take(&record, "owner_id = ?", ownerID).Error
+	err := r.read.WithContext(ctx).Take(&record, "owner_id = ?", ownerID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}

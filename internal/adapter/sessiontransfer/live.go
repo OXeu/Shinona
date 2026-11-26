@@ -108,7 +108,7 @@ func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func
 			defer timing.Start(ctx, "websocket_write")()
 			return conn.WriteMessage(websocket.BinaryMessage, compressed)
 		}
-		state := liveConnection{paged: request.Paged, known: known}
+		state := liveConnection{paged: request.Paged == nil || *request.Paged, known: known}
 		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send)
 		switch {
 		case errors.Is(err, errLiveAuth):
@@ -165,7 +165,7 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 		if state.paged {
 			page, err = h.reader.TranscriptPage(ctx, owner, id, 0)
 		} else {
-			page, err = h.reader.Transcript(ctx, owner, id)
+			page, err = h.reader.FullTranscript(ctx, owner, id)
 		}
 		load()
 		if err != nil {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -34,14 +35,15 @@ type Config struct {
 	Secure         bool
 	FlowVersion    string
 	AccountDeleted func(string)
+	TrustedProxies []netip.Prefix
 }
 
 type Handler struct {
 	service       *auth.Service
 	config        func() Config
 	logger        *slog.Logger
-	loginRate     *rate.Limiter
-	oauthRate     *rate.Limiter
+	loginRate     loginRate
+	oauthRate     loginRate
 	accountRate   *rate.Limiter
 	passwordSlots chan struct{}
 }
@@ -53,8 +55,6 @@ func New(service *auth.Service, oauth OAuthProvider, secure bool, logger *slog.L
 func NewWithConfig(service *auth.Service, config func() Config, logger *slog.Logger) *Handler {
 	return &Handler{
 		service: service, config: config, logger: logger,
-		loginRate:     rate.NewLimiter(rate.Every(time.Second), 5),
-		oauthRate:     rate.NewLimiter(rate.Every(time.Second), 5),
 		accountRate:   rate.NewLimiter(rate.Every(time.Second), 5),
 		passwordSlots: make(chan struct{}, 2),
 	}
@@ -136,7 +136,7 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
-	if !h.loginRate.Allow() {
+	if !h.loginRate.allow(loginIP(r, h.config().TrustedProxies), time.Now()) {
 		authError(w, "AUTH_RATE_LIMITED", "Too many sign-in attempts. Try again shortly.", http.StatusTooManyRequests)
 		return
 	}
@@ -190,7 +190,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	config := h.config()
-	if config.OAuth == nil || !h.oauthRate.Allow() {
+	if config.OAuth == nil || !h.oauthRate.allow(loginIP(r, config.TrustedProxies), time.Now()) {
 		http.Redirect(w, r, "/login?oauth=failed", http.StatusSeeOther)
 		return
 	}

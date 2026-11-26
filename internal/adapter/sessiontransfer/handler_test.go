@@ -45,7 +45,7 @@ func (fixtureReader) Settings(context.Context, string) (run.Settings, error) {
 
 const fixtureUISpec = `{"root":"total","elements":{"total":{"type":"Metric","props":{"label":"Total","value":"42"}}}}`
 
-func (fixtureReader) Transcript(_ context.Context, owner, id string) (*run.Transcript, error) {
+func (fixtureReader) FullTranscript(_ context.Context, owner, id string) (*run.Transcript, error) {
 	if id != owner {
 		return nil, nil
 	}
@@ -61,7 +61,7 @@ func (fixtureReader) Transcript(_ context.Context, owner, id string) (*run.Trans
 }
 
 func (f fixtureReader) TranscriptPage(ctx context.Context, owner, id string, before int) (*run.Transcript, error) {
-	page, err := f.Transcript(ctx, owner, id)
+	page, err := f.FullTranscript(ctx, owner, id)
 	if page != nil {
 		end := len(page.Turns)
 		if before > 0 {
@@ -174,10 +174,12 @@ func TestTranscriptFramesAndOwnership(t *testing.T) {
 		first, last, next int32
 		invalidCursor     bool
 	}{
-		{owner: "owner", body: `{"id":"owner"}`},
+		{owner: "owner", body: `{"id":"owner","paged":false}`},
+		{owner: "owner", body: `{"id":"owner"}`, first: 6, last: 10, next: 6},
 		{owner: "other", body: `{"id":"owner","paged":true,"beforeSequence":6}`},
 		{owner: "owner", body: `{"id":"owner","paged":true}`, first: 6, last: 10, next: 6},
-		{owner: "owner", body: `{"id":"owner","paged":true,"beforeSequence":6}`, first: 1, last: 5},
+		{owner: "owner", body: `{"id":"owner","beforeSequence":6}`, first: 1, last: 5},
+		{owner: "owner", body: `{"id":"owner","paged":false,"beforeSequence":6}`, invalidCursor: true},
 		{owner: "owner", body: `{"id":"owner","paged":true,"beforeSequence":0}`, invalidCursor: true},
 	} {
 		request := httptest.NewRequest(http.MethodPost, TranscriptPath, strings.NewReader(tc.body))

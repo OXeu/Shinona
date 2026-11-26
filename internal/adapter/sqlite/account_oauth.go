@@ -11,7 +11,7 @@ import (
 )
 
 func (r *Repository) HasOAuthIdentity(ctx context.Context, owner string) (bool, error) {
-	return hasOAuthIdentity(r.db.WithContext(ctx), owner)
+	return hasOAuthIdentity(r.read.WithContext(ctx), owner)
 }
 
 func hasOAuthIdentity(db *gorm.DB, owner string) (bool, error) {

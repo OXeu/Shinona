@@ -21,7 +21,7 @@ type workspaceRootRow struct {
 func (workspaceRootRow) TableName() string { return "workspace_roots" }
 
 func (r *Repository) WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error) {
-	db := r.db.WithContext(ctx)
+	db := r.read.WithContext(ctx)
 	if err := sessionScope(db, ownerID).Select("id").Take(&sessionRow{}, "id = ?", sessionID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", run.ErrSession

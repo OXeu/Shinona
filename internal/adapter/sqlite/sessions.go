@@ -2,8 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"slices"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 type sessionRow struct {
@@ -87,7 +89,7 @@ func (r *Repository) RecentSessions(ctx context.Context, ownerID string, project
 
 func (r *Repository) recentSessions(ctx context.Context, ownerID string, projectID *string, limit, offset int) ([]run.Session, error) {
 	var records []sessionRow
-	query := sessionScope(r.db.WithContext(ctx), ownerID)
+	query := sessionScope(r.read.WithContext(ctx), ownerID)
 	if projectID != nil {
 		query = query.Where("project_id = ?", *projectID)
 	}
@@ -101,7 +103,7 @@ func (r *Repository) recentSessions(ctx context.Context, ownerID string, project
 }
 
 func (r *Repository) LatestWorkspaceRun(ctx context.Context, ownerID, sessionID string) (*run.Run, error) {
-	db := r.db.WithContext(ctx)
+	db := r.read.WithContext(ctx)
 	session := sessionScope(db, ownerID).Select("id").Where("id = ?", sessionID)
 	var record row
 	err := db.Select("id", "backend", "policy", "machine_id").
@@ -117,7 +119,7 @@ func (r *Repository) LatestWorkspaceRun(ctx context.Context, ownerID, sessionID 
 
 func (r *Repository) SessionProject(ctx context.Context, ownerID, sessionID string) (string, error) {
 	var record sessionRow
-	err := sessionScope(r.db.WithContext(ctx), ownerID).Select("project_id").Take(&record, "id = ?", sessionID).Error
+	err := sessionScope(r.read.WithContext(ctx), ownerID).Select("project_id").Take(&record, "id = ?", sessionID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", run.ErrSession
 	}
@@ -139,9 +141,39 @@ type transcriptWindow struct {
 	paged  bool
 }
 
+// Keep JSON as bytes until the read transaction has released its connection.
+type transcriptRow struct {
+	Run        row `gorm:"embedded"`
+	Payload    []byte
+	Steering   []byte
+	Parts      []byte
+	TokenUsage []byte
+}
+
+func (record *transcriptRow) turn() (run.Run, error) {
+	turn := run.Run(record.Run)
+	for _, field := range []struct {
+		data []byte
+		dest any
+	}{
+		{record.Payload, &turn.Payload},
+		{record.Steering, &turn.Steering},
+		{record.Parts, &turn.Parts},
+		{record.TokenUsage, &turn.TokenUsage},
+	} {
+		if len(field.data) != 0 {
+			if err := json.Unmarshal(field.data, field.dest); err != nil {
+				return run.Run{}, fmt.Errorf("decode transcript turn %s: %w", turn.ID, err)
+			}
+		}
+	}
+	return turn, nil
+}
+
 func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, window transcriptWindow) (*run.Transcript, error) {
 	var result *run.Transcript
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var turns []transcriptRow
+	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
 		err := withActivity(sessionScope(tx, ownerID)).First(&session, "id = ?", sessionID).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -150,7 +182,6 @@ func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, 
 		if err != nil {
 			return err
 		}
-		var turns []row
 		// Project image metadata by index. Reading json_each.value would
 		// materialize the entire image, including its base64 data.
 		query := conversationTurns(tx, ownerID, sessionID).Select(`id, owner_id, session_id, sequence, policy, backend, machine_id, prompt,
@@ -178,10 +209,9 @@ func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, 
 		if err := query.Find(&turns).Error; err != nil {
 			return err
 		}
-		slices.Reverse(turns)
-		result = &run.Transcript{Session: describeSession(session), Turns: make([]run.Run, len(turns))}
+		result = &run.Transcript{Session: describeSession(session)}
 		if window.paged && len(turns) == window.limit {
-			before := turns[0].Sequence
+			before := turns[len(turns)-1].Run.Sequence
 			var earlier []int
 			if err := conversationTurns(tx, ownerID, sessionID).Where("sequence < ?", before).
 				Limit(1).Pluck("sequence", &earlier).Error; err != nil {
@@ -191,12 +221,24 @@ func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, 
 				result.NextBeforeSequence = before
 			}
 		}
-		for i, turn := range turns {
-			result.Turns[i] = run.Run(turn)
-		}
 		return nil
 	})
-	return result, err
+	if err != nil || result == nil {
+		return nil, err
+	}
+	defer timing.Start(ctx, "transcript_json")()
+	result.Turns = make([]run.Run, len(turns))
+	for i := range turns {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		turn, err := turns[i].turn()
+		if err != nil {
+			return nil, err
+		}
+		result.Turns[len(turns)-1-i] = turn
+	}
+	return result, nil
 }
 
 func (r *Repository) UpdateSession(ctx context.Context, ownerID, sessionID string, changes run.SessionChanges) (run.Session, error) {
@@ -331,7 +373,7 @@ func (r *Repository) StopQueued(ctx context.Context, owner, sessionID, id string
 
 func (r *Repository) History(ctx context.Context, turn run.Run, limit int) ([]run.Exchange, error) {
 	var records []row
-	db := r.db.WithContext(ctx)
+	db := r.read.WithContext(ctx)
 	// Keep each attempt in the transcript and include only its latest retry in model history.
 	retried := conversationTurns(db, turn.OwnerID, turn.SessionID).Select("retry_of").
 		Where("sequence <= ? AND retry_of <> ''", turn.Sequence).
@@ -359,7 +401,7 @@ func (r *Repository) History(ctx context.Context, turn run.Run, limit int) ([]ru
 
 func (r *Repository) Policy(ctx context.Context, ownerID string) (sandbox.Policy, error) {
 	var record settingsRow
-	err := r.db.WithContext(ctx).First(&record, "owner_id = ?", ownerID).Error
+	err := r.read.WithContext(ctx).First(&record, "owner_id = ?", ownerID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", nil
 	}

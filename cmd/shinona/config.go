@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -47,6 +48,18 @@ func (e environment) value(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func trustedProxyNetworks(raw string) ([]netip.Prefix, error) {
+	var networks []netip.Prefix
+	for _, entry := range strings.Fields(strings.ReplaceAll(raw, ",", " ")) {
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, errors.New("SHINONA_TRUSTED_PROXIES must list CIDR networks")
+		}
+		networks = append(networks, prefix.Masked())
+	}
+	return networks, nil
 }
 
 func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfig, client *http.Client, store e2b.WorkspaceStore) (sandbox.Provider, error) {

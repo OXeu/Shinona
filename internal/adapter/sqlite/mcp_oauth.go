@@ -20,7 +20,7 @@ func (mcpSettingsRow) TableName() string { return "mcp_settings" }
 
 func (r *Repository) MCPConfig(ctx context.Context, owner string) (settings.MCPConfig, error) {
 	var record mcpSettingsRow
-	err := r.db.WithContext(ctx).Take(&record, "owner_id = ?", owner).Error
+	err := r.read.WithContext(ctx).Take(&record, "owner_id = ?", owner).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return settings.MCPConfig{}, nil
 	}
@@ -61,7 +61,7 @@ func (mcpGrantRow) TableName() string { return "mcp_oauth_grants" }
 
 func (r *Repository) MCPGrant(ctx context.Context, owner, server string) ([]byte, error) {
 	var record mcpGrantRow
-	err := r.db.WithContext(ctx).Take(&record, "owner_id = ? AND server = ?", owner, server).Error
+	err := r.read.WithContext(ctx).Take(&record, "owner_id = ? AND server = ?", owner, server).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}

@@ -69,15 +69,37 @@ func (r *resolver) Sessions(ctx context.Context, args struct{ ProjectID *gql.ID 
 	return results, nil
 }
 
-func (r *resolver) Session(ctx context.Context, args struct{ ID gql.ID }) (*sessionResolver, error) {
-	transcript, err := r.service.Transcript(ctx, auth.CurrentUser(ctx).ID, string(args.ID))
+func (r *resolver) Session(ctx context.Context, args struct {
+	ID             gql.ID
+	BeforeSequence *int32
+	Paged          *bool
+}) (*sessionResolver, error) {
+	paged := args.Paged == nil || *args.Paged
+	var before int
+	if args.BeforeSequence != nil {
+		before = int(*args.BeforeSequence)
+		if !paged || before <= 0 {
+			return nil, codedError{errors.New("invalid transcript cursor"), "INVALID_TRANSCRIPT_CURSOR"}
+		}
+	}
+	owner, id := auth.CurrentUser(ctx).ID, string(args.ID)
+	var transcript *run.Transcript
+	var err error
+	if paged {
+		transcript, err = r.service.TranscriptPage(ctx, owner, id, before)
+	} else {
+		transcript, err = r.service.FullTranscript(ctx, owner, id)
+	}
 	if err != nil {
 		return nil, r.apiError(err)
 	}
 	if transcript == nil {
 		return nil, nil
 	}
-	return &sessionResolver{summaryResolver: summaryResolver{transcript.Session}, turns: transcript.Turns, lastOptions: transcript.LastOptions()}, nil
+	return &sessionResolver{
+		summaryResolver: summaryResolver{transcript.Session}, turns: transcript.Turns,
+		lastOptions: transcript.LastOptions(), nextBeforeSequence: int32(transcript.NextBeforeSequence),
+	}, nil
 }
 
 func (r *resolver) CreateSession(ctx context.Context, args struct{ ProjectID *gql.ID }) (summaryResolver, error) {
@@ -226,9 +248,12 @@ func (r summaryResolver) Unread() bool      { return r.session.Unread }
 
 type sessionResolver struct {
 	summaryResolver
-	turns       []run.Run
-	lastOptions *run.Options
+	turns              []run.Run
+	lastOptions        *run.Options
+	nextBeforeSequence int32
 }
+
+func (r sessionResolver) NextBeforeSequence() int32 { return r.nextBeforeSequence }
 
 func (r sessionResolver) LastOptions() *lastOptionsResolver {
 	if r.lastOptions == nil {

@@ -124,6 +124,10 @@ func (s *Service) RecentSessions(ctx context.Context, owner string, projectID *s
 }
 
 func (s *Service) Transcript(ctx context.Context, owner, id string) (*Transcript, error) {
+	return s.TranscriptPage(ctx, owner, id, 0)
+}
+
+func (s *Service) FullTranscript(ctx context.Context, owner, id string) (*Transcript, error) {
 	return s.withTranscriptProgress(s.repo.Transcript(ctx, owner, id, 0))
 }
 
