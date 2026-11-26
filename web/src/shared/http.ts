@@ -5,13 +5,25 @@ export class HttpError extends Error {
 }
 
 export async function request(path: string, body?: unknown, signal?: AbortSignal, method = body === undefined ? 'GET' : 'POST'): Promise<Response> {
-  const response = await fetch(path, {
+  return checkedFetch(path, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   })
-  if (!response.ok) {
+}
+
+export function requestConditional(path: string, etag: string | undefined, signal: AbortSignal): Promise<Response> {
+  return checkedFetch(path, {
+    cache: 'no-store',
+    headers: etag ? { 'If-None-Match': etag } : undefined,
+    signal,
+  }, true)
+}
+
+async function checkedFetch(path: string, options: RequestInit, conditional = false): Promise<Response> {
+  const response = await fetch(path, options)
+  if (!response.ok && !(conditional && response.status === 304)) {
     const code = response.headers.get('X-Shinona-Error-Code') ?? undefined
     let message = (await response.text()).trim()
     if (response.headers.get('Content-Type')?.startsWith('application/json')) {

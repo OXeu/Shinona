@@ -5,6 +5,7 @@ import { readComposerSelection, writeComposerSelection } from './composerPrefere
 import type { ComposerSelection } from './composerPreferences'
 import { sessionApi } from './sessionApi'
 import type { Project, SessionSummary } from './sessionApi'
+import type { SessionListSnapshot } from './sessionListApi'
 
 export const useSessionStore = defineStore('sessions', () => {
   const recent = ref<SessionSummary[]>([])
@@ -16,12 +17,16 @@ export const useSessionStore = defineStore('sessions', () => {
   let account: string | undefined
   let version = 0
   let projectVersion = 0
+  let refreshID = 0
+  let serverSnapshot: SessionListSnapshot | undefined
 
   function useAccount(owner: string | undefined) {
     if (owner === account) return
     account = owner
     version++
     projectVersion++
+    refreshID++
+    serverSnapshot = undefined
     recent.value = []
     projects.value = []
     composerSelections.value = new Map()
@@ -47,6 +52,8 @@ export const useSessionStore = defineStore('sessions', () => {
   function selectProject(id: string | null) {
     if (id === selectedProjectId.value) return
     version++
+    refreshID++
+    serverSnapshot = undefined
     selectedProjectId.value = id
     recent.value = []
   }
@@ -83,12 +90,13 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   async function refresh(signal: AbortSignal) {
+    const request = ++refreshID
     const requestedAt = version
     const requestedProjectVersion = projectVersion
-    const requestedFor = account
     const projectId = selectedProjectId.value
-    const response = await sessionApi.recent(projectId, signal)
-    if (signal.aborted || requestedFor !== account || projectId !== selectedProjectId.value) return
+    const response = await sessionApi.recent(projectId, serverSnapshot, signal)
+    if (signal.aborted || request !== refreshID) return
+    serverSnapshot = response
     if (requestedAt === version) recent.value = response.sessions
     if (requestedProjectVersion === projectVersion) {
       projects.value = response.projects
@@ -114,7 +122,7 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = recent.value.find((entry) => entry.id === id)
     if (session && session.turnCount <= through && !session.active) {
       version++
-      session.unread = false
+      recent.value = recent.value.map((entry) => entry.id === id ? { ...entry, unread: false } : entry)
     }
   }
 

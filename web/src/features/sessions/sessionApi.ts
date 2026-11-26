@@ -1,6 +1,7 @@
 import { fromBinary } from '@bufbuild/protobuf'
 
 import { apiJSON, request } from '../../shared/http'
+import { listSessions } from './sessionListApi'
 import { decodeRunOptions, decodeSandboxSettings, decodeSessionSummary, decodeTurn } from './wire/sessionMessages'
 import { TranscriptPageSchema } from './wire/session_transfer_pb'
 
@@ -142,10 +143,7 @@ async function transcriptPage(id: string, signal: AbortSignal, beforeSequence?: 
 }
 
 export const sessionApi = {
-  recent: (projectId: string | null, signal: AbortSignal) => {
-    const query = projectId === null ? '' : '?' + new URLSearchParams({ projectId })
-    return apiJSON<{ projects: Project[]; sessions: SessionSummary[] }>('/sessions' + query, 'GET', signal)
-  },
+  recent: listSessions,
   detail: (id: string, signal: AbortSignal) => transcriptPage(id, signal),
   olderTurns: (id: string, beforeSequence: number, signal: AbortSignal) =>
     transcriptPage(id, signal, beforeSequence),

@@ -51,14 +51,12 @@ type sessionsResponse struct {
 	Sessions []sessionSummary  `json:"sessions"`
 }
 
-func (r *handler) sessions(ctx context.Context, args struct {
-	ProjectID *string `form:"projectId"`
-}) (sessionsResponse, error) {
+func (r *handler) sessions(ctx context.Context, projectID *string) (sessionsResponse, error) {
 	projects, err := r.Projects(ctx)
 	if err != nil {
 		return sessionsResponse{}, err
 	}
-	items, err := r.service.RecentSessions(ctx, auth.CurrentUser(ctx).ID, args.ProjectID)
+	items, err := r.service.RecentSessions(ctx, auth.CurrentUser(ctx).ID, projectID)
 	if err != nil {
 		return sessionsResponse{}, r.apiError(err)
 	}

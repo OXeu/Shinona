@@ -31,7 +31,7 @@ func Register(api *gin.RouterGroup, service *run.Service, app Application, logge
 	}
 	api.Use(protectWrites())
 	api.GET("/mode", read(func(context.Context) (string, error) { return h.app.Mode(), nil }))
-	api.GET("/sessions", endpoint(http.StatusOK, false, h.sessions))
+	api.GET("/sessions", h.sessionList())
 	api.POST("/sessions", endpoint(http.StatusCreated, true, h.createSession))
 	api.PATCH("/sessions/:id", endpoint(http.StatusOK, true, h.updateSession))
 	api.DELETE("/sessions/:id", endpoint(http.StatusNoContent, false, h.archiveSession))
