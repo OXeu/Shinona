@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -187,10 +188,19 @@ func (h handler) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	socket.SetPongHandler(func(string) error { return refresh() })
-	go readInput(ctx, socket, tab, cancel)
-	go keepAlive(ctx, socket, cancel, func(check context.Context) bool {
-		user, err := h.sessionUser(r.WithContext(check))
-		return err == nil && user != nil && user.ID == owner
+	request := r.Clone(ctx)
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		_ = socket.Close()
+		workers.Wait()
+	}()
+	workers.Go(func() { readInput(ctx, socket, tab, cancel) })
+	workers.Go(func() {
+		keepAlive(ctx, socket, cancel, func(check context.Context) bool {
+			user, err := h.sessionUser(request.WithContext(check))
+			return err == nil && user != nil && user.ID == owner
+		})
 	})
 	if relay(ctx, socket, tab) == nil {
 		sendClose(socket, websocket.CloseNormalClosure, "Terminal closed")

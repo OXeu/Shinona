@@ -59,7 +59,17 @@ function connect() {
     if (socket !== ws || !terminal) return
     if (data instanceof ArrayBuffer) {
       terminal.write(new Uint8Array(data))
-    } else if (data === '{"state":"running"}') {
+      return
+    }
+    if (typeof data !== 'string') return
+    let state: unknown
+    try {
+      const message = JSON.parse(data) as { state?: unknown } | null
+      state = message?.state
+    } catch {
+      return
+    }
+    if (state === 'running') {
       // Previous screen output can contain control queries. Enable replies
       // only after xterm has replayed that output.
       terminal.write('', () => {
@@ -67,7 +77,7 @@ function connect() {
         ready = true
         sendSize()
       })
-    } else if (data === '{"state":"failed"}') {
+    } else if (state === 'failed') {
       notify.error(t('terminal.unavailable'))
     }
   }
@@ -80,7 +90,7 @@ function connect() {
   }
 }
 
-defineExpose({ connect, reconnectable })
+defineExpose({ terminalId: props.terminalId, connect, reconnectable })
 
 onMounted(() => {
   if (!surface.value) return

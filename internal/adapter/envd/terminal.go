@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,8 @@ type terminal struct {
 	selector  terminalSelector
 	output    []byte
 	exited    atomic.Bool
+	streamMu  sync.Mutex
+	closed    bool
 }
 
 func (w *Workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize) (sandbox.Terminal, error) {
@@ -81,11 +84,17 @@ func (w *Workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 }
 
 func (t *terminal) Read(p []byte) (int, error) {
+	t.streamMu.Lock()
+	defer t.streamMu.Unlock()
 	if len(p) == 0 {
 		return 0, nil
 	}
+	if t.closed {
+		return 0, io.EOF
+	}
 	for len(t.output) == 0 {
 		if !t.stream.Receive() {
+			_ = t.closeStream()
 			if err := t.stream.Err(); err != nil {
 				return 0, err
 			}
@@ -94,6 +103,7 @@ func (t *terminal) Read(p []byte) (int, error) {
 		event := t.stream.Msg().Event
 		if event.End != nil {
 			t.exited.Store(true)
+			_ = t.closeStream()
 			if event.End.Error != "" {
 				return 0, fmt.Errorf("envd terminal: %s", event.End.Error)
 			}
@@ -115,15 +125,29 @@ func (t *terminal) Input(ctx context.Context, data []byte) error {
 }
 
 func (t *terminal) Resize(ctx context.Context, size sandbox.TerminalSize) error {
+	if !size.Valid() {
+		return errors.New("invalid terminal size")
+	}
 	return terminalCall(ctx, t.workspace, "Update", &terminalResize{Process: t.selector, PTY: terminalPTY{Size: size}})
 }
 
 func (t *terminal) Close(ctx context.Context) error {
 	t.cancel()
+	t.streamMu.Lock()
+	streamErr := t.closeStream()
+	t.streamMu.Unlock()
 	if t.exited.Load() {
+		return streamErr
+	}
+	return errors.Join(streamErr, t.workspace.stopProcess(ctx, t.selector.Tag))
+}
+
+func (t *terminal) closeStream() error {
+	if t.closed {
 		return nil
 	}
-	return t.workspace.stopProcess(ctx, t.selector.Tag)
+	t.closed = true
+	return t.stream.Close()
 }
 
 func terminalCall[T any](ctx context.Context, w *Workspace, method string, data *T) error {

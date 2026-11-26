@@ -18,15 +18,17 @@ const auth = useAuthStore()
 const request = new AbortController()
 const tabList = useTemplateRef<{ $el: HTMLElement }>('tabs')
 const surfaces = useTemplateRef<InstanceType<typeof TerminalSurface>[]>('surfaces')
-const surface = computed(() => surfaces.value?.[0])
+const surface = computed(() => surfaces.value?.find(item => item.terminalId === active.value))
 const panelId = useId()
 const tabs = ref<TerminalTab[]>([])
 const active = ref<string | null>(null)
-const current = computed(() => tabs.value.find(({ id }) => id === active.value))
+const visited = ref(new Set<string>())
+const mountedTabs = computed(() => tabs.value.filter(({ id }) => visited.value.has(id)))
 const loading = ref(true)
 const changing = ref(false)
 
 function select(id: string | null) {
+  if (id) visited.value.add(id)
   active.value = id
   rememberTerminalView(auth.user?.id, props.sessionId, { active: id })
 }
@@ -70,6 +72,7 @@ async function remove(id: string, index: number) {
     await terminalApi.close(props.sessionId, id, request.signal)
     if (request.signal.aborted) return
     tabs.value = tabs.value.filter(tab => tab.id !== id)
+    visited.value.delete(id)
     if (active.value === id) select(tabs.value[Math.min(index, tabs.value.length - 1)]?.id ?? null)
     if (!tabs.value.length) emit('close')
     else await focusTab()
@@ -118,7 +121,7 @@ onUnmounted(() => request.abort())
             :id="panelId + '-' + tab.id"
             role="tab"
             :aria-selected="active === tab.id"
-            :aria-controls="active === tab.id ? panelId : undefined"
+            :aria-controls="visited.has(tab.id) ? panelId + '-panel-' + tab.id : undefined"
             :tabindex="active === tab.id ? 0 : -1"
             @click="select(tab.id)"
             @keydown="move($event, index)"
@@ -149,11 +152,12 @@ onUnmounted(() => request.abort())
       <UiIconButton icon="subtract-line" :label="t('terminal.close')" @click="emit('close')" />
     </UiHeader>
     <TerminalSurface
-      v-for="tab in current ? [current] : []"
-      :id="panelId"
+      v-for="tab in mountedTabs"
+      :id="panelId + '-panel-' + tab.id"
       :key="tab.id"
       ref="surfaces"
       role="tabpanel"
+      :hidden="active !== tab.id"
       :aria-labelledby="panelId + '-' + tab.id"
       :session-id="sessionId"
       :terminal-id="tab.id"

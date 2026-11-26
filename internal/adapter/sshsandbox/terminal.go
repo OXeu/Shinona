@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -36,7 +37,11 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	}
 	// A terminal can own a channel until the workspace closes.
 	w.discard.Store(true)
-	session, err := w.client.NewSession()
+	setup, cancelSetup := context.WithTimeout(ctx, connectTimeout)
+	defer cancelSetup()
+	timer := time.AfterFunc(connectTimeout, func() { _ = w.client.Close() })
+	defer timer.Stop()
+	session, err := w.openSession(setup)
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +65,9 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	}
 	if err := session.Start(command); err != nil {
 		return nil, err
+	}
+	if !timer.Stop() || setup.Err() != nil {
+		return nil, context.DeadlineExceeded
 	}
 	return &terminal{Reader: output, input: input, session: session, stop: stop}, nil
 }
