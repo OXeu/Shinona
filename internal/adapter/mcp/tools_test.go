@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -58,6 +59,67 @@ func TestConfiguredStreamableHTTPTool(t *testing.T) {
 	result, err := tools[0].Execute(t.Context(), map[string]any{"text": "hello"})
 	if err != nil || result.Text != "hello" {
 		t.Fatalf("call tool: %+v, %v", result, err)
+	}
+}
+
+func TestMCPRejectsOversizedToolResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		json       bool
+	}{
+		{name: "JSON", json: true, want: errMCPResponseTooLarge.Error()},
+		{name: "event stream", want: "SSE event exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+			sdk.AddTool(server, &sdk.Tool{Name: "report"}, func(_ context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, any, error) {
+				text := strings.Repeat("x", maxMCPMessageBytes+1)
+				return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}}}, nil, nil
+			})
+			fixture := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server },
+				&sdk.StreamableHTTPOptions{JSONResponse: tc.json}))
+			defer fixture.Close()
+			servers := NewServers(settings.MCPConfig{{Name: "fixture", URL: fixture.URL}}, fixture.Client(), nil)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			tools, closeTools, err := servers.Open(ctx, "owner", []string{"fixture"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = closeTools() }()
+			if len(tools) != 1 {
+				t.Fatalf("loaded %d tools", len(tools))
+			}
+			result, err := tools[0].Execute(ctx, map[string]any{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) || ctx.Err() != nil || result.Text != "" {
+				t.Fatalf("oversized response returned %d bytes of text, error=%v, context=%v", len(result.Text), err, ctx.Err())
+			}
+		})
+	}
+}
+
+func TestMCPLimitRejectsAdvertisedOversizedBody(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(maxMCPMessageBytes+1))
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer fixture.Close()
+	client := *fixture.Client()
+	client.Transport = responseLimitTransport{client.Transport}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fixture.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if !errors.Is(err, errMCPResponseTooLarge) {
+		t.Fatalf("oversized Content-Length: %v", err)
 	}
 }
 

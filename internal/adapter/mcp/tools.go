@@ -130,11 +130,13 @@ func (s *Servers) open(ctx context.Context, owner, name string) ([]run.Tool, fun
 	} else {
 		client.Transport = tokenTransport{base: client.Transport, token: server.Token}
 	}
+	client.Transport = responseLimitTransport{client.Transport}
 	connect, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	initialized := timing.Start(ctx, "mcp_initialize")
 	connection, err := sdk.NewClient(&sdk.Implementation{Name: "Shinona", Version: "1"}, nil).Connect(connect, &sdk.StreamableClientTransport{
 		Endpoint: server.URL, HTTPClient: &client, DisableStandaloneSSE: true, MaxRetries: -1,
+		MaxEventSize: maxMCPMessageBytes,
 	}, nil)
 	initialized()
 	if err != nil {
