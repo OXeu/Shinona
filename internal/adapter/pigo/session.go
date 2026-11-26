@@ -86,7 +86,7 @@ func (a *Agent) runSession(ctx context.Context, input run.Input, model ai.Model,
 		if len(turn.ToolResults) > 0 {
 			pending = steeringMessages(input.Steering.Drain())
 		} else {
-			pending = steeringMessages(input.Steering.Finish())
+			pending = steeringMessages(input.Steering.Finish(ctx))
 		}
 		if len(pending) > 0 {
 			return agent.TurnContinue

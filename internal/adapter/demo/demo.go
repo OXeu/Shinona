@@ -18,8 +18,11 @@ func (Agent) Run(ctx context.Context, input run.Input, _ sandbox.Workspace) (run
 		return run.Result{}, err
 	}
 	parts := []string{input.Prompt}
-	for steers := input.Steering.Finish(); len(steers) > 0; steers = input.Steering.Finish() {
+	for steers := input.Steering.Finish(ctx); len(steers) > 0; steers = input.Steering.Finish(ctx) {
 		parts = append(parts, steers...)
+	}
+	if err := ctx.Err(); err != nil {
+		return run.Result{}, err
 	}
 	for _, image := range input.Payload.Images {
 		parts = append(parts, image.Name)

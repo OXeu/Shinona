@@ -122,10 +122,11 @@ func (w *Worker) execute(ctx context.Context, active *activeTurn, releaseExecuti
 		result.Parts = append(result.Parts, TurnPart{Kind: "failure", Text: turnFailureReason(active.ctx, err), Output: details})
 	}
 
-	completion := Completion{
-		Result: result, Steering: active.steering.close(), Status: status, UpdatedAt: time.Now().UTC(),
-	}
+	finished := time.Now().UTC()
 	releaseExecution()
+	completion := Completion{
+		Result: result, Steering: active.steering.close(), Status: status, UpdatedAt: finished,
+	}
 	for {
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), completionWriteTimeout)
 		err := w.repo.Complete(saveCtx, item.ID, completion)

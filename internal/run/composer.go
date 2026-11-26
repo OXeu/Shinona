@@ -2,9 +2,7 @@ package run
 
 import (
 	"errors"
-	"slices"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/OXeu/shinona/internal/imagedata"
@@ -94,89 +92,6 @@ type TurnPart struct {
 	EstimatedTokens int32  `json:"estimatedTokens,omitempty"`
 }
 
-type SteeringMessage struct {
-	ID        string `json:"id,omitempty"`
-	Text      string `json:"text"`
-	Delivered bool   `json:"delivered"`
-}
-
-// Steering is the active run's mailbox. Seal rejects new messages at the final
-// agent checkpoint, including when the agent stops before processing a message.
-type Steering struct {
-	mu         sync.Mutex
-	messages   []SteeringMessage
-	next       int
-	sealed     bool
-	onDelivery func()
-}
-
-func (s *Steering) enqueue(load func() (SteeringMessage, error)) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sealed {
-		return ErrNotRunning
-	}
-	if len(s.messages)-s.next >= 16 {
-		return ErrQueueFull
-	}
-	message, err := load()
-	if err != nil {
-		return err
-	}
-	s.messages = append(s.messages, message)
-	return nil
-}
-
-func (s *Steering) take(id string, use func(SteeringMessage) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sealed {
-		return ErrNotRunning
-	}
-	for i := s.next; i < len(s.messages); i++ {
-		if s.messages[i].ID == id {
-			if err := use(s.messages[i]); err != nil {
-				return err
-			}
-			s.messages = slices.Delete(s.messages, i, i+1)
-			return nil
-		}
-	}
-	return ErrNotRunning
-}
-
-func (s *Steering) Drain() []string { return s.drain(false) }
-
-func (s *Steering) Finish() []string { return s.drain(true) }
-
-func (s *Steering) drain(final bool) []string {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	var result []string
-	for i := s.next; i < len(s.messages); i++ {
-		s.messages[i].Delivered = true
-		result = append(result, s.messages[i].Text)
-	}
-	s.next = len(s.messages)
-	if final && len(result) == 0 {
-		s.sealed = true
-	}
-	s.mu.Unlock()
-	if len(result) > 0 && s.onDelivery != nil {
-		s.onDelivery()
-	}
-	return result
-}
-
-func (s *Steering) close() []SteeringMessage {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sealed = true
-	return s.messages
-}
-
 func validatePrompt(prompt string, images []Image) (string, error) {
 	prompt = strings.TrimSpace(prompt)
 	if (prompt == "" && len(images) == 0) || utf8.RuneCountInString(prompt) > MaxPromptCharacters {
@@ -215,10 +130,4 @@ func validOptions(option Options) bool {
 		return false
 	}
 	return mcpconfig.ValidSelection(servers)
-}
-
-func (s *Steering) snapshot() []SteeringMessage {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.messages)
 }
