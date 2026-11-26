@@ -405,11 +405,18 @@ func preview(result sandbox.Result, err, unavailable error) (Preview, error) {
 		return Preview{}, ErrBinary
 	}
 	text := result.Stdout
-	if result.Truncated {
-		text = strings.ToValidUTF8(text, "�")
-	}
 	if !utf8.ValidString(text) {
-		return Preview{}, fmt.Errorf("%w: invalid UTF-8", ErrBinary)
+		for offset := 0; offset < len(text); {
+			if result.Truncated && !utf8.FullRuneInString(text[offset:]) {
+				text = text[:offset]
+				break
+			}
+			runeValue, size := utf8.DecodeRuneInString(text[offset:])
+			if runeValue == utf8.RuneError && size == 1 {
+				return Preview{}, fmt.Errorf("%w: invalid UTF-8", ErrBinary)
+			}
+			offset += size
+		}
 	}
 	return Preview{Text: text, Truncated: result.Truncated}, nil
 }
