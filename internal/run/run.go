@@ -190,6 +190,7 @@ type Exchange struct {
 
 type Input struct {
 	OwnerID       string
+	SessionID     string
 	Prompt        string
 	History       []Exchange
 	Payload       Payload

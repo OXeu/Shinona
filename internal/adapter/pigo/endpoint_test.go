@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,12 @@ import (
 
 	"github.com/OXeu/shinona/internal/run"
 )
+
+type completionTransport func(*http.Request) (*http.Response, error)
+
+func (f completionTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestEndpointUsesPiMetadataOnlyForCatalogOrigin(t *testing.T) {
 	const modelID = "gpt-4o"
@@ -55,6 +62,60 @@ func TestEndpointUsesPiMetadataOnlyForCatalogOrigin(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAgentUsesStableProviderCacheRoutingPerConversation(t *testing.T) {
+	t.Setenv("PI_CACHE_RETENTION", "short")
+	keys := make(chan string, 1)
+	client := &http.Client{Transport: completionTransport(func(request *http.Request) (*http.Response, error) {
+		var payload struct {
+			CacheKey string `json:"prompt_cache_key"`
+		}
+		defer request.Body.Close()
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		select {
+		case keys <- payload.CacheKey:
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		}
+		body := "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}},
+			Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	endpoint, err := NewEndpoint("https://api.openai.com/v1", "fixture", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	ask := func(owner, session, prompt string) string {
+		t.Helper()
+		result, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{OwnerID: owner, SessionID: session, Prompt: prompt}, &recordingWorkspace{})
+		if err != nil || result.Output != "OK" {
+			t.Fatalf("completion failed: %q, %v", result.Output, err)
+		}
+		select {
+		case key := <-keys:
+			return key
+		default:
+			t.Fatal("provider received no request")
+			return ""
+		}
+	}
+	first := ask("account-one", "conversation-one", "Start.")
+	if len(first) != 64 || strings.Contains(first, "account-one") || strings.Contains(first, "conversation-one") {
+		t.Fatalf("provider received an invalid opaque key: %q", first)
+	}
+	if next := ask("account-one", "conversation-one", "Continue."); next != first {
+		t.Fatal("the same conversation did not reuse its routing key")
+	}
+	for _, identity := range [][2]string{{"account-one", "conversation-two"}, {"account-two", "conversation-one"}} {
+		if key := ask(identity[0], identity[1], "Start."); key == "" || key == first {
+			t.Fatalf("conversation %v did not receive an independent routing key", identity)
+		}
 	}
 }
 

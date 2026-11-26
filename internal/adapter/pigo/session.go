@@ -2,6 +2,8 @@ package pigo
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"time"
@@ -24,6 +26,11 @@ func (a *Agent) runSession(ctx context.Context, input run.Input, model ai.Model,
 	options := coding.SessionOptions{
 		Model: &model, Cwd: "/", Tools: loadout.tools, SystemPrompt: loadout.prompt,
 		ThinkingLevel: reasoning, Compaction: coding.DefaultCompactionSettings(),
+	}
+	if input.OwnerID != "" && input.SessionID != "" {
+		// Keep provider affinity across turns without sending the app's IDs.
+		digest := sha256.Sum256([]byte(input.OwnerID + "\x00" + input.SessionID))
+		options.SessionID = hex.EncodeToString(digest[:])
 	}
 	if a.endpoint != nil {
 		options.StreamFn = func(ctx context.Context, model *ai.Model, conversation ai.TranscriptContext, options *ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
