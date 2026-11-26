@@ -253,7 +253,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	h.cookie(w, flowCookie, "/auth/oauth", "", -1)
 	err := h.finishOAuth(w, r, state, config, link)
 	if err != nil {
-		h.logger.Warn("OAuth callback failed", "link", link)
+		h.logger.Warn("OAuth callback failed", "link", link, "failure", httpserver.OAuthFailure(err))
 	}
 	h.redirectOAuthResult(w, r, link, err)
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -35,15 +36,16 @@ func (o *OAuth) Routes(mux httpserver.Routes, requireUser, sameOrigin func(http.
 
 func (h oauthHandler) submittedServer(w http.ResponseWriter, r *http.Request) (settings.MCPServer, bool) {
 	var input struct{ Name string }
-	if err := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 4096)).Decode(&input); err != nil {
-		oauthError(w, "INVALID_MCP_OAUTH", http.StatusBadRequest)
+	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 4096))
+	if err := decoder.Decode(&input); err != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) {
+		httpserver.WriteError(w, http.StatusBadRequest, "INVALID_MCP_OAUTH", "Invalid MCP OAuth request.")
 		return settings.MCPServer{}, false
 	}
 	lookup := timing.Start(r.Context(), "mcp_server_lookup")
 	server, ok := h.lookup(r.Context(), auth.CurrentUser(r.Context()).ID, input.Name)
 	lookup()
 	if !ok || server.OAuth == nil {
-		oauthError(w, "MCP_SERVER_NOT_FOUND", http.StatusNotFound)
+		httpserver.WriteError(w, http.StatusNotFound, "MCP_SERVER_NOT_FOUND", "MCP OAuth server not found.")
 		return settings.MCPServer{}, false
 	}
 	return server, true
@@ -58,11 +60,11 @@ func (h oauthHandler) start(w http.ResponseWriter, r *http.Request) {
 	state, destination, err := h.oauth.Start(r.Context(), auth.CurrentUser(r.Context()).ID, server, stateCookie(r))
 	if err != nil {
 		if errors.Is(err, ErrOAuthClientRequired) {
-			oauthError(w, "MCP_OAUTH_CLIENT_REQUIRED", http.StatusBadRequest)
+			httpserver.WriteError(w, http.StatusBadRequest, "MCP_OAUTH_CLIENT_REQUIRED", ErrOAuthClientRequired.Error())
 			return
 		}
-		h.logger.Warn("start MCP OAuth failed", "server", server.Name, "error", err)
-		oauthError(w, "MCP_OAUTH_START_FAILED", http.StatusBadGateway)
+		h.logger.Warn("start MCP OAuth failed", "server", server.Name, "failure", httpserver.OAuthFailure(err))
+		httpserver.WriteError(w, http.StatusBadGateway, "MCP_OAUTH_START_FAILED", "Could not start MCP OAuth.")
 		return
 	}
 	h.cookie(w, state, int(OAuthFlowLifetime.Seconds()))
@@ -85,7 +87,7 @@ func (h oauthHandler) callback(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			result = "connected"
 		} else if !errors.Is(err, ErrOAuthFlow) {
-			h.logger.Warn("MCP OAuth callback exchange failed")
+			h.logger.Warn("MCP OAuth callback failed", "failure", httpserver.OAuthFailure(err))
 		}
 	}
 	http.Redirect(w, r, "/settings?mcpOAuth="+result, http.StatusSeeOther)
@@ -97,7 +99,8 @@ func (h oauthHandler) disconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.oauth.Disconnect(r.Context(), auth.CurrentUser(r.Context()).ID, server.Name); err != nil {
-		oauthError(w, "MCP_OAUTH_DISCONNECT_FAILED", http.StatusInternalServerError)
+		h.logger.Error("disconnect MCP OAuth failed", "server", server.Name, "error", err)
+		httpserver.WriteError(w, http.StatusInternalServerError, "MCP_OAUTH_DISCONNECT_FAILED", "Could not disconnect MCP OAuth.")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -108,7 +111,7 @@ func (h oauthHandler) metadata(w http.ResponseWriter, r *http.Request) {
 	metadata := h.oauth.ClientMetadata()
 	lookup()
 	if metadata == nil {
-		http.NotFound(w, r)
+		httpserver.WriteError(w, http.StatusNotFound, "MCP_CLIENT_METADATA_NOT_FOUND", "MCP client metadata not found.")
 		return
 	}
 	writeOAuthJSON(w, metadata)
@@ -125,11 +128,6 @@ func stateCookie(r *http.Request) string {
 		return ""
 	}
 	return cookie.Value
-}
-
-func oauthError(w http.ResponseWriter, code string, status int) {
-	w.Header().Set("X-Shinona-Error-Code", code)
-	http.Error(w, "MCP OAuth request failed.", status)
 }
 
 func writeOAuthJSON(w http.ResponseWriter, body any) {
