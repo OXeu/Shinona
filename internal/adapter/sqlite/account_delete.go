@@ -40,7 +40,7 @@ func protectDeletedAccounts(db *gorm.DB) error {
 }
 
 func (r *Repository) DeleteAccount(ctx context.Context, actor, target string) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := ensureAdmin(tx, actor); err != nil {
 			return err
 		}
@@ -64,4 +64,6 @@ func (r *Repository) DeleteAccount(ctx context.Context, actor, target string) er
 		}
 		return nil
 	})
+	r.sessions.invalidateOwner(target, err)
+	return err
 }

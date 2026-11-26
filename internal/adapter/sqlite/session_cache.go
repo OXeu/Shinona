@@ -11,39 +11,42 @@ import (
 )
 
 const (
-	sessionCacheSize   = 4096
-	sessionRevisionSQL = "SELECT revision FROM session_auth_revision WHERE id = 1"
+	sessionCacheSize = 4096
+	// Commits in this process invalidate the affected entries immediately.
+	// External writers can leave an authentication result valid for this long.
+	sessionCacheTTL = 2 * time.Second
 )
 
 type cachedSession struct {
 	user      auth.User
 	expiresAt time.Time
-	revision  int64
 }
 
 type sessionCache struct {
-	mu       sync.RWMutex
-	entries  map[string]cachedSession
-	revision int64
+	mu         sync.RWMutex
+	entries    map[string]cachedSession
+	generation uint64
 }
 
-func (c *sessionCache) get(key string, now time.Time) (cachedSession, bool) {
+func (c *sessionCache) get(key string, now time.Time) (cachedSession, uint64, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	entry, found := c.entries[key]
-	return entry, found && now.Before(entry.expiresAt)
+	return entry, c.generation, found && now.Before(entry.expiresAt)
 }
 
-func (c *sessionCache) put(key string, entry cachedSession) {
+func (c *sessionCache) put(key string, generation uint64, entry cachedSession) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// A concurrent lookup may have taken a snapshot before the latest change.
-	if entry.revision < c.revision {
+	// An invalidation can race a lookup that observed the pre-commit state.
+	if generation != c.generation {
 		return
 	}
-	if entry.revision > c.revision || len(c.entries) >= sessionCacheSize {
-		clear(c.entries)
-		c.revision = entry.revision
+	if _, cached := c.entries[key]; !cached && len(c.entries) >= sessionCacheSize {
+		for oldest := range c.entries {
+			delete(c.entries, oldest)
+			break
+		}
 	}
 	if c.entries == nil {
 		c.entries = make(map[string]cachedSession)
@@ -51,8 +54,28 @@ func (c *sessionCache) put(key string, entry cachedSession) {
 	c.entries[key] = entry
 }
 
-// SQLite advances the revision in the same transaction as account and session
-// changes, including writes from another process.
+func (c *sessionCache) invalidateKey(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.generation++
+	delete(c.entries, key)
+}
+
+func (c *sessionCache) invalidateOwner(owner string, err error) {
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.generation++
+	for key, entry := range c.entries {
+		if entry.user.ID == owner {
+			delete(c.entries, key)
+		}
+	}
+}
+
+// Preserve the revision used by older binaries that also access this database.
 func initSessionCache(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec(`CREATE TABLE IF NOT EXISTS session_auth_revision (

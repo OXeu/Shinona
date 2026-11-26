@@ -1,4 +1,4 @@
-package sessiontransfer_test
+package sessiontransfer
 
 import (
 	"context"
@@ -16,7 +16,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
-	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
@@ -104,15 +103,15 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	}()
 
 	logs := make(timingLogs, 16)
-	handler := sessiontransfer.New(service, slog.New(slog.NewTextHandler(logs, nil)))
+	handler := New(service, slog.New(slog.NewTextHandler(logs, nil)))
 	var revoked atomic.Bool
 	const origin = "https://shinona.example"
-	live := handler.Live(ctx, origin, func(r *http.Request) (*auth.User, error) {
+	live := handler.live(ctx, origin, func(r *http.Request) (*auth.User, error) {
 		if r.Header.Get("X-Test-Cookie") == "revocable" && revoked.Load() {
 			return nil, nil
 		}
 		return &auth.User{ID: r.Header.Get("X-Test-Owner")}, nil
-	}, service)
+	}, service, 500*time.Millisecond)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user := auth.User{ID: r.Header.Get("X-Test-Owner")}
 		live.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), user)))
@@ -233,8 +232,13 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	if err := service.Steer(owner, entry.ID, current.ID, "Steer this turn."); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := revocable.ReadMessage(); !websocket.IsCloseError(err, websocket.ClosePolicyViolation) {
-		t.Fatalf("revoked subscription stayed open: %v", err)
+	for {
+		if _, _, err := revocable.ReadMessage(); err != nil {
+			if !websocket.IsCloseError(err, websocket.ClosePolicyViolation) {
+				t.Fatalf("revoked subscription stayed open: %v", err)
+			}
+			break
+		}
 	}
 	waitFor(resumed, &resumedSeq, func(msg *sessionpb.LiveMessage) bool {
 		messages := msg.GetProgress().GetSteering().GetMessages()

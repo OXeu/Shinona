@@ -56,6 +56,7 @@ func (r *Repository) UpdateProfile(ctx context.Context, owner string, change aut
 		}
 		return tx.Model(&row).Select("name", "avatar_version").Updates(&row).Error
 	})
+	r.sessions.invalidateOwner(owner, err)
 	return row.user(), err
 }
 
@@ -102,7 +103,7 @@ func ensureCredentials(tx *gorm.DB, state auth.CredentialState, sessionKey strin
 }
 
 func (r *Repository) ChangePassword(ctx context.Context, state auth.CredentialState, sessionKey string, hash []byte, now time.Time) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := ensureCredentials(tx, state, sessionKey, now); err != nil {
 			return err
 		}
@@ -115,6 +116,8 @@ func (r *Repository) ChangePassword(ctx context.Context, state auth.CredentialSt
 		}
 		return revokeOtherSessions(tx, owner, sessionKey)
 	})
+	r.sessions.invalidateOwner(state.User.ID, err)
+	return err
 }
 
 func (r *Repository) SaveEmailChallenge(ctx context.Context, state auth.CredentialState, input auth.EmailChallenge) error {
@@ -172,7 +175,9 @@ func (r *Repository) VerifyEmailChallenge(ctx context.Context, owner, sessionKey
 		}
 		return tx.Delete(&challenge).Error
 	})
-	return errors.Join(err, rejected)
+	err = errors.Join(err, rejected)
+	r.sessions.invalidateOwner(owner, err)
+	return err
 }
 
 func (r *Repository) ListAccounts(ctx context.Context, search string, offset, limit int) (auth.AccountPage, error) {
@@ -234,6 +239,7 @@ func (r *Repository) SetAccountAccess(ctx context.Context, actor, target string,
 		}
 		return nil
 	})
+	r.sessions.invalidateOwner(target, err)
 	return row.user(), err
 }
 

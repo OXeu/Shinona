@@ -73,15 +73,15 @@ func TestSessionCacheObservesOtherRepositoryWrites(t *testing.T) {
 	if err := repo.SaveSession(ctx, "session-key", user.ID, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	assertAdmin := func(want bool) {
+	assertAdmin := func(at time.Time, want bool) {
 		t.Helper()
-		account, err := repo.SessionUser(ctx, "session-key", now)
+		account, err := repo.SessionUser(ctx, "session-key", at)
 		if err != nil || account == nil || account.ID != user.ID || account.Admin != want {
 			t.Fatalf("unexpected account privileges: %+v, %v", account, err)
 		}
 	}
-	assertAdmin(false)
-	if _, ok := repo.sessions.get("session-key", now); !ok {
+	assertAdmin(now, false)
+	if _, _, ok := repo.sessions.get("session-key", now); !ok {
 		t.Fatal("expected the successful session lookup to populate the cache")
 	}
 	if account, err := repo.SessionUser(ctx, "session-key", now.Add(time.Hour)); err != nil || account != nil {
@@ -90,12 +90,53 @@ func TestSessionCacheObservesOtherRepositoryWrites(t *testing.T) {
 	if err := other.SetAdmin(ctx, user.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	assertAdmin(true)
+	assertAdmin(now.Add(sessionCacheTTL), true)
 	if err := other.DeleteSession(ctx, "session-key"); err != nil {
 		t.Fatal(err)
 	}
-	if account, err := repo.SessionUser(ctx, "session-key", now); err != nil || account != nil {
+	if account, err := repo.SessionUser(ctx, "session-key", now.Add(2*sessionCacheTTL)); err != nil || account != nil {
 		t.Fatalf("revoked credential resolved to %+v, %v", account, err)
+	}
+}
+
+func TestSessionCacheInvalidatesOnlyTheAffectedAccountOrSession(t *testing.T) {
+	repo, err := Open(t.Context(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	now := time.Now()
+	for _, owner := range []string{"alice", "bob"} {
+		user := auth.User{ID: owner, Email: owner + "@example.test"}
+		if err := repo.CreatePasswordUser(t.Context(), user, []byte("test-digest")); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{owner + "-first", owner + "-second"} {
+			if err := repo.SaveSession(t.Context(), key, owner, now.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if signedIn, err := repo.SessionUser(t.Context(), key, now); err != nil || signedIn == nil {
+				t.Fatalf("authenticate %s: %+v, %v", owner, signedIn, err)
+			}
+		}
+	}
+	if err := repo.DeleteSession(t.Context(), "alice-first"); err != nil {
+		t.Fatal(err)
+	}
+	if signedIn, err := repo.SessionUser(t.Context(), "alice-first", now); err != nil || signedIn != nil {
+		t.Fatalf("revoked token authenticated: %+v, %v", signedIn, err)
+	}
+	if _, _, hit := repo.sessions.get("alice-second", now); !hit {
+		t.Fatal("revoking one token invalidated the account's other token")
+	}
+	if err := repo.SetAdmin(t.Context(), "alice", true); err != nil {
+		t.Fatal(err)
+	}
+	if signedIn, err := repo.SessionUser(t.Context(), "alice-second", now); err != nil || signedIn == nil || !signedIn.Admin {
+		t.Fatalf("account permissions were not invalidated: %+v, %v", signedIn, err)
+	}
+	if _, _, hit := repo.sessions.get("bob-first", now); !hit {
+		t.Fatal("another account lost its cached authentication")
 	}
 }
 

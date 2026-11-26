@@ -35,6 +35,10 @@ type liveConnection struct {
 }
 
 func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func(*http.Request) (*auth.User, error), source LiveSource) http.Handler {
+	return h.live(lifetime, origin, sessionUser, source, liveHeartbeat)
+}
+
+func (h *Handler) live(lifetime context.Context, origin string, sessionUser func(*http.Request) (*auth.User, error), source LiveSource, heartbeat time.Duration) http.Handler {
 	upgrader := websocket.Upgrader{
 		HandshakeTimeout:  socketTimeout,
 		EnableCompression: true,
@@ -78,7 +82,7 @@ func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func
 			return
 		}
 		defer watch.Close()
-		if err := startLiveReader(conn, cancel); err != nil {
+		if err := startLiveReader(conn, cancel, heartbeat); err != nil {
 			return
 		}
 		known := make(map[string]turnVersion, len(request.KnownTurns))
@@ -86,15 +90,22 @@ func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func
 			known[version.Id] = turnVersion{version.UpdatedAt, version.Status}
 		}
 		var sequence uint32
+		var nextAuth time.Time
 		send := func(message *sessionpb.LiveMessage) error {
-			writeCtx, stop := context.WithTimeout(ctx, socketTimeout)
-			defer stop()
-			user, err := sessionUser(r.WithContext(writeCtx))
-			if err != nil {
-				return err
-			}
-			if user == nil || user.ID != owner {
-				return errLiveAuth
+			// Recheck at the heartbeat interval and before a frame if loading
+			// data has already taken us beyond the next check.
+			now := time.Now()
+			if !now.Before(nextAuth) {
+				authCtx, stop := context.WithTimeout(ctx, socketTimeout)
+				user, err := sessionUser(r.WithContext(authCtx))
+				stop()
+				if err != nil {
+					return err
+				}
+				if user == nil || user.ID != owner {
+					return errLiveAuth
+				}
+				nextAuth = now.Add(heartbeat)
 			}
 			sequence++
 			message.Sequence = sequence
@@ -109,7 +120,7 @@ func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func
 			return conn.WriteMessage(websocket.BinaryMessage, payload)
 		}
 		state := liveConnection{paged: request.Paged == nil || *request.Paged, known: known}
-		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send)
+		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send, heartbeat)
 		switch {
 		case errors.Is(err, errLiveAuth):
 			closeSocket(conn, websocket.ClosePolicyViolation, "Sign in required.")
@@ -140,8 +151,8 @@ func readLiveRequest(conn *websocket.Conn) (*sessionpb.LiveRequest, error) {
 	return &request, nil
 }
 
-func startLiveReader(conn *websocket.Conn, cancel context.CancelFunc) error {
-	extend := func() error { return conn.SetReadDeadline(time.Now().Add(3 * liveHeartbeat)) }
+func startLiveReader(conn *websocket.Conn, cancel context.CancelFunc, heartbeat time.Duration) error {
+	extend := func() error { return conn.SetReadDeadline(time.Now().Add(3 * heartbeat)) }
 	if err := extend(); err != nil {
 		return err
 	}
@@ -155,7 +166,7 @@ func startLiveReader(conn *websocket.Conn, cancel context.CancelFunc) error {
 }
 
 func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *run.SessionWatch, state *liveConnection,
-	owner, id string, send func(*sessionpb.LiveMessage) error,
+	owner, id string, send func(*sessionpb.LiveMessage) error, heartbeat time.Duration,
 ) error {
 	syncPage := func(phase string) (bool, error) {
 		defer timing.Start(ctx, phase)()
@@ -186,7 +197,7 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 	if found, err := syncPage("live_bootstrap"); err != nil || !found {
 		return err
 	}
-	ticker := time.NewTicker(liveHeartbeat)
+	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
 	for {
 		select {

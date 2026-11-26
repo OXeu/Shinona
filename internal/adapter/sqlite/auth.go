@@ -83,6 +83,7 @@ func (r *Repository) PasswordUser(ctx context.Context, email string) (auth.User,
 
 func (r *Repository) OAuthUser(ctx context.Context, identity auth.Identity, id string) (auth.User, error) {
 	var user userRow
+	var avatarChanged bool
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var record identityRow
 		err := tx.First(&record, "issuer = ? AND subject = ?", identity.Issuer, identity.Subject).Error
@@ -94,6 +95,7 @@ func (r *Repository) OAuthUser(ctx context.Context, identity auth.Identity, id s
 				return nil
 			}
 			user.AvatarURL = identity.AvatarURL
+			avatarChanged = true
 			return tx.Model(&user).Update("avatar_url", user.AvatarURL).Error
 		}
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -105,6 +107,9 @@ func (r *Repository) OAuthUser(ctx context.Context, identity auth.Identity, id s
 		}
 		return tx.Create(&identityRow{Issuer: identity.Issuer, Subject: identity.Subject, OwnerID: id}).Error
 	})
+	if avatarChanged {
+		r.sessions.invalidateOwner(user.ID, err)
+	}
 	return user.user(), err
 }
 
@@ -140,24 +145,17 @@ func saveSession(tx *gorm.DB, key, ownerID string, expiresAt time.Time) error {
 }
 
 func (r *Repository) SessionUser(ctx context.Context, key string, now time.Time) (*auth.User, error) {
-	db := r.read.WithContext(ctx)
-	if cached, found := r.sessions.get(key, now); found {
-		var revision int64
-		if err := db.Raw(sessionRevisionSQL).Row().Scan(&revision); err != nil {
-			return nil, err
-		}
-		if revision == cached.revision {
-			return &cached.user, nil
-		}
+	cached, generation, found := r.sessions.get(key, now)
+	if found {
+		return &cached.user, nil
 	}
 
 	var entry struct {
 		Account       userRow `gorm:"embedded"`
 		SessionExpiry time.Time
-		CacheRevision int64
 	}
-	err := db.Model(&userRow{}).
-		Select("users.*, login_sessions.expires_at AS session_expiry, ("+sessionRevisionSQL+") AS cache_revision").
+	err := r.read.WithContext(ctx).Model(&userRow{}).
+		Select("users.*, login_sessions.expires_at AS session_expiry").
 		Joins("JOIN login_sessions ON login_sessions.owner_id = users.id").
 		Take(&entry, "login_sessions.key = ? AND login_sessions.expires_at > ? AND users.disabled = ?", key, now, false).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -167,12 +165,20 @@ func (r *Repository) SessionUser(ctx context.Context, key string, now time.Time)
 		return nil, err
 	}
 	account := entry.Account.user()
-	r.sessions.put(key, cachedSession{user: account, expiresAt: entry.SessionExpiry, revision: entry.CacheRevision})
+	expiry := now.Add(sessionCacheTTL)
+	if entry.SessionExpiry.Before(expiry) {
+		expiry = entry.SessionExpiry
+	}
+	r.sessions.put(key, generation, cachedSession{user: account, expiresAt: expiry})
 	return &account, nil
 }
 
 func (r *Repository) DeleteSession(ctx context.Context, key string) error {
-	return r.db.WithContext(ctx).Delete(&loginRow{}, "key = ?", key).Error
+	err := r.db.WithContext(ctx).Delete(&loginRow{}, "key = ?", key).Error
+	if err == nil {
+		r.sessions.invalidateKey(key)
+	}
+	return err
 }
 
 func (r *Repository) SaveFlow(ctx context.Context, flow auth.Flow, now time.Time) error {
@@ -207,5 +213,6 @@ func (r *Repository) SetAdmin(ctx context.Context, id string, admin bool) error 
 	if result.RowsAffected == 0 {
 		return errors.New("account not found")
 	}
+	r.sessions.invalidateOwner(id, nil)
 	return nil
 }
