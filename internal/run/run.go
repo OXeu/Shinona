@@ -67,6 +67,9 @@ const MaxTranscriptExportTurns = 5000
 
 var ErrTranscriptExportLimit = errors.New("the transcript is too large for an unpaged response")
 
+// MaxLiveTranscriptTurns bounds the initial live subscription snapshot.
+const MaxLiveTranscriptTurns = 256
+
 type Transcript struct {
 	Session            Session
 	Turns              []Run

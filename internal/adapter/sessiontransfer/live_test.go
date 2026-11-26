@@ -95,7 +95,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		run.NewWorker(repo, resolve, logger, controls).Serve(ctx)
+		run.NewWorker(repo, resolve, logger, controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	defer func() {
 		cancel()

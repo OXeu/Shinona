@@ -3,6 +3,7 @@ package sessiontransfer
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -47,7 +48,7 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		owner := auth.CurrentUser(r.Context()).ID
 		if owner == "" {
-			http.Error(w, "Sign in required.", http.StatusUnauthorized)
+			httpserver.WriteError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "Sign in required.")
 			return
 		}
 		conn, err := upgrader.Upgrade(w, r, httpserver.WebSocketTimingHeaders(w))
@@ -87,6 +88,9 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 		}
 		known := make(map[string]turnVersion, len(request.KnownTurns))
 		for _, version := range request.KnownTurns {
+			if version == nil {
+				continue
+			}
 			known[version.Id] = turnVersion{version.UpdatedAt, version.Status}
 		}
 		var sequence uint32
@@ -136,22 +140,33 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 const socketTimeout = 5 * time.Second
 
 func readLiveRequest(conn *websocket.Conn) (*sessionpb.LiveRequest, error) {
-	conn.SetReadLimit(16 << 20)
+	const maxRequest = 64 << 10
+	conn.SetReadLimit(maxRequest)
 	if err := conn.SetReadDeadline(time.Now().Add(socketTimeout)); err != nil {
 		return nil, err
 	}
-	kind, payload, err := conn.ReadMessage()
+	kind, reader, err := conn.NextReader()
 	if err != nil {
 		return nil, err
 	}
+	if kind != websocket.BinaryMessage {
+		return nil, errors.New("invalid live subscription frame")
+	}
+	// Gorilla's limit applies to bytes on the wire. Bound the decoded data too.
+	payload, err := io.ReadAll(io.LimitReader(reader, maxRequest+1))
+	if err != nil || len(payload) > maxRequest {
+		return nil, errors.New("live subscription exceeds its size limit")
+	}
 	var request sessionpb.LiveRequest
-	if kind != websocket.BinaryMessage || proto.Unmarshal(payload, &request) != nil || request.SessionId == "" {
+	if proto.Unmarshal(payload, &request) != nil || request.SessionId == "" ||
+		len(request.KnownTurns) > run.MaxLiveTranscriptTurns {
 		return nil, errors.New("invalid live subscription request")
 	}
 	return &request, nil
 }
 
 func startLiveReader(conn *websocket.Conn, cancel context.CancelFunc, heartbeat time.Duration) error {
+	conn.SetReadLimit(125)
 	extend := func() error { return conn.SetReadDeadline(time.Now().Add(3 * heartbeat)) }
 	if err := extend(); err != nil {
 		return err
@@ -160,7 +175,7 @@ func startLiveReader(conn *websocket.Conn, cancel context.CancelFunc, heartbeat 
 	go func() {
 		defer cancel()
 		// Only control frames are valid after the subscription request.
-		_, _, _ = conn.ReadMessage()
+		_, _, _ = conn.NextReader()
 	}()
 	return nil
 }

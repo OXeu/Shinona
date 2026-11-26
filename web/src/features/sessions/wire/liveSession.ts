@@ -75,7 +75,7 @@ export async function watchLiveSession(initial: AgentSession, callbacks: LiveCal
   const payload = toBinary(LiveRequestSchema, create(LiveRequestSchema, {
     sessionId: initial.id,
     paged: true,
-    knownTurns: initial.turns.map(({ id, updatedAt, status }) => ({ id, updatedAt, status })),
+    knownTurns: initial.turns.slice(-30).map(({ id, updatedAt, status }) => ({ id, updatedAt, status })),
   }))
   const state = new SessionState(initial.turns)
   const url = new URL(endpoint, location.href)
