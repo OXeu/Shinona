@@ -69,10 +69,12 @@ func conversationTurns(db *gorm.DB, ownerID, sessionID string) *gorm.DB {
 	return db.Model(&row{}).Where("owner_id = ? AND session_id = ? AND reverted_at IS NULL", ownerID, sessionID)
 }
 
+const sessionWithActivity = `agent_sessions.*, EXISTS (
+	SELECT 1 FROM runs WHERE session_id = agent_sessions.id AND status IN ?
+) AS has_active`
+
 func withActivity(query *gorm.DB) *gorm.DB {
-	return query.Select(`agent_sessions.*, EXISTS (
-		SELECT 1 FROM runs WHERE session_id = agent_sessions.id AND status IN ?
-	) AS has_active`, []run.Status{run.Queued, run.Running})
+	return query.Select(sessionWithActivity, []run.Status{run.Queued, run.Running})
 }
 
 func describeSession(record sessionRow) run.Session {
@@ -131,7 +133,21 @@ func (r *Repository) Transcript(ctx context.Context, ownerID, sessionID string, 
 }
 
 func (r *Repository) TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*run.Transcript, error) {
-	return r.transcript(ctx, ownerID, sessionID, transcriptWindow{limit: run.TranscriptPageSize, before: beforeSequence, paged: true})
+	window := transcriptWindow{limit: run.TranscriptPageSize, before: beforeSequence, paged: true}
+	if beforeSequence != 0 {
+		return r.transcript(ctx, ownerID, sessionID, window)
+	}
+	key := latestTranscriptKey{ownerID, sessionID}
+	if cached := r.latest.get(key); cached != nil {
+		if page, hit, err := r.validateCachedTranscript(ctx, key, cached); hit || err != nil {
+			return page, err
+		}
+	}
+	page, err := r.transcript(ctx, ownerID, sessionID, window)
+	if err == nil && page != nil && !page.Session.Active && len(page.Turns) > 0 {
+		r.latest.put(key, page)
+	}
+	return page, err
 }
 
 type transcriptWindow struct {

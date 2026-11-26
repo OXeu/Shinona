@@ -56,6 +56,7 @@ func TestTranscriptPageSequence(t *testing.T) {
 	if latest.Session.TurnCount != 65 {
 		t.Fatalf("total turn count: %d", latest.Session.TurnCount)
 	}
+	check(0, 36, 65, 36)
 	if _, err := repo.Enqueue(ctx, run.Run{
 		ID: "appended", OwnerID: owner, SessionID: session, Status: run.Queued,
 		CreatedAt: now, UpdatedAt: now,

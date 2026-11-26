@@ -55,6 +55,7 @@ type Repository struct {
 	db       *gorm.DB
 	read     *gorm.DB
 	sessions sessionCache
+	latest   latestTranscriptCache
 }
 
 type timingLogger struct{ logger.Interface }
