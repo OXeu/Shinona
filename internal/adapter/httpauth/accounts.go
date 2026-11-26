@@ -10,6 +10,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/imagedata"
 )
 
 const adminPageSize = 25
@@ -48,19 +49,12 @@ func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
 	case input.RemoveAvatar:
 		change.Avatar = &auth.Avatar{}
 	case input.Avatar != "":
-		image, err := base64.StdEncoding.DecodeString(input.Avatar)
-		if err != nil || len(image) > auth.MaxAvatarBytes {
+		image, mediaType := imagedata.Decode(input.Avatar, auth.MaxAvatarBytes)
+		if image == nil {
 			h.accountError(w, auth.ErrAvatar)
 			return
 		}
-		mediaType := http.DetectContentType(image)
-		switch mediaType {
-		case "image/png", "image/jpeg", "image/webp":
-			change.Avatar = &auth.Avatar{MediaType: mediaType, Data: image}
-		default:
-			h.accountError(w, auth.ErrAvatar)
-			return
-		}
+		change.Avatar = &auth.Avatar{MediaType: mediaType, Data: image}
 	}
 	user, err := h.service.UpdateProfile(r.Context(), change)
 	if err != nil {

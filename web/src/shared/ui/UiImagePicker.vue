@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { useTemplateRef } from 'vue'
+
+import { imageFileAccept } from '../imageFiles'
 import UiIconButton from './UiIconButton.vue'
 
 withDefaults(defineProps<{ label: string; disabled?: boolean; multiple?: boolean }>(), { multiple: true })
@@ -17,7 +19,7 @@ function selected(event: Event) {
   <input
     ref="input"
     type="file"
-    accept="image/png,image/jpeg,image/webp"
+    :accept="imageFileAccept"
     :multiple="multiple"
     hidden
     @change="selected"

@@ -2,6 +2,7 @@
 import { computed, onUnmounted, ref, useTemplateRef } from 'vue'
 
 import { languageTag, t } from '../../shared/i18n'
+import { isSupportedImageType } from '../../shared/imageFiles'
 import UiDropdown from '../../shared/ui/UiDropdown.vue'
 import UiIcon from '../../shared/ui/UiIcon.vue'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
@@ -199,7 +200,7 @@ async function attach(files: File[]) {
   const total = images.value.reduce((bytes, image) => bytes + Math.floor(image.data.length * 3 / 4) -
     (image.data.endsWith('==') ? 2 : image.data.endsWith('=') ? 1 : 0), 0)
   if (files.length + images.value.length > 4 || total + files.reduce((bytes, file) => bytes + file.size, 0) > 4 * 1024 * 1024 ||
-    files.some((file) => !['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size === 0)) {
+    files.some((file) => !isSupportedImageType(file.type) || file.size === 0)) {
     emit('error', t('composer.invalidImages'))
     return
   }

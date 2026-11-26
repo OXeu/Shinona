@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import { messageFor } from '../../shared/errors'
 import { t } from '../../shared/i18n'
+import { isSupportedImageType } from '../../shared/imageFiles'
 import { notify } from '../../shared/notifications'
 import UiAvatar from '../../shared/ui/UiAvatar.vue'
 import UiDialog from '../../shared/ui/UiDialog.vue'
@@ -37,7 +38,7 @@ const profileDirty = computed(() => nickname.value !== (auth.user?.name ?? '') |
 async function selectAvatar(files: File[]) {
   const file = files.at(0)
   if (!file) return
-  if (file.size > 512 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+  if (file.size > 512 * 1024 || !isSupportedImageType(file.type)) {
     notify.error(t('account.invalidAvatar'))
     return
   }

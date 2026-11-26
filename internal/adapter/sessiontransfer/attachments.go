@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"log/slog"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/imagedata"
 	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/timing"
@@ -88,26 +88,13 @@ func loadAttachment(ctx context.Context, reader AttachmentReader, key attachment
 		return attachmentResponse{}, err
 	}
 	defer timing.Start(ctx, "attachment_decode")()
-	data := imageBytes(image)
-	if len(data) == 0 {
+	if image == nil {
+		return attachmentResponse{}, nil
+	}
+	data := imagedata.DecodeAs(image.Data, image.MediaType, run.MaxImageBytes)
+	if data == nil {
 		return attachmentResponse{}, nil
 	}
 	hash := sha256.Sum256(data)
 	return attachmentResponse{image.MediaType, `"` + hex.EncodeToString(hash[:]) + `"`, data}, nil
-}
-
-func imageBytes(image *run.Image) []byte {
-	if image == nil || len(image.Data) > base64.StdEncoding.EncodedLen(run.MaxImageBytes) {
-		return nil
-	}
-	switch image.MediaType {
-	case "image/png", "image/jpeg", "image/webp":
-	default:
-		return nil
-	}
-	data, err := base64.StdEncoding.DecodeString(image.Data)
-	if err != nil || len(data) > run.MaxImageBytes || http.DetectContentType(data) != image.MediaType {
-		return nil
-	}
-	return data
 }

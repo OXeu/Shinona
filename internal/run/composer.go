@@ -1,13 +1,13 @@
 package run
 
 import (
-	"encoding/base64"
 	"errors"
-	"net/http"
 	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"github.com/OXeu/shinona/internal/imagedata"
 )
 
 const (
@@ -179,19 +179,11 @@ func validatePrompt(prompt string, images []Image) (string, error) {
 		if len(image.Name) == 0 || utf8.RuneCountInString(image.Name) > 180 {
 			return "", ErrImages
 		}
-		switch image.MediaType {
-		case "image/jpeg", "image/png", "image/webp":
-		default:
+		data := imagedata.DecodeAs(image.Data, image.MediaType, MaxImageBytes-total)
+		if data == nil {
 			return "", ErrImages
 		}
-		if len(image.Data) > base64.StdEncoding.EncodedLen(MaxImageBytes-total) {
-			return "", ErrImages
-		}
-		data, err := base64.StdEncoding.DecodeString(image.Data)
 		total += len(data)
-		if err != nil || total > MaxImageBytes || http.DetectContentType(data) != image.MediaType {
-			return "", ErrImages
-		}
 	}
 	return prompt, nil
 }
