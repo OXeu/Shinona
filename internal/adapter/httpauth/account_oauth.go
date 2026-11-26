@@ -25,7 +25,7 @@ func (h *Handler) startOAuthLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct{ CurrentPassword string }
-	if !accountInput(w, r, &input, 4096) || !h.accountPasswordSlot(w) {
+	if !accountInput(w, r, &input, 4096) || !h.accountPasswordSlot(w, r) {
 		return
 	}
 	defer func() { <-h.passwordSlots }()
@@ -51,7 +51,7 @@ func (h *Handler) startOAuthLink(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) unlinkOAuth(w http.ResponseWriter, r *http.Request) {
 	var input struct{ CurrentPassword string }
-	if !accountInput(w, r, &input, 4096) || !h.accountPasswordSlot(w) {
+	if !accountInput(w, r, &input, 4096) || !h.accountPasswordSlot(w, r) {
 		return
 	}
 	defer func() { <-h.passwordSlots }()

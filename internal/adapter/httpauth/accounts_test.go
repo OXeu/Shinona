@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +34,20 @@ type testHasher struct{}
 func (testHasher) Hash(value string) []byte             { return []byte(value) }
 func (testHasher) Match(value string, hash []byte) bool { return value == string(hash) }
 
+type blockingHasher struct {
+	testHasher
+	started, resume chan struct{}
+	waited          atomic.Bool
+}
+
+func (h *blockingHasher) Match(value string, hash []byte) bool {
+	if h.waited.CompareAndSwap(false, true) {
+		close(h.started)
+		<-h.resume
+	}
+	return h.testHasher.Match(value, hash)
+}
+
 func accountFixture(t *testing.T, mailer auth.VerificationMailer) (*sqlite.Database, *auth.Service, *http.ServeMux) {
 	t.Helper()
 	repo, err := sqlite.Open(t.Context(), ":memory:")
@@ -47,7 +63,7 @@ func accountFixture(t *testing.T, mailer auth.VerificationMailer) (*sqlite.Datab
 	mux := http.NewServeMux()
 	handler := httpauth.NewWithConfig(service, func() httpauth.Config {
 		return httpauth.Config{Mailer: mailer}
-	}, slog.New(slog.DiscardHandler))
+	}, httpauth.DefaultLimits(), slog.New(slog.DiscardHandler))
 	handler.Routes(mux, http.NewCrossOriginProtection().Handler)
 	return repo, service, mux
 }
@@ -142,6 +158,80 @@ func TestPasswordChangeRevokesOtherSessions(t *testing.T) {
 	assertStatus(t, perform(t, mux, "POST", "/auth/password", `{"email":"`+email+`","password":"`+password+`"}`), http.StatusUnauthorized)
 	assertStatus(t, perform(t, mux, "POST", "/auth/password", `{"email":"`+email+`","password":"new-password-42"}`), http.StatusOK)
 	assertAvatar(t, mux, current, user.ID, "")
+}
+
+func TestAccountPasswordRateLimitsAreIndependent(t *testing.T) {
+	_, service, mux := accountFixture(t, nil)
+	const password = "a-good-test-password"
+	cookie := func(email string) *http.Cookie {
+		t.Helper()
+		user, err := service.CreatePasswordUser(t.Context(), email, password)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return accountCookie(t, service, user)
+	}
+	first, second := cookie("first@example.com"), cookie("second@example.com")
+	path := "/auth/account/password"
+	body := `{"currentPassword":"wrong","password":"new-password-42"}`
+	for range 5 {
+		assertAccountError(t, perform(t, mux, http.MethodPost, path, body, first), http.StatusForbidden, "ACCOUNT_PASSWORD_INCORRECT")
+	}
+	assertAccountError(t, perform(t, mux, http.MethodPost, path, body, first), http.StatusTooManyRequests, "AUTH_RATE_LIMITED")
+	assertAccountError(t, perform(t, mux, http.MethodPost, path, body, second), http.StatusForbidden, "ACCOUNT_PASSWORD_INCORRECT")
+}
+
+func TestPasswordConcurrencyIsSharedAndReleased(t *testing.T) {
+	repo, setup, _ := accountFixture(t, nil)
+	const email, password = "member@example.com", "a-good-test-password"
+	user, err := setup.CreatePasswordUser(t.Context(), email, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := accountCookie(t, setup, user)
+	hasher := &blockingHasher{started: make(chan struct{}), resume: make(chan struct{})}
+	resume := sync.OnceFunc(func() { close(hasher.resume) })
+	limits := httpauth.DefaultLimits()
+	limits.PasswordConcurrency = 1
+	service := auth.New(repo.Accounts, hasher, uuid.NewString)
+	handler := httpauth.NewWithConfig(service, func() httpauth.Config { return httpauth.Config{} },
+		limits, slog.New(slog.DiscardHandler))
+	mux := http.NewServeMux()
+	handler.Routes(mux, http.NewCrossOriginProtection().Handler)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/auth/password",
+		bytes.NewBufferString(`{"email":"`+email+`","password":"`+password+`"}`))
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mux.ServeHTTP(response, request)
+	}()
+	defer func() {
+		resume()
+		<-done
+	}()
+	select {
+	case <-hasher.started:
+	case <-done:
+		t.Fatalf("login ended without starting verification: %d", response.Code)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	path := "/auth/account/password"
+	body := `{"currentPassword":"wrong","password":"new-password-42"}`
+	assertAccountError(t, perform(t, mux, http.MethodPost, path, body, cookie), http.StatusTooManyRequests, "AUTH_BUSY")
+
+	resume()
+	select {
+	case <-done:
+		assertStatus(t, response, http.StatusOK)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	assertAccountError(t, perform(t, mux, http.MethodPost, path, body, cookie), http.StatusForbidden, "ACCOUNT_PASSWORD_INCORRECT")
 }
 
 func TestAccountProfileAndAdminAccess(t *testing.T) {

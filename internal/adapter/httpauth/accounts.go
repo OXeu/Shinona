@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
@@ -78,7 +79,7 @@ func (h *Handler) avatar(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 	var input struct{ CurrentPassword, Password string }
-	if !accountInput(w, r, &input, 4096) || !h.accountPasswordSlot(w) {
+	if !accountInput(w, r, &input, 4096) || !h.accountPasswordSlot(w, r) {
 		return
 	}
 	defer func() { <-h.passwordSlots }()
@@ -96,7 +97,7 @@ func (h *Handler) startEmailBinding(w http.ResponseWriter, r *http.Request) {
 		h.accountError(w, auth.ErrEmailDisabled)
 		return
 	}
-	if !h.accountPasswordSlot(w) {
+	if !h.accountPasswordSlot(w, r) {
 		return
 	}
 	verification, err := func() (auth.EmailVerification, error) {
@@ -169,7 +170,7 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct{ Email, Password, Name string }
-	if !accountInput(w, r, &input, 4096) || !h.accountPasswordSlot(w) {
+	if !accountInput(w, r, &input, 4096) || !h.accountPasswordSlot(w, r) {
 		return
 	}
 	defer func() { <-h.passwordSlots }()
@@ -213,8 +214,8 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) accountPasswordSlot(w http.ResponseWriter) bool {
-	if !h.accountRate.Allow() {
+func (h *Handler) accountPasswordSlot(w http.ResponseWriter, r *http.Request) bool {
+	if !h.accountRate.allow(auth.CurrentUser(r.Context()).ID, time.Now()) {
 		authError(w, "AUTH_RATE_LIMITED", "Too many account requests. Try again shortly.", http.StatusTooManyRequests)
 		return false
 	}

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/time/rate"
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
@@ -39,25 +38,36 @@ type Config struct {
 	TrustedProxies []netip.Prefix
 }
 
+type Limits struct {
+	PasswordConcurrency int
+	RateLimitEntries    int
+}
+
+func DefaultLimits() Limits {
+	return Limits{PasswordConcurrency: 2, RateLimitEntries: 8192}
+}
+
 type Handler struct {
 	service       *auth.Service
 	config        func() Config
 	logger        *slog.Logger
-	loginRate     loginRate
-	oauthRate     loginRate
-	accountRate   *rate.Limiter
+	loginRate     requestRate[netip.Addr]
+	oauthRate     requestRate[netip.Addr]
+	accountRate   requestRate[string]
 	passwordSlots chan struct{}
 }
 
 func New(service *auth.Service, oauth OAuthProvider, secure bool, logger *slog.Logger) *Handler {
-	return NewWithConfig(service, func() Config { return Config{OAuth: oauth, Secure: secure} }, logger)
+	return NewWithConfig(service, func() Config { return Config{OAuth: oauth, Secure: secure} }, DefaultLimits(), logger)
 }
 
-func NewWithConfig(service *auth.Service, config func() Config, logger *slog.Logger) *Handler {
+func NewWithConfig(service *auth.Service, config func() Config, limits Limits, logger *slog.Logger) *Handler {
 	return &Handler{
 		service: service, config: config, logger: logger,
-		accountRate:   rate.NewLimiter(rate.Every(time.Second), 5),
-		passwordSlots: make(chan struct{}, 2),
+		loginRate:     newRequestRate[netip.Addr](limits.RateLimitEntries),
+		oauthRate:     newRequestRate[netip.Addr](limits.RateLimitEntries),
+		accountRate:   newRequestRate[string](limits.RateLimitEntries),
+		passwordSlots: make(chan struct{}, limits.PasswordConcurrency),
 	}
 }
 
@@ -158,7 +168,7 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
-	if !h.loginRate.allow(loginIP(r, h.config().TrustedProxies), time.Now()) {
+	if !h.loginRate.allow(loginAddress(r, h.config().TrustedProxies), time.Now()) {
 		authError(w, "AUTH_RATE_LIMITED", "Too many sign-in attempts. Try again shortly.", http.StatusTooManyRequests)
 		return
 	}
@@ -170,14 +180,16 @@ func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case h.passwordSlots <- struct{}{}:
-		defer func() { <-h.passwordSlots }()
 	default:
 		authError(w, "AUTH_BUSY", "Sign-in is busy. Try again shortly.", http.StatusTooManyRequests)
 		return
 	}
 	// Keep the lookup and verification phases private until sign-in succeeds.
 	ctx, phases := timing.WithRecorder(r.Context())
-	user, err := h.service.PasswordUser(ctx, input.Email, input.Password)
+	user, err := func() (auth.User, error) {
+		defer func() { <-h.passwordSlots }()
+		return h.service.PasswordUser(ctx, input.Email, input.Password)
+	}()
 	if errors.Is(err, auth.ErrCredentials) {
 		authError(w, "AUTH_CREDENTIALS", "Email or password is incorrect.", http.StatusUnauthorized)
 		return
@@ -208,7 +220,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	config := h.config()
-	if config.OAuth == nil || !h.oauthRate.allow(loginIP(r, config.TrustedProxies), time.Now()) {
+	if config.OAuth == nil || !h.oauthRate.allow(loginAddress(r, config.TrustedProxies), time.Now()) {
 		http.Redirect(w, r, "/login?oauth=failed", http.StatusSeeOther)
 		return
 	}

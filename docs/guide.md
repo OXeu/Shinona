@@ -75,6 +75,8 @@ Use **Revert message** under a user prompt once the session is idle. Confirm to 
 
 Password login uses Argon2id and requires a password of 12–128 bytes. Login uses revocable, seven-day, HTTP-only cookies with SameSite Lax. An HTTPS `SHINONA_WEB_ORIGIN` enables secure cookies. HTTP origins are accepted on loopback or an explicitly configured private IP address. The REST API requires sign-in, scopes sessions and preferences by account ID, and checks the browser origin on writes.
 
+`SHINONA_AUTH_PASSWORD_CONCURRENCY` controls how many password operations can run at once across sign-in and account changes. It defaults to 2 and accepts 1–64. Size it together with the Argon2 memory setting. `SHINONA_AUTH_RATE_LIMIT_ENTRIES` caps the number of recently used rate-limit buckets in each of three pools for password login, OAuth login, and account changes. The default is 8192 per pool and the accepted range is 1–262144. Login buckets use client addresses with IPv6 grouped by /64. Account changes use account IDs. Restart Shinona after changing either setting.
+
 Configure OpenID Connect in **Settings → Shinona SSO** and register the callback with the issuer. The corresponding startup variables are listed below. Clear the issuer, client ID, and secret together to disable OAuth.
 
 | Setting | Value |

@@ -49,6 +49,10 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	if err != nil {
 		return err
 	}
+	authenticationLimits, err := authLimits(environment)
+	if err != nil {
+		return err
+	}
 	parallelism, err := environment.boundedInt("SHINONA_AGENT_WORKERS", run.DefaultWorkerConcurrency, 1, 64)
 	if err != nil {
 		return err
@@ -105,7 +109,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		current.TrustedProxies = proxies
 		return current
 	}
-	authHandler := httpauth.NewWithConfig(auth.New(repository.Accounts, hasher, uuid.NewString), authConfig, logger)
+	authHandler := httpauth.NewWithConfig(auth.New(repository.Accounts, hasher, uuid.NewString), authConfig, authenticationLimits, logger)
 	router := newAPIRouter(lifetime, config.origin.String(), service, config, authHandler, logger, routesConfig)
 	config.oauth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)

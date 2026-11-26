@@ -95,6 +95,19 @@ func passwordHasher(e environment) (password.Argon2id, error) {
 	return password.New(password.Parameters{Time: uint32(timeCost), MemoryKiB: uint32(memory), Threads: uint8(threads)})
 }
 
+func authLimits(e environment) (httpauth.Limits, error) {
+	defaults := httpauth.DefaultLimits()
+	passwords, err := e.boundedInt("SHINONA_AUTH_PASSWORD_CONCURRENCY", defaults.PasswordConcurrency, 1, 64)
+	if err != nil {
+		return httpauth.Limits{}, err
+	}
+	entries, err := e.boundedInt("SHINONA_AUTH_RATE_LIMIT_ENTRIES", defaults.RateLimitEntries, 1, 262144)
+	if err != nil {
+		return httpauth.Limits{}, err
+	}
+	return httpauth.Limits{PasswordConcurrency: passwords, RateLimitEntries: entries}, nil
+}
+
 func resendConfig(e environment) (email.ResendConfig, error) {
 	config := email.DefaultResendConfig()
 	config.Endpoint = e.value("SHINONA_RESEND_API_URL", config.Endpoint)

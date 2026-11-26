@@ -1,7 +1,6 @@
 package httpauth
 
 import (
-	"container/list"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -10,54 +9,36 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/OXeu/shinona/internal/responsecache"
 )
 
-const (
-	loginAddressLimit = 8192
-	loginAddressIdle  = time.Minute
-)
-
-type loginRate struct {
+type requestRate[K comparable] struct {
 	mu      sync.Mutex
-	clients map[netip.Addr]*list.Element
-	recent  list.List
+	buckets responsecache.Store[K, *rate.Limiter]
 }
 
-type loginClient struct {
-	ip      netip.Addr
-	limiter *rate.Limiter
-	last    time.Time
+func newRequestRate[K comparable](entries int) requestRate[K] {
+	return requestRate[K]{buckets: responsecache.NewStore[K, *rate.Limiter](entries, entries)}
 }
 
-func (l *loginRate) allow(ip netip.Addr, now time.Time) bool {
+func (l *requestRate[K]) allow(key K, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if ip.Is6() {
-		ip = netip.PrefixFrom(ip, 64).Masked().Addr()
+	limiter, found := l.buckets.Get(key)
+	if !found {
+		limiter = rate.NewLimiter(rate.Every(time.Second), 5)
+		l.buckets.Put(key, limiter, 1, nil)
 	}
-	for oldest := l.recent.Back(); oldest != nil && now.Sub(oldest.Value.(*loginClient).last) >= loginAddressIdle; oldest = l.recent.Back() {
-		l.remove(oldest)
-	}
-	element := l.clients[ip]
-	if element == nil {
-		if l.recent.Len() == loginAddressLimit {
-			l.remove(l.recent.Back())
-		}
-		if l.clients == nil {
-			l.clients = make(map[netip.Addr]*list.Element)
-		}
-		element = l.recent.PushFront(&loginClient{ip: ip, limiter: rate.NewLimiter(rate.Every(time.Second), 5)})
-		l.clients[ip] = element
-	}
-	entry := element.Value.(*loginClient)
-	entry.last = now
-	l.recent.MoveToFront(element)
-	return entry.limiter.AllowN(now, 1)
+	return limiter.AllowN(now, 1)
 }
 
-func (l *loginRate) remove(element *list.Element) {
-	delete(l.clients, element.Value.(*loginClient).ip)
-	l.recent.Remove(element)
+func loginAddress(r *http.Request, proxies []netip.Prefix) netip.Addr {
+	address := loginIP(r, proxies)
+	if address.Is6() {
+		return netip.PrefixFrom(address, 64).Masked().Addr()
+	}
+	return address
 }
 
 func loginIP(r *http.Request, proxies []netip.Prefix) netip.Addr {

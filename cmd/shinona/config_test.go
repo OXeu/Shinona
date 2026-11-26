@@ -54,6 +54,23 @@ func TestOpenDatabaseRejectsInvalidReadConnections(t *testing.T) {
 	}
 }
 
+func TestAuthLimitsReadStartupOverrides(t *testing.T) {
+	const passwordKey = "SHINONA_AUTH_PASSWORD_CONCURRENCY"
+	const rateKey = "SHINONA_AUTH_RATE_LIMIT_ENTRIES"
+	t.Setenv(passwordKey, "")
+	t.Setenv(rateKey, "")
+	config := environment{passwordKey: "6", rateKey: "4096"}
+	t.Setenv(passwordKey, "8")
+	limits, err := authLimits(config)
+	if err != nil || limits.PasswordConcurrency != 8 || limits.RateLimitEntries != 4096 {
+		t.Fatalf("configured authentication limits = %+v, %v", limits, err)
+	}
+	t.Setenv(rateKey, "0")
+	if _, err := authLimits(config); err == nil {
+		t.Fatal("accepted a zero-size rate limiter")
+	}
+}
+
 func TestResendConfig(t *testing.T) {
 	const endpointKey = "SHINONA_RESEND_API_URL"
 	const timeoutKey = "SHINONA_RESEND_TIMEOUT_SECONDS"

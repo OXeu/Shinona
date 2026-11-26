@@ -13,9 +13,11 @@ import (
 )
 
 func TestPasswordRateLimitsUseTheClientIP(t *testing.T) {
+	limits := httpauth.DefaultLimits()
+	limits.RateLimitEntries = 3
 	handler := httpauth.NewWithConfig(nil, func() httpauth.Config {
 		return httpauth.Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}}
-	}, slog.New(slog.DiscardHandler))
+	}, limits, slog.New(slog.DiscardHandler))
 	mux := http.NewServeMux()
 	handler.Routes(mux, func(h http.Handler) http.Handler { return h })
 
@@ -38,4 +40,10 @@ func TestPasswordRateLimitsUseTheClientIP(t *testing.T) {
 	try("192.0.2.1:2345", "192.0.2.3", http.StatusTooManyRequests)
 	try("10.0.0.1:4321", "192.0.2.3, 192.0.2.2, 10.0.0.2", http.StatusTooManyRequests)
 	try("10.0.0.1:4321", "192.0.2.3, 10.0.0.2", http.StatusBadRequest)
+	for i := range 5 {
+		try(fmt.Sprintf("[2001:db8:1::%x]:4321", i+1), "", http.StatusBadRequest)
+	}
+	try("[2001:db8:1::10]:4321", "", http.StatusTooManyRequests)
+	// The fourth bucket evicts the least recently used address.
+	try("192.0.2.1:4321", "", http.StatusBadRequest)
 }

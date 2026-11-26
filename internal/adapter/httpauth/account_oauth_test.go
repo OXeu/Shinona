@@ -166,7 +166,7 @@ func TestDeleteAccountRequiresAdminAndNotifiesOnSuccess(t *testing.T) {
 	var deleted string
 	handler := httpauth.NewWithConfig(service, func() httpauth.Config {
 		return httpauth.Config{AccountDeleted: func(owner string) { deleted = owner }}
-	}, slog.New(slog.DiscardHandler))
+	}, httpauth.DefaultLimits(), slog.New(slog.DiscardHandler))
 	mux := http.NewServeMux()
 	handler.Routes(mux, http.NewCrossOriginProtection().Handler)
 	adminCookie, memberCookie := accountCookie(t, service, admin), accountCookie(t, service, member)
