@@ -80,8 +80,13 @@ func (s *Service) Terminals(ctx context.Context, owner, id string) ([]TerminalTa
 }
 
 func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string) (TerminalTab, error) {
+	if lifetime.Err() != nil {
+		return TerminalTab{}, ErrTerminalUnavailable
+	}
 	ctx, cancelRequest := context.WithTimeout(ctx, s.workspace.Operation)
 	defer cancelRequest()
+	stopValidation := context.AfterFunc(lifetime, cancelRequest)
+	defer stopValidation()
 	pool := &s.terminals
 	key := sessionKey{owner, id}
 	start := pool.beginStart(key)

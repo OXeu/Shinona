@@ -41,6 +41,36 @@ func TestTerminalStartDoesNotBlockRegistryAndArchiveInvalidatesIt(t *testing.T) 
 	})
 }
 
+func TestTerminalStartupValidationStopsWithService(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const owner, session = "owner", "session"
+		repo := workspaceTestRepository{projects: map[sessionKey]string{{owner, session}: ""}}
+		resolve := func(ctx context.Context, _, _ string) (Target, error) {
+			<-ctx.Done()
+			return Target{}, ctx.Err()
+		}
+		service := NewService(ServiceStores{Sessions: repo, Projects: repo}, resolve, nil, &Controls{}, nil, DefaultWorkspaceTimeouts())
+		lifetime, stop := context.WithCancel(t.Context())
+		defer stop()
+		started := make(chan error, 1)
+		go func() {
+			_, err := service.StartTerminal(t.Context(), lifetime, owner, session)
+			started <- err
+		}()
+		synctest.Wait()
+		stop()
+		synctest.Wait()
+		select {
+		case err := <-started:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("start returned %v", err)
+			}
+		default:
+			t.Fatal("provider resolution still running after service cancellation")
+		}
+	})
+}
+
 func TestTerminalExitReleasesQuotaAndShutdownHasDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const owner, session = "owner", "session"
