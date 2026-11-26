@@ -40,10 +40,11 @@ func (s *Service) RenameProject(ctx context.Context, owner, id, name string) (Pr
 }
 
 func (s *Service) RemoveProject(ctx context.Context, owner, id string) error {
-	if !s.projectMu.TryLock() {
+	release, ok := s.tryProjectChange(owner, id)
+	if !ok {
 		return ErrWorkspaceBusy
 	}
-	defer s.projectMu.Unlock()
+	defer release()
 	err := s.repo.RemoveProject(ctx, owner, id)
 	if err == nil {
 		s.controls.changedAccount(owner)

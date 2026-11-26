@@ -61,14 +61,17 @@ func (w *SessionWatch) Read() SessionChange {
 	defer c.mu.Unlock()
 	change := SessionChange{Transcript: w.dirty}
 	w.dirty = false
-	active := c.active
-	if active != nil && active.item.OwnerID == w.key.owner && active.item.SessionID == w.key.id {
-		change.Progress = LiveProgress{
-			TurnID: active.item.ID, Parts: slices.Clone(active.parts), Steering: active.steering.snapshot(),
-			Context: active.usage,
-		}
-	}
+	change.Progress = c.active[w.key].progress()
 	return change
+}
+
+func (a *activeTurn) progress() LiveProgress {
+	if a == nil {
+		return LiveProgress{}
+	}
+	return LiveProgress{
+		TurnID: a.item.ID, Parts: slices.Clone(a.parts), Steering: a.steering.snapshot(), Context: a.usage,
+	}
 }
 
 func (w *SessionWatch) Close() {

@@ -32,6 +32,15 @@ type Spec struct {
 	OnTimeout string
 }
 
+type ProjectKey struct {
+	OwnerID   string
+	ProjectID string
+}
+
+func (s Spec) ProjectKey() ProjectKey {
+	return ProjectKey{OwnerID: s.OwnerID, ProjectID: s.ProjectID}
+}
+
 // Provider acquires a workspace for a run. It owns cleanup if acquisition fails.
 type Provider interface {
 	// Policies returns the supported choices for this owner in default order.

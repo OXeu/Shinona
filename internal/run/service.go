@@ -4,10 +4,10 @@ import (
 	"context"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/OXeu/shinona/internal/keylock"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
@@ -17,7 +17,7 @@ type Service struct {
 	projectTargets ListProjectTargets
 	newID          func() string
 	controls       *Controls
-	projectMu      sync.Mutex
+	projectChanges keylock.Locks[sandbox.ProjectKey]
 	terminals      terminalRegistry
 }
 
@@ -89,6 +89,7 @@ func (s *Service) enqueue(ctx context.Context, item Run, firstTitle string, queu
 	}
 	if err == nil {
 		s.controls.changed(item.OwnerID, item.SessionID)
+		s.controls.wakeQueue()
 	}
 	return turn, err
 }

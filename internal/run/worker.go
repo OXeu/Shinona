@@ -16,12 +16,14 @@ import (
 
 const (
 	cleanupTimeout = 10 * time.Second
-	queueInterval  = 500 * time.Millisecond
+	queueInterval  = 5 * time.Second
+	maxActiveRuns  = 4
 )
 
 var errWorkspaceSetup = errors.New("could not prepare the sandbox")
 
-// Worker executes one run at a time. The application starts exactly one worker.
+// Worker dispatches a bounded number of turns. Claims preserve ordering within
+// each session and avoid filling execution slots with the same workspace.
 type Worker struct {
 	repo     Repository
 	resolve  ResolveTarget
@@ -36,21 +38,39 @@ func NewWorker(repo Repository, resolve ResolveTarget, logger *slog.Logger, cont
 func (w *Worker) Serve(ctx context.Context) {
 	ticker := time.NewTicker(queueInterval)
 	defer ticker.Stop()
+	wake := w.controls.queueWake()
+	finished := make(chan struct{}, maxActiveRuns)
+	inFlight := 0
+	defer func() {
+		// Completion still writes to the repository after cancellation.
+		for range inFlight {
+			<-finished
+		}
+	}()
 
 	for ctx.Err() == nil {
-		item, err := w.controls.claim(ctx, w.repo)
-		switch {
-		case err != nil:
-			w.logger.Error("claim queued run", "error", err)
-		case item != nil:
-			w.execute(ctx, item)
-			continue
+		if inFlight < maxActiveRuns {
+			item, err := w.controls.claim(ctx, w.repo)
+			switch {
+			case err != nil && ctx.Err() == nil:
+				w.logger.Error("claim queued run", "error", err)
+			case item != nil:
+				inFlight++
+				go func() {
+					defer func() { finished <- struct{}{} }()
+					w.execute(ctx, item)
+				}()
+				continue
+			}
 		}
 
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-wake:
+		case <-finished:
+			inFlight--
 		}
 	}
 }
@@ -64,8 +84,8 @@ func (w *Worker) execute(ctx context.Context, active *activeTurn) {
 	w.controls.mu.Lock()
 	defer w.controls.mu.Unlock()
 	defer func() {
-		w.controls.active = nil
-		w.controls.notifyLocked(sessionKey{owner: item.OwnerID, id: item.SessionID}, true)
+		delete(w.controls.active, active.key())
+		w.controls.notifyLocked(active.key(), true)
 	}()
 	status := Succeeded
 	switch {
@@ -119,13 +139,18 @@ func turnFailureReason(ctx context.Context, err error) string {
 }
 
 func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
-	w.controls.leaseMu.Lock()
-	defer w.controls.leaseMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
 	item := active.item
-	spec, target, err := sessionSandbox(ctx, w.repo, w.resolve, item.OwnerID, item.SessionID, item.Backend, true)
+	spec, release, err := lockSessionProject(ctx, w.repo, item.OwnerID, item.SessionID, func(key sandbox.ProjectKey) (func(), error) {
+		return w.controls.leases.Acquire(ctx, key, false)
+	})
+	if err != nil {
+		return Result{}, fmt.Errorf("lock workspace project: %w", err)
+	}
+	defer release()
+	spec, target, err := projectTarget(ctx, w.repo, w.resolve, spec, item.Backend, true)
 	if err != nil {
 		return Result{}, fmt.Errorf("load workspace project: %w", err)
 	}

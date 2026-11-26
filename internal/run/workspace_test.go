@@ -13,10 +13,14 @@ func TestInspectWorkspaceBorrowsOnlyTheSessionsLiveLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	active := &activeTurn{item: Run{OwnerID: "owner", SessionID: "session"}, ctx: ctx}
-	controls := &Controls{active: active}
-	controls.leaseMu.Lock()
-	defer controls.leaseMu.Unlock()
-	service := NewService(nil, nil, nil, controls, nil)
+	controls := &Controls{active: map[sessionKey]*activeTurn{active.key(): active}}
+	unlock, ok := controls.leases.TryAcquire(sandbox.ProjectKey{OwnerID: "owner"}, false)
+	if !ok {
+		t.Fatal("could not reserve workspace")
+	}
+	defer unlock()
+	repo := workspaceTestRepository{projects: map[sessionKey]string{{owner: "owner", id: "session"}: ""}}
+	service := NewService(repo, nil, nil, controls, nil)
 	unexpectedUse := func(context.Context, sandbox.Workspace) error {
 		t.Fatal("inspected an unavailable workspace")
 		return nil
@@ -46,7 +50,7 @@ func TestInspectWorkspaceBorrowsOnlyTheSessionsLiveLease(t *testing.T) {
 		t.Fatal("inspection could not borrow the active workspace")
 	}
 	for _, other := range []sessionKey{{owner: "other", id: "session"}, {owner: "owner", id: "other"}} {
-		if err := service.InspectWorkspace(ctx, other.owner, other.id, unexpectedUse); !errors.Is(err, ErrWorkspaceBusy) {
+		if err := service.InspectWorkspace(ctx, other.owner, other.id, unexpectedUse); !errors.Is(err, ErrWorkspaceUnavailable) {
 			t.Fatalf("inspect another session: %v", err)
 		}
 	}
@@ -77,15 +81,21 @@ func TestInspectWorkspaceBorrowsTheSharedProjectLease(t *testing.T) {
 		t.Run("project="+project, func(t *testing.T) {
 			ctx := t.Context()
 			active := &activeTurn{item: Run{OwnerID: "owner", SessionID: "first"}, ctx: ctx}
-			controls := &Controls{active: active}
-			controls.leaseMu.Lock()
-			defer controls.leaseMu.Unlock()
+			controls := &Controls{active: map[sessionKey]*activeTurn{active.key(): active}}
+			unlock, ok := controls.leases.TryAcquire(sandbox.ProjectKey{OwnerID: "owner", ProjectID: project}, false)
+			if !ok {
+				t.Fatal("could not reserve workspace")
+			}
+			defer unlock()
 			repo := workspaceTestRepository{projects: map[sessionKey]string{
 				{owner: "owner", id: "second"}: project,
 				{owner: "owner", id: "other"}:  "other-project",
 				{owner: "other", id: "second"}: project,
 			}}
-			service := NewService(repo, nil, nil, controls, nil)
+			resolve := func(context.Context, string, string) (Target, error) {
+				return Target{Provider: workspaceTestProvider{}}, nil
+			}
+			service := NewService(repo, resolve, func() string { return "test-lease" }, controls, nil)
 			box := &stubWorkspace{}
 			defer controls.publishWorkspace(active, box, &project)()
 			if err := service.InspectWorkspace(ctx, "owner", "second", func(_ context.Context, ws sandbox.Workspace) error {
@@ -100,12 +110,14 @@ func TestInspectWorkspaceBorrowsTheSharedProjectLease(t *testing.T) {
 				key  sessionKey
 				want error
 			}{
-				{sessionKey{"owner", "other"}, ErrWorkspaceBusy},
-				{sessionKey{"other", "second"}, ErrWorkspaceBusy},
+				{sessionKey{"owner", "other"}, nil},
+				{sessionKey{"other", "second"}, nil},
 				{sessionKey{"owner", "missing"}, ErrWorkspaceUnavailable},
 			} {
-				err := service.InspectWorkspace(ctx, other.key.owner, other.key.id, func(context.Context, sandbox.Workspace) error {
-					t.Fatal("inspection borrowed a workspace outside the account and project")
+				err := service.InspectWorkspace(ctx, other.key.owner, other.key.id, func(_ context.Context, ws sandbox.Workspace) error {
+					if ws == box || other.want != nil {
+						t.Fatal("inspection borrowed a workspace outside the account and project")
+					}
 					return nil
 				})
 				if !errors.Is(err, other.want) {
@@ -182,6 +194,8 @@ func (workspaceTestProvider) OpenProject(context.Context, sandbox.Spec) (sandbox
 	return &stubWorkspace{}, nil
 }
 
-type stubWorkspace struct{ sandbox.Workspace }
+type stubWorkspace struct {
+	sandbox.Workspace
+}
 
 func (*stubWorkspace) Close(context.Context) error { return nil }

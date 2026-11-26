@@ -76,10 +76,16 @@ func (s *Service) Terminals(ctx context.Context, owner, id string) ([]TerminalTa
 }
 
 func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string) (TerminalTab, error) {
-	if !s.projectMu.TryLock() {
-		return TerminalTab{}, ErrWorkspaceBusy
+	spec, release, err := lockSessionProject(ctx, s.repo, owner, id, func(key sandbox.ProjectKey) (func(), error) {
+		if release, ok := s.projectChanges.TryAcquire(key, true); ok {
+			return release, nil
+		}
+		return nil, ErrWorkspaceBusy
+	})
+	if err != nil {
+		return TerminalTab{}, err
 	}
-	defer s.projectMu.Unlock()
+	defer release()
 	pool := &s.terminals
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
@@ -87,7 +93,11 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 		return TerminalTab{}, ErrTerminalUnavailable
 	}
 	// Archive commits before it removes the tabs under this same mutex.
-	spec, target, err := sessionSandbox(ctx, s.repo, s.resolve, owner, id, "", true)
+	project, err := s.repo.SessionProject(ctx, owner, id)
+	if err != nil || project != spec.ProjectID {
+		return TerminalTab{}, errors.Join(ErrTerminalUnavailable, err)
+	}
+	spec, target, err := projectTarget(ctx, s.repo, s.resolve, spec, "", true)
 	if err != nil {
 		return TerminalTab{}, err
 	}

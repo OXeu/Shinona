@@ -42,24 +42,28 @@ func sessionSandbox(ctx context.Context, repo Repository, resolve ResolveTarget,
 	if err != nil {
 		return sandbox.Spec{}, Target{}, err
 	}
-	config, err := repo.ProjectSandboxConfig(ctx, owner, project)
+	spec := sandbox.Spec{OwnerID: owner, SessionID: session, ProjectID: project, Policy: sandbox.Shared}
+	return projectTarget(ctx, repo, resolve, spec, backend, provision)
+}
+
+func projectTarget(ctx context.Context, repo Repository, resolve ResolveTarget, spec sandbox.Spec, backend string, provision bool) (sandbox.Spec, Target, error) {
+	config, err := repo.ProjectSandboxConfig(ctx, spec.OwnerID, spec.ProjectID)
 	if err != nil {
 		return sandbox.Spec{}, Target{}, err
 	}
-	spec := sandbox.Spec{OwnerID: owner, SessionID: session, ProjectID: project, Policy: sandbox.Shared}
 	if config != nil {
-		target, err := resolve(ctx, owner, config.Provider)
+		target, err := resolve(ctx, spec.OwnerID, config.Provider)
 		return config.spec(spec), target, err
 	}
-	target, err := resolve(ctx, owner, backend)
+	target, err := resolve(ctx, spec.OwnerID, backend)
 	if err != nil {
 		return sandbox.Spec{}, Target{}, err
 	}
 	if _, managed := target.Provider.(sandbox.ManagedProjectProvider); managed && provision {
-		if err := repo.RememberProjectSandboxProvider(ctx, owner, project, target.Name); err != nil {
+		if err := repo.RememberProjectSandboxProvider(ctx, spec.OwnerID, spec.ProjectID, target.Name); err != nil {
 			return sandbox.Spec{}, Target{}, err
 		}
-		target, err = resolve(ctx, owner, target.Name)
+		target, err = resolve(ctx, spec.OwnerID, target.Name)
 	}
 	return spec, target, err
 }
@@ -252,14 +256,11 @@ func (s *Service) projectSandboxConfig(ctx context.Context, owner, id string) (P
 }
 
 func (s *Service) changeProjectSandbox(ctx context.Context, owner, id string, change func(context.Context, ProjectSandboxConfig, sandbox.Spec) error) error {
-	if !s.controls.leaseMu.TryLock() {
+	release, ok := s.tryProjectChange(owner, id)
+	if !ok {
 		return ErrWorkspaceBusy
 	}
-	defer s.controls.leaseMu.Unlock()
-	if !s.projectMu.TryLock() {
-		return ErrWorkspaceBusy
-	}
-	defer s.projectMu.Unlock()
+	defer release()
 	ctx, cancel := context.WithTimeout(ctx, ProjectSandboxTimeout)
 	defer cancel()
 	_, config, err := s.projectSandboxConfig(ctx, owner, id)
@@ -268,6 +269,23 @@ func (s *Service) changeProjectSandbox(ctx context.Context, owner, id string, ch
 	}
 	spec := sandbox.Spec{RunID: s.newID(), OwnerID: owner, ProjectID: id, Policy: sandbox.Shared}
 	return change(ctx, config, spec)
+}
+
+func (s *Service) tryProjectChange(owner, id string) (func(), bool) {
+	key := sandbox.ProjectKey{OwnerID: owner, ProjectID: id}
+	lease, ok := s.controls.leases.TryAcquire(key, false)
+	if !ok {
+		return nil, false
+	}
+	change, ok := s.projectChanges.TryAcquire(key, false)
+	if !ok {
+		lease()
+		return nil, false
+	}
+	return func() {
+		change()
+		lease()
+	}, true
 }
 
 func (s *Service) destroyProjectSandbox(ctx context.Context, provider sandbox.ManagedProjectProvider, spec sandbox.Spec) error {

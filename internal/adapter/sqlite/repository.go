@@ -101,6 +101,10 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 	if err := db.WithContext(ctx).Exec("DROP INDEX IF EXISTS idx_runs_session_status").Error; err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
+	if err := db.WithContext(ctx).Exec(`CREATE INDEX IF NOT EXISTS idx_runs_executing_project
+		ON runs (owner_id, session_id) WHERE status = 'RUNNING'`).Error; err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
 	if err := protectDeletedAccounts(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
@@ -192,11 +196,19 @@ func closeDB(db *gorm.DB) error {
 func (r *Repository) ClaimNext(ctx context.Context, now time.Time) (*run.Run, error) {
 	db := r.db.WithContext(ctx)
 	next := db.Table("runs AS candidate").Select("candidate.id").
+		Joins("LEFT JOIN agent_sessions AS workspace ON workspace.id = candidate.session_id AND workspace.owner_id = candidate.owner_id").
 		Where("candidate.status = ? AND candidate.owner_id <> '' AND candidate.session_id <> ''", run.Queued).
 		Where(`NOT EXISTS (
 			SELECT 1 FROM runs AS earlier WHERE earlier.session_id = candidate.session_id
 			AND earlier.sequence < candidate.sequence AND earlier.status IN ?
 		)`, []run.Status{run.Queued, run.Running}).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM runs AS executing
+			JOIN agent_sessions AS active_session ON active_session.id = executing.session_id
+				AND active_session.owner_id = executing.owner_id
+			WHERE executing.status = 'RUNNING' AND executing.owner_id = candidate.owner_id
+				AND active_session.project_id = workspace.project_id
+		)`).
 		Order("candidate.created_at, candidate.id").Limit(1)
 	var records []row
 	result := db.Model(&records).Clauses(clause.Returning{}).
