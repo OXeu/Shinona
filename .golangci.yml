@@ -38,6 +38,7 @@ linters:
             - $gostd
             - github.com/OXeu/shinona/internal/imagedata$
             - github.com/OXeu/shinona/internal/keylock$
+            - github.com/OXeu/shinona/internal/mcpconfig$
             - github.com/OXeu/shinona/internal/sandbox$
             - github.com/OXeu/shinona/internal/timing$
         no-host-shell:

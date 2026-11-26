@@ -2,12 +2,13 @@ package settings
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"slices"
 	"strings"
-)
 
-const maxMCPServers = 16
+	"github.com/OXeu/shinona/internal/mcpconfig"
+)
 
 type MCPServer struct {
 	Name  string          `json:"name"`
@@ -113,13 +114,13 @@ func mcpServerNotFound() error {
 }
 
 func (servers MCPConfig) Validate() error {
-	if len(servers) > maxMCPServers {
-		return Invalid("MCP_SERVER_LIMIT", "configure at most 16 MCP servers")
+	if len(servers) > mcpconfig.MaxServers {
+		return Invalid("MCP_SERVER_LIMIT", fmt.Sprintf("configure at most %d MCP servers", mcpconfig.MaxServers))
 	}
 	names := make(map[string]bool, len(servers))
 	for _, entry := range servers {
 		target, err := url.Parse(entry.URL)
-		if entry.Name == "" || len(entry.Name) > 80 ||
+		if !mcpconfig.ValidName(entry.Name) ||
 			err != nil || target.Hostname() == "" || target.User != nil || target.RawQuery != "" ||
 			target.ForceQuery || target.Fragment != "" || (target.Scheme != "https" && target.Scheme != "http") ||
 			strings.ContainsAny(entry.Token, "\r\n") {

@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/OXeu/shinona/internal/imagedata"
+	"github.com/OXeu/shinona/internal/mcpconfig"
 )
 
 const (
@@ -210,17 +211,10 @@ func validOptions(option Options) bool {
 		return false
 	}
 	servers := option.SelectedMCPServers()
-	if len(option.Model) > 256 || len(servers) > 16 || (option.Permission == ReadOnly && len(servers) > 0) {
+	if len(option.Model) > 256 || (option.Permission == ReadOnly && len(servers) > 0) {
 		return false
 	}
-	seen := make(map[string]bool, len(servers))
-	for _, name := range servers {
-		if name == "" || len(name) > 80 || seen[name] {
-			return false
-		}
-		seen[name] = true
-	}
-	return true
+	return mcpconfig.ValidSelection(servers)
 }
 
 func (s *Steering) snapshot() []SteeringMessage {

@@ -11,11 +11,13 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/OXeu/shinona/internal/mcpconfig"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 	"github.com/OXeu/shinona/internal/timing"
@@ -53,20 +55,30 @@ func (s *Servers) Lookup(name string) (settings.MCPServer, bool) {
 }
 
 func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]run.Tool, func() error, error) {
+	if !mcpconfig.ValidSelection(names) {
+		return nil, nil, run.ErrOptions
+	}
 	type connection struct {
+		name  string
 		tools []run.Tool
 		close func() error
 	}
 	connections := make([]connection, len(names))
-	closeTools := func() error {
-		var err error
-		for _, session := range slices.Backward(connections) {
+	closeTools := sync.OnceValue(func() error {
+		var closing sync.WaitGroup
+		failures := make([]error, len(connections))
+		for i, session := range connections {
 			if session.close != nil {
-				err = errors.Join(err, session.close())
+				closing.Go(func() {
+					if err := session.close(); err != nil {
+						failures[i] = fmt.Errorf("close MCP server %q: %w", session.name, err)
+					}
+				})
 			}
 		}
-		return err
-	}
+		closing.Wait()
+		return errors.Join(failures...)
+	})
 	startup, openCtx := errgroup.WithContext(ctx)
 	startup.SetLimit(4)
 	for i, name := range names {
@@ -75,10 +87,10 @@ func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]run
 				return err
 			}
 			tools, closeSession, err := s.open(openCtx, owner, name)
+			connections[i] = connection{name, tools, closeSession}
 			if err != nil {
 				return fmt.Errorf("open MCP server %q: %w", name, err)
 			}
-			connections[i] = connection{tools, closeSession}
 			return nil
 		})
 	}
@@ -117,11 +129,10 @@ func (s *Servers) open(ctx context.Context, owner, name string) ([]run.Tool, fun
 	if err != nil {
 		return nil, nil, err
 	}
+	// Even a failed listing has an open session. Report its error before
+	// closing so the other startup requests can observe cancellation promptly.
 	tools, err := listTools(ctx, connection, name)
-	if err != nil {
-		return nil, nil, errors.Join(err, connection.Close())
-	}
-	return tools, connection.Close, nil
+	return tools, connection.Close, err
 }
 
 type tokenTransport struct {

@@ -2,17 +2,33 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 )
+
+func TestOpenRejectsDuplicateSelectionBeforeConnecting(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("invalid selection connected to an MCP server")
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	t.Cleanup(fixture.Close)
+	servers := NewServers(settings.MCPConfig{{Name: "fixture", URL: fixture.URL}}, fixture.Client(), nil)
+	tools, release, err := servers.Open(t.Context(), "owner", []string{"fixture", "fixture"})
+	if !errors.Is(err, run.ErrOptions) || release != nil || len(tools) != 0 {
+		t.Fatalf("open with duplicate selection returned %d tools, cleanup=%t, error=%v", len(tools), release != nil, err)
+	}
+}
 
 func TestConfiguredStreamableHTTPTool(t *testing.T) {
 	mcpServer := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
@@ -117,5 +133,73 @@ func TestSelectedMCPServersExposeSameNamedToolsIndependently(t *testing.T) {
 	defer func() { _ = closeSingle() }()
 	if len(single) != 1 || single[0].Name != qualified[1] {
 		t.Fatalf("selecting one server changed its tool name: %+v", single)
+	}
+}
+
+func TestMCPListingFailureCancelsOtherStartupAndClosesBothSessions(t *testing.T) {
+	const failing, slow = "failing", "slow"
+	startupCtx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	names := []string{failing, slow}
+	mux := http.NewServeMux()
+	slowListing := make(chan struct{})
+	allDeleting := make(chan struct{})
+	var deleting atomic.Int32
+	for _, name := range names {
+		server := sdk.NewServer(&sdk.Implementation{Name: name, Version: "1"}, nil)
+		server.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+			return func(ctx context.Context, method string, request sdk.Request) (sdk.Result, error) {
+				if method != "tools/list" {
+					return next(ctx, method, request)
+				}
+				if name == failing {
+					select {
+					case <-slowListing:
+						return nil, errors.New("fixture catalog unavailable")
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-startupCtx.Done():
+						return nil, startupCtx.Err()
+					}
+				}
+				close(slowListing)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-startupCtx.Done():
+					return nil, startupCtx.Err()
+				case <-allDeleting:
+					return nil, errors.New("fixture session closed")
+				}
+			}
+		})
+		handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil)
+		mux.HandleFunc("/"+name, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodDelete {
+				if deleting.Add(1) == int32(len(names)) {
+					close(allDeleting)
+				}
+				select {
+				case <-r.Context().Done():
+					return
+				case <-allDeleting:
+				}
+			}
+			handler.ServeHTTP(w, r)
+		})
+	}
+	fixture := httptest.NewServer(mux)
+	t.Cleanup(fixture.Close)
+	servers := NewServers(settings.MCPConfig{
+		{Name: failing, URL: fixture.URL + "/" + failing},
+		{Name: slow, URL: fixture.URL + "/" + slow},
+	}, fixture.Client(), nil)
+	tools, release, err := servers.Open(startupCtx, "owner", names)
+	if startupCtx.Err() != nil || err == nil || !strings.Contains(err.Error(), "fixture catalog unavailable") || release != nil || len(tools) != 0 {
+		t.Fatalf("startup failed to return the listing error before its deadline: tools=%d release=%t error=%v context=%v",
+			len(tools), release != nil, err, startupCtx.Err())
+	}
+	if deleting.Load() != int32(len(names)) {
+		t.Fatalf("started %d session deletions, want %d", deleting.Load(), len(names))
 	}
 }
