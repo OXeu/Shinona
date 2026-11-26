@@ -72,9 +72,14 @@ func (r *handler) SaveProjectSandbox(ctx context.Context, args struct {
 	return r.apiError(err)
 }
 
-func (r *handler) DestroyProjectSandbox(ctx context.Context, args resourceID) error {
-	err := r.service.ResetProjectSandbox(ctx, auth.CurrentUser(ctx).ID, projectID(args.ID), false)
-	return r.apiError(err)
+type projectSandboxReset struct {
+	ID        string  `uri:"id"`
+	Provider  *string `form:"provider"`
+	SandboxID *string `form:"sandboxId"`
+}
+
+func (r *handler) DestroyProjectSandbox(ctx context.Context, args projectSandboxReset) error {
+	return r.resetProjectSandbox(ctx, args, false)
 }
 
 func (r *handler) CreateProjectSandbox(ctx context.Context, args resourceID) error {
@@ -82,8 +87,19 @@ func (r *handler) CreateProjectSandbox(ctx context.Context, args resourceID) err
 	return r.apiError(err)
 }
 
-func (r *handler) RecreateProjectSandbox(ctx context.Context, args resourceID) error {
-	err := r.service.ResetProjectSandbox(ctx, auth.CurrentUser(ctx).ID, projectID(args.ID), true)
+func (r *handler) RecreateProjectSandbox(ctx context.Context, args projectSandboxReset) error {
+	return r.resetProjectSandbox(ctx, args, true)
+}
+
+func (r *handler) resetProjectSandbox(ctx context.Context, args projectSandboxReset, recreate bool) error {
+	var selection *run.ProjectSandboxSelection
+	if args.Provider != nil || args.SandboxID != nil {
+		if args.Provider == nil || args.SandboxID == nil || *args.Provider == "" || *args.SandboxID == "" {
+			return r.apiError(run.ErrProjectSandboxConfig)
+		}
+		selection = &run.ProjectSandboxSelection{Provider: *args.Provider, SandboxID: *args.SandboxID}
+	}
+	err := r.service.ResetProjectSandbox(ctx, auth.CurrentUser(ctx).ID, projectID(args.ID), recreate, selection)
 	return r.apiError(err)
 }
 

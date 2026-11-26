@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -65,13 +66,14 @@ func TestDestroyProjectTargetsTheInspectedContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name, remaining string
-		exitStatus      uint32
+		name, remaining, selection string
+		exitStatus                 uint32
 	}{
-		{name: "removed"},
-		{name: "already removed", exitStatus: 1},
-		{name: "replaced", remaining: replacement},
-		{name: "still present", remaining: original, exitStatus: 1},
+		{name: "removed", selection: original},
+		{name: "already removed", selection: original, exitStatus: 1},
+		{name: "replaced", selection: original, remaining: replacement},
+		{name: "still present", selection: original, remaining: original, exitStatus: 1},
+		{name: "stale selection", selection: replacement},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var checks, removals atomic.Int32
@@ -108,7 +110,13 @@ func TestDestroyProjectTargetsTheInspectedContainer(t *testing.T) {
 			})
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			err := provider.DestroyProject(ctx, sandbox.Spec{OwnerID: "owner", ProjectID: "project"})
+			err := provider.DestroyProject(ctx, sandbox.Spec{OwnerID: "owner", ProjectID: "project"}, tc.selection)
+			if tc.selection != original {
+				if !errors.Is(err, sandbox.ErrProjectChanged) || checks.Load() != 1 || removals.Load() != 0 {
+					t.Fatalf("stale selection returned %v after %d status checks and %d removals", err, checks.Load(), removals.Load())
+				}
+				return
+			}
 			if (err != nil) != (tc.remaining != "") || checks.Load() != 2 || removals.Load() != 1 {
 				t.Fatalf("destroy returned %v after %d status checks and %d removals", err, checks.Load(), removals.Load())
 			}

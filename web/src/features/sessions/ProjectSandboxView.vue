@@ -153,10 +153,13 @@ async function perform() {
   const { signal } = request
   const project = props.project
   const operation = action.value
+  const selection = snapshot.value
+  if (!selection || (operation === 'destroy' || operation === 'recreate') && !selection.sandboxId) return
   busy.value = true
   try {
     if (operation === 'save') await projectSandboxApi.save(project, next.value, signal, skipCleanupFor.value)
-    else await projectSandboxApi[operation](project, signal)
+    else if (operation === 'create') await projectSandboxApi.create(project, signal)
+    else await projectSandboxApi[operation](project, selection, signal)
     if (!signal.aborted) {
       confirmOpen.value = false
       notify.success(t(operation === 'save' ? 'settings.saved' : operation === 'destroy' ? 'sandbox.destroyed' : 'sandbox.created'))
@@ -216,14 +219,14 @@ onUnmounted(() => request.abort())
       <UiBox class="sandbox-actions" :hidden="!configured">
         <UiButton
           class="secondary-button"
-          :disabled="busy || loading"
+          :disabled="busy || loading || (snapshot?.state !== 'NONE' && !snapshot?.sandboxId)"
           @click="prepare(snapshot?.state === 'NONE' ? 'create' : 'recreate')"
         >
           {{ recreateLabel }}
         </UiButton>
         <UiButton
           class="secondary-button danger"
-          :disabled="busy || loading || snapshot?.state === 'NONE'"
+          :disabled="busy || loading || !snapshot?.sandboxId"
           @click="prepare('destroy')"
         >
           {{ t('sandbox.destroy') }}

@@ -67,7 +67,7 @@ func TestProjectSandboxUsesConfiguredLifecycleTimeout(t *testing.T) {
 		}}
 		resolve := func(context.Context, string, string) (Target, error) { return Target{Provider: provider}, nil }
 		service := NewService(ServiceStores{Projects: repo}, resolve, func() string { return "lease" }, &Controls{}, nil, limits)
-		if err := service.ResetProjectSandbox(t.Context(), "owner", "", false); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != limits.Lifecycle {
+		if err := service.ResetProjectSandbox(t.Context(), "owner", "", false, nil); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != limits.Lifecycle {
 			t.Fatalf("project reset finished after %v with %v", time.Since(start), err)
 		}
 	})
@@ -177,7 +177,7 @@ func (p timedWorkspaceProvider) OpenProject(ctx context.Context, _ sandbox.Spec)
 	return p.open(ctx)
 }
 
-func (p timedWorkspaceProvider) DestroyProject(ctx context.Context, _ sandbox.Spec) error {
+func (p timedWorkspaceProvider) DestroyProject(ctx context.Context, _ sandbox.Spec, _ string) error {
 	return p.destroy(ctx)
 }
 

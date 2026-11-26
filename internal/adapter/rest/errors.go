@@ -8,6 +8,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
@@ -48,6 +49,8 @@ func (r *handler) apiError(err error) error {
 		return codedError{err, "PROJECT_SANDBOX_CLEANUP_FAILED"}
 	case errors.Is(err, run.ErrProjectCleanupRequired):
 		return codedError{err, "PROJECT_SANDBOX_CLEANUP_REQUIRED"}
+	case errors.Is(err, sandbox.ErrProjectChanged):
+		return codedError{err, "PROJECT_SANDBOX_CHANGED"}
 	case errors.Is(err, run.ErrSandboxProvider):
 		return codedError{err, "SANDBOX_PROVIDER_UNAVAILABLE"}
 	case errors.Is(err, settings.ErrSSHServer):
@@ -90,7 +93,7 @@ func writeError(c *gin.Context, err error) {
 		status = http.StatusRequestEntityTooLarge
 	case "RUN_NOT_ACCEPTING", "QUEUE_FULL", "PROJECT_NAME_EXISTS", "SSH_SERVER_NAME_EXISTS", "SSH_SERVER_IN_USE",
 		"WORKSPACE_BUSY", "WORKSPACE_SELECTION_CHANGED", "ACTIVE_TURN", "HISTORY_CHANGED", "RETRY_TURN_UNAVAILABLE",
-		"PROJECT_SANDBOX_CLEANUP_REQUIRED":
+		"PROJECT_SANDBOX_CLEANUP_REQUIRED", "PROJECT_SANDBOX_CHANGED":
 		status = http.StatusConflict
 	case "SANDBOX_PROVIDER_UNAVAILABLE", "WORKSPACE_UNAVAILABLE":
 		status = http.StatusServiceUnavailable

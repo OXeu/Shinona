@@ -37,15 +37,21 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 	return status, nil
 }
 
-func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error {
+func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expectedID string) error {
 	release, err := p.state.provision.Acquire(ctx, spec.ProjectKey(), false)
 	if err != nil {
 		return err
 	}
 	defer release()
 	id, _, err := p.store.E2BSandbox(ctx, spec.OwnerID, spec.ProjectID, p.endpoint)
-	if err != nil || id == "" {
+	if err != nil {
 		return err
+	}
+	if expectedID != "" && id != expectedID {
+		return sandbox.ErrProjectChanged
+	}
+	if id == "" {
+		return nil
 	}
 	if _, err := p.api.Kill(ctx, id); err != nil && !isGone(err) {
 		return err

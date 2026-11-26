@@ -2,6 +2,7 @@ package e2b
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -94,10 +95,13 @@ func TestProjectLifecycleUsesProjectTemplateAndTimeout(t *testing.T) {
 	if err != nil || status.ID != "project-box" || status.State != sandbox.ProjectPaused {
 		t.Fatalf("paused status: %+v, %v", status, err)
 	}
-	if err := provider.DestroyProject(ctx, spec); err != nil {
+	if err := provider.DestroyProject(ctx, spec, "previous-box"); !errors.Is(err, sandbox.ErrProjectChanged) || deletes.Load() != 0 {
+		t.Fatalf("destroy with a stale ID: %v, %d deletes", err, deletes.Load())
+	}
+	if err := provider.DestroyProject(ctx, spec, status.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.DestroyProject(ctx, spec); err != nil {
+	if err := provider.DestroyProject(ctx, spec, ""); err != nil {
 		t.Fatal(err)
 	}
 	status, err = provider.ProjectStatus(ctx, spec)

@@ -124,7 +124,7 @@ func newBenchmarkSandbox(b *testing.B, repo *sqlite.Database, name string, provi
 		if err := api.service.CloseTerminals(ctx); err != nil {
 			b.Error(err)
 		}
-		if err := provider.DestroyProject(ctx, spec); err != nil {
+		if err := provider.DestroyProject(ctx, spec, ""); err != nil {
 			b.Errorf("clean up benchmark sandbox for project %s: %v", spec.ProjectID, err)
 		}
 	})

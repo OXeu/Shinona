@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -22,6 +23,65 @@ import (
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
+
+func TestProjectSandboxResetRejectsAStaleSelection(t *testing.T) {
+	var deleted atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"sandboxID": r.PathValue("id"), "state": "running"})
+	})
+	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		deleted.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /sandboxes", func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("a stale request provisioned a sandbox")
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	remote := httptest.NewServer(mux)
+	t.Cleanup(remote.Close)
+	_, db, query := settingsTestApp(t, settings.Values{settings.E2BAPIKey: "fixture", settings.E2BBaseURL: remote.URL})
+	const owner, path = "alice", "/projects/default/sandbox"
+	if err := db.Projects.SaveProjectSandboxConfig(t.Context(), owner, "", run.ProjectSandboxConfig{Provider: sandbox.ProviderE2B}); err != nil {
+		t.Fatal(err)
+	}
+	save := func(prior, id string) {
+		t.Helper()
+		if saved, err := db.E2B.SaveE2BSandbox(t.Context(), owner, "", remote.URL, prior, id, []byte(`{}`)); err != nil || !saved {
+			t.Fatalf("save E2B binding: %t, %v", saved, err)
+		}
+	}
+	save("", "old-sandbox")
+	var selection struct {
+		SandboxID string
+		Effective struct{ Provider string }
+	}
+	if body := query(owner, http.MethodGet, path, nil); json.Unmarshal([]byte(body), &selection) != nil || selection.SandboxID != "old-sandbox" {
+		t.Fatalf("load the original sandbox: %s", body)
+	}
+	save("old-sandbox", "replacement")
+	selector := url.Values{"sandboxId": {selection.SandboxID}, "provider": {selection.Effective.Provider}}
+	for _, operation := range []struct{ method, path string }{
+		{http.MethodDelete, path}, {http.MethodPost, path + "/recreate"},
+	} {
+		if body := query(owner, operation.method, operation.path+"?"+selector.Encode(), nil); !strings.Contains(body, "PROJECT_SANDBOX_CHANGED") {
+			t.Errorf("%s %s with an old sandbox ID: %s", operation.method, operation.path, body)
+		}
+	}
+	selector.Set("sandboxId", "replacement")
+	selector.Set("provider", sandbox.ProviderSSH)
+	if body := query(owner, http.MethodDelete, path+"?"+selector.Encode(), nil); !strings.Contains(body, "PROJECT_SANDBOX_CHANGED") {
+		t.Errorf("delete with a stale provider: %s", body)
+	}
+	if deleted.Load() != 0 {
+		t.Fatalf("stale selections reached the E2B delete endpoint %d times", deleted.Load())
+	}
+	selector.Set("provider", sandbox.ProviderE2B)
+	if body := query(owner, http.MethodDelete, path+"?"+selector.Encode(), nil); body != "" || deleted.Load() != 1 {
+		t.Fatalf("delete a confirmed sandbox: %s (remote deletes: %d)", body, deleted.Load())
+	}
+}
 
 func TestRemovingProjectPreservesSandboxOnPreviousE2BControlPlane(t *testing.T) {
 	var destroyed atomic.Bool

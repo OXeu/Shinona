@@ -338,7 +338,7 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 	return status, nil
 }
 
-func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error {
+func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expectedID string) error {
 	release, err := provisionGates.Acquire(ctx, spec.ProjectKey(), false)
 	if err != nil {
 		return err
@@ -352,8 +352,14 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error 
 	stop := context.AfterFunc(ctx, func() { _ = ws.Close(ctx) })
 	defer stop()
 	status, err := ws.status(ctx)
-	if err != nil || status.State == sandbox.ProjectNone {
+	if err != nil {
 		return err
+	}
+	if expectedID != "" && status.ID != expectedID {
+		return sandbox.ErrProjectChanged
+	}
+	if status.State == sandbox.ProjectNone {
+		return nil
 	}
 	removeErr := ws.docker(ctx, "rm", "--force", "--volumes", "--", status.ID)
 	remaining, checkErr := ws.status(ctx)

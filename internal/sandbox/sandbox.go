@@ -24,6 +24,7 @@ const DefaultCleanupTimeout = 5 * time.Second
 var (
 	ErrPolicy           = errors.New("that sandbox policy is unavailable for this account")
 	ErrWorkspaceMissing = errors.New("this project has no retained workspace")
+	ErrProjectChanged   = errors.New("the project sandbox changed, review its current status and try again")
 )
 
 // Spec contains provider-independent information about a requested lease.
@@ -99,7 +100,9 @@ type ProjectStatus struct {
 type ManagedProjectProvider interface {
 	ProjectProvider
 	ProjectStatus(context.Context, Spec) (ProjectStatus, error)
-	DestroyProject(context.Context, Spec) error
+	// An empty expectedID selects the current sandbox. Otherwise destroy only
+	// the matching sandbox, after checking the ID under the provisioning lock.
+	DestroyProject(ctx context.Context, spec Spec, expectedID string) error
 }
 
 const (

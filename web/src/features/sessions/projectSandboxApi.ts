@@ -25,6 +25,12 @@ function sandboxPath(project: ProjectTarget) {
   return '/projects/' + encodeURIComponent(projectTargetId(project) ?? 'default') + '/sandbox'
 }
 
+type SandboxSelection = Pick<ProjectSandbox, 'effective' | 'sandboxId'>
+
+function selectionQuery(selection: SandboxSelection) {
+  return '?' + new URLSearchParams({ provider: selection.effective.provider, sandboxId: selection.sandboxId })
+}
+
 export const projectSandboxApi = {
   load: (project: ProjectTarget, signal: AbortSignal) =>
     apiJSON<ProjectSandbox>(sandboxPath(project), 'GET', signal),
@@ -32,8 +38,8 @@ export const projectSandboxApi = {
     apiJSON<void>(sandboxPath(project) + '/config', 'PUT', signal, { input, skipCleanupFor }),
   create: (project: ProjectTarget, signal: AbortSignal) =>
     apiJSON<void>(sandboxPath(project), 'POST', signal),
-  destroy: (project: ProjectTarget, signal: AbortSignal) =>
-    apiJSON<void>(sandboxPath(project), 'DELETE', signal),
-  recreate: (project: ProjectTarget, signal: AbortSignal) =>
-    apiJSON<void>(sandboxPath(project) + '/recreate', 'POST', signal),
+  destroy: (project: ProjectTarget, selection: SandboxSelection, signal: AbortSignal) =>
+    apiJSON<void>(sandboxPath(project) + selectionQuery(selection), 'DELETE', signal),
+  recreate: (project: ProjectTarget, selection: SandboxSelection, signal: AbortSignal) =>
+    apiJSON<void>(sandboxPath(project) + '/recreate' + selectionQuery(selection), 'POST', signal),
 }
