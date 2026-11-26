@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"testing"
 	"testing/synctest"
+	"time"
 )
 
 type completingRepository struct {
@@ -52,7 +53,7 @@ func TestWorkerRetriesCompletionAfterPanic(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			worker.execute(t.Context(), active)
+			worker.execute(t.Context(), active, func() {})
 		}()
 		first := <-repo.writes
 		if first.Status != Failed || len(first.Parts) != 1 || first.Parts[0].Output != "agent turn failed unexpectedly" {
@@ -70,5 +71,74 @@ func TestWorkerRetriesCompletionAfterPanic(t *testing.T) {
 		if len(controls.active) != 0 {
 			t.Fatal("durable completion retained the active record")
 		}
+	})
+}
+
+type pendingCompletionRepository struct {
+	completingRepository
+	queued chan Run
+	writes chan string
+	permit map[string]chan struct{}
+}
+
+func (r pendingCompletionRepository) ClaimNext(context.Context, time.Time) (*Run, error) {
+	select {
+	case item := <-r.queued:
+		return &item, nil
+	default:
+		return nil, nil
+	}
+}
+
+func (r pendingCompletionRepository) Complete(ctx context.Context, id string, _ Completion) error {
+	r.writes <- id
+	if permit := r.permit[id]; permit != nil {
+		select {
+		case <-permit:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func TestWorkerKeepsExecutingWhileCompletionsWaitForStorage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		first, second := make(chan struct{}), make(chan struct{})
+		repo := pendingCompletionRepository{
+			queued: make(chan Run, 3), writes: make(chan string, 3),
+			permit: map[string]chan struct{}{"first": first, "second": second},
+		}
+		for _, id := range []string{"first", "second", "third"} {
+			repo.queued <- Run{ID: id, OwnerID: id, SessionID: "session"}
+		}
+		controls := &Controls{}
+		worker := NewWorker(repo, nil, nil, slog.New(slog.DiscardHandler), controls, 1)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			worker.Serve(ctx)
+		}()
+
+		synctest.Wait()
+		if len(repo.writes) != 2 || len(repo.queued) != 1 {
+			t.Fatalf("one executing slot should allow two outstanding turns, got %d writes and %d still queued", len(repo.writes), len(repo.queued))
+		}
+		close(first)
+		synctest.Wait()
+		if len(repo.writes) != 3 || len(repo.queued) != 0 {
+			t.Fatal("releasing one completion did not let the next turn execute")
+		}
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("worker exited before draining its outstanding completion")
+		default:
+		}
+		close(second)
+		<-done
 	})
 }

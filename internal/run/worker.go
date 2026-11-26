@@ -34,6 +34,13 @@ type Worker struct {
 	parallelism int
 }
 
+type workerEvent uint8
+
+const (
+	executionFinished workerEvent = iota
+	completionFinished
+)
+
 func NewWorker(repo WorkerRepository, projects ProjectSandboxRepository, resolve ResolveTarget, logger *slog.Logger, controls *Controls, parallelism int) *Worker {
 	return &Worker{repo: repo, projects: projects, resolve: resolve, logger: logger, controls: controls, parallelism: max(1, parallelism)}
 }
@@ -42,26 +49,32 @@ func (w *Worker) Serve(ctx context.Context) {
 	ticker := time.NewTicker(queueInterval)
 	defer ticker.Stop()
 	wake := w.controls.queueWake()
-	finished := make(chan struct{}, w.parallelism)
-	inFlight := 0
+	// Allow one pending completion per execution slot. A slow write can then
+	// block its own project without immediately consuming a model slot.
+	maxOutstanding := 2 * w.parallelism
+	updates := make(chan workerEvent, maxOutstanding)
+	executing, outstanding := 0, 0
 	defer func() {
 		// Completion still writes to the repository after cancellation.
-		for range inFlight {
-			<-finished
+		for outstanding != 0 {
+			if <-updates == completionFinished {
+				outstanding--
+			}
 		}
 	}()
 
 	for ctx.Err() == nil {
-		if inFlight < w.parallelism {
+		if executing < w.parallelism && outstanding < maxOutstanding {
 			item, err := w.controls.claim(ctx, w.repo)
 			switch {
 			case err != nil && ctx.Err() == nil:
 				w.logger.Error("claim queued run", "error", err)
 			case item != nil:
-				inFlight++
+				executing++
+				outstanding++
 				go func() {
-					defer func() { finished <- struct{}{} }()
-					w.execute(ctx, item)
+					defer func() { updates <- completionFinished }()
+					w.execute(ctx, item, func() { updates <- executionFinished })
 				}()
 				continue
 			}
@@ -72,13 +85,17 @@ func (w *Worker) Serve(ctx context.Context) {
 			return
 		case <-ticker.C:
 		case <-wake:
-		case <-finished:
-			inFlight--
+		case event := <-updates:
+			if event == executionFinished {
+				executing--
+			} else {
+				outstanding--
+			}
 		}
 	}
 }
 
-func (w *Worker) execute(ctx context.Context, active *activeTurn) {
+func (w *Worker) execute(ctx context.Context, active *activeTurn, releaseExecution func()) {
 	defer active.cancel()
 	item := active.item
 	result, err := w.runSafely(active)
@@ -102,6 +119,7 @@ func (w *Worker) execute(ctx context.Context, active *activeTurn) {
 	completion := Completion{
 		Result: result, Steering: active.steering.close(), Status: status, UpdatedAt: time.Now().UTC(),
 	}
+	releaseExecution()
 	for {
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		err := w.repo.Complete(saveCtx, item.ID, completion)
