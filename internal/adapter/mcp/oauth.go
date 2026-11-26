@@ -35,6 +35,7 @@ var (
 
 type OAuthStore interface {
 	MCPGrant(ctx context.Context, owner, server string) ([]byte, error)
+	MCPGrants(ctx context.Context, owner string, servers []string) (map[string][]byte, error)
 	SaveMCPGrant(ctx context.Context, owner, server string, data []byte) error
 	ReplaceMCPGrant(ctx context.Context, owner, server string, previous, data []byte) (bool, error)
 	DeleteMCPGrantIfUnchanged(ctx context.Context, owner, server string, previous []byte) (bool, error)
@@ -231,21 +232,48 @@ func (o *OAuth) ApplyServerChanges(ctx context.Context, owner string, commit fun
 }
 
 func (o *OAuth) grant(ctx context.Context, owner string, server settings.MCPServer) (oauthGrant, []byte, error) {
-	var grant oauthGrant
 	data, err := o.store.MCPGrant(ctx, owner, server.Name)
 	if err != nil {
-		return grant, nil, err
+		return oauthGrant{}, nil, err
 	}
-	if len(data) == 0 || json.Unmarshal(data, &grant) != nil || grant.Token == nil ||
-		grant.Fingerprint != fingerprint(server) || grant.Config.RedirectURL != o.redirect {
-		return oauthGrant{}, nil, ErrOAuthRequired
-	}
-	return grant, data, nil
+	grant, err := o.decodeGrant(server, data)
+	return grant, data, err
 }
 
-func (o *OAuth) Connected(ctx context.Context, owner string, server settings.MCPServer) bool {
-	grant, _, err := o.grant(ctx, owner, server)
-	return err == nil && validBearer(grant.Token) && (grant.Token.Valid() || grant.Token.RefreshToken != "")
+func (o *OAuth) decodeGrant(server settings.MCPServer, data []byte) (oauthGrant, error) {
+	var grant oauthGrant
+	if len(data) == 0 || json.Unmarshal(data, &grant) != nil || grant.Token == nil ||
+		grant.Fingerprint != fingerprint(server) || grant.Config.RedirectURL != o.redirect {
+		return oauthGrant{}, ErrOAuthRequired
+	}
+	return grant, nil
+}
+
+func (o *OAuth) ConnectedServers(ctx context.Context, owner string, servers settings.MCPConfig) (map[string]bool, error) {
+	names := make([]string, 0, len(servers))
+	for _, server := range servers {
+		if server.OAuth != nil {
+			names = append(names, server.Name)
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	grants, err := o.store.MCPGrants(ctx, owner, names)
+	if err != nil {
+		return nil, err
+	}
+	connected := make(map[string]bool, len(grants))
+	for _, server := range servers {
+		if grant, err := o.decodeGrant(server, grants[server.Name]); err == nil && grant.usable() {
+			connected[server.Name] = true
+		}
+	}
+	return connected, nil
+}
+
+func (g oauthGrant) usable() bool {
+	return validBearer(g.Token) && (g.Token.Valid() || g.Token.RefreshToken != "")
 }
 
 func (o *OAuth) Token(ctx context.Context, owner string, server settings.MCPServer) (*oauth2.Token, error) {
@@ -258,7 +286,7 @@ func (o *OAuth) Token(ctx context.Context, owner string, server settings.MCPServ
 	if err != nil {
 		return nil, err
 	}
-	if !validBearer(grant.Token) || (!grant.Token.Valid() && grant.Token.RefreshToken == "") {
+	if !grant.usable() {
 		return nil, ErrOAuthRequired
 	}
 	if grant.Token.Valid() {

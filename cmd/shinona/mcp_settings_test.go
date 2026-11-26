@@ -1,14 +1,77 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/OXeu/shinona/internal/adapter/mcp"
+	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
+	"github.com/OXeu/shinona/internal/timing"
 )
+
+func TestMCPSettingsAndComposerBatchGrantReads(t *testing.T) {
+	app, repo, _ := settingsTestApp(t, nil)
+	ctx := auth.WithUser(t.Context(), auth.User{ID: "alice"})
+	config := settings.MCPConfig{
+		{Name: "first", URL: "https://first.example.test/mcp", OAuth: &settings.MCPOAuthConfig{}},
+		{Name: "second", URL: "https://second.example.test/mcp", OAuth: &settings.MCPOAuthConfig{}},
+		{Name: "public", URL: "https://public.example.test/mcp"},
+	}
+	if err := repo.Settings.SaveMCPConfig(ctx, "alice", config, nil); err != nil {
+		t.Fatal(err)
+	}
+	read, recorder := timing.WithRecorder(ctx)
+	view, err := app.MCPSettings(read)
+	if err != nil || len(view.Servers) != 3 {
+		t.Fatalf("read MCP settings: %+v, %v", view, err)
+	}
+	checkQueries := func(want int) {
+		t.Helper()
+		metrics := recorder.Metrics()
+		if i := slices.IndexFunc(metrics, func(metric timing.Metric) bool { return metric.Name == "sqlite" }); i < 0 || metrics[i].Calls != want {
+			t.Fatalf("SQLite calls should be %d independently of server count: %v", want, metrics)
+		}
+	}
+	checkQueries(2) // Account configuration and one grant query.
+	read, recorder = timing.WithRecorder(ctx)
+	options, err := app.ComposerOptions(read)
+	if err != nil || !slices.Equal(options.MCPServers, []string{"public"}) {
+		t.Fatalf("read composer MCP servers: %v, %v", options.MCPServers, err)
+	}
+	checkQueries(3) // Model configuration, MCP configuration and one grant query.
+
+	failure := errors.New("fixture SQLite failure")
+	app.oauth = mcp.NewOAuth(failingMCPGrantRead{OAuthStore: repo.Settings, err: failure}, "http://127.0.0.1:5173")
+	if _, err := app.MCPSettings(ctx); !errors.Is(err, failure) {
+		t.Fatalf("settings hid grant lookup failure: %v", err)
+	}
+	if _, err := app.ComposerOptions(ctx); !errors.Is(err, failure) {
+		t.Fatalf("composer hid grant lookup failure: %v", err)
+	}
+	if _, err := app.RemoveMCPServer(ctx, "public"); !errors.Is(err, failure) {
+		t.Fatalf("settings mutation hid grant lookup failure: %v", err)
+	}
+	saved, err := repo.Settings.MCPConfig(ctx, "alice")
+	if err != nil || len(saved) != len(config) {
+		t.Fatalf("failed response committed a settings change: %+v, %v", saved, err)
+	}
+}
+
+type failingMCPGrantRead struct {
+	mcp.OAuthStore
+	err error
+}
+
+func (f failingMCPGrantRead) MCPGrants(context.Context, string, []string) (map[string][]byte, error) {
+	return nil, f.err
+}
 
 func TestMCPSettingsUseRegisteredOAuthClient(t *testing.T) {
 	app, repo, query := settingsTestApp(t, nil)

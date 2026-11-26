@@ -37,16 +37,27 @@ func NewServers(config settings.MCPConfig, client *http.Client, oauth *OAuth) *S
 	return servers
 }
 
-func (s *Servers) Names(ctx context.Context, owner string) []string {
+func (s *Servers) Names(ctx context.Context, owner string) ([]string, error) {
 	names := make([]string, 0, len(s.entries))
+	var oauthServers settings.MCPConfig
 	for name, server := range s.entries {
-		if server.OAuth != nil && (s.oauth == nil || !s.oauth.Connected(ctx, owner, server)) {
-			continue
+		if server.OAuth == nil {
+			names = append(names, name)
+		} else {
+			oauthServers = append(oauthServers, server)
 		}
-		names = append(names, name)
+	}
+	if s.oauth != nil {
+		connected, err := s.oauth.ConnectedServers(ctx, owner, oauthServers)
+		if err != nil {
+			return nil, err
+		}
+		for name := range connected {
+			names = append(names, name)
+		}
 	}
 	slices.Sort(names)
-	return names
+	return names, nil
 }
 
 func (s *Servers) Lookup(name string) (settings.MCPServer, bool) {
@@ -112,7 +123,7 @@ func (s *Servers) open(ctx context.Context, owner, name string) ([]run.Tool, fun
 	client := *s.client
 	client.Timeout = 0
 	if server.OAuth != nil {
-		if s.oauth == nil || !s.oauth.Connected(ctx, owner, server) {
+		if s.oauth == nil {
 			return nil, nil, ErrOAuthRequired
 		}
 		client.Transport = s.oauth.transport(owner, server, oauthHTTP(server.URL).Transport)

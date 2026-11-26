@@ -151,8 +151,12 @@ func (m *modelRuntime) ComposerOptions(ctx context.Context) (rest.ComposerOption
 	if err != nil {
 		return rest.ComposerOptions{}, err
 	}
+	names, err := tools.Names(ctx, owner)
+	if err != nil {
+		return rest.ComposerOptions{}, err
+	}
 	options := rest.ComposerOptions{
-		Models: []rest.ModelInfo{}, MCPServers: tools.Names(ctx, owner),
+		Models: []rest.ModelInfo{}, MCPServers: names,
 	}
 	if endpoint == nil {
 		return options, nil

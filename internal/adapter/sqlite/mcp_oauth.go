@@ -25,6 +25,19 @@ func (r *SettingsStore) MCPGrant(ctx context.Context, owner, server string) ([]b
 	return record.Grant, err
 }
 
+func (r *SettingsStore) MCPGrants(ctx context.Context, owner string, servers []string) (map[string][]byte, error) {
+	var rows []mcpGrantRow
+	err := r.read.WithContext(ctx).Select("server", "grant").Where("owner_id = ? AND server IN ?", owner, servers).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	grants := make(map[string][]byte, len(rows))
+	for _, record := range rows {
+		grants[record.Server] = record.Grant
+	}
+	return grants, nil
+}
+
 func (r *SettingsStore) SaveMCPGrant(ctx context.Context, owner, server string, data []byte) error {
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "owner_id"}, {Name: "server"}}, DoUpdates: clause.AssignmentColumns([]string{"grant"}),

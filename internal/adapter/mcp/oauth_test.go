@@ -153,9 +153,24 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	}
 	// A new OAuth instance reads the grant from SQLite after a restart.
 	oauth = NewOAuth(store.Settings, origin)
-	servers := NewServers(settings.MCPConfig{server}, fixture.Client(), oauth)
-	if len(servers.Names(ctx, "owner")) != 1 || len(servers.Names(ctx, "other")) != 0 {
-		t.Fatal("tool availability must follow the requesting account")
+	changed := server
+	changed.Name, changed.URL = "changed", server.URL+"/new"
+	stale := changed
+	stale.URL = server.URL
+	grant.Fingerprint = fingerprint(stale)
+	staleGrant, err := json.Marshal(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Settings.SaveMCPGrant(ctx, "owner", changed.Name, staleGrant); err != nil {
+		t.Fatal(err)
+	}
+	servers := NewServers(settings.MCPConfig{server, changed}, fixture.Client(), oauth)
+	if names, err := servers.Names(ctx, "owner"); err != nil || len(names) != 1 || names[0] != server.Name {
+		t.Fatalf("tool availability did not exclude the stale grant: %v, %v", names, err)
+	}
+	if names, err := servers.Names(ctx, "other"); err != nil || len(names) != 0 {
+		t.Fatalf("tool availability did not follow the requesting account: %v, %v", names, err)
 	}
 	if _, _, err := servers.Open(ctx, "other", []string{server.Name}); !errors.Is(err, ErrOAuthRequired) {
 		t.Fatalf("unconnected account opened OAuth tools: %v", err)
