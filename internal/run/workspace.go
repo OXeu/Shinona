@@ -76,9 +76,6 @@ func (s *Service) borrowWorkspace(ctx context.Context, owner, id string) (*liveW
 		return nil, nil
 	}
 	projectID, err := s.stores.Sessions.SessionProject(ctx, owner, id)
-	if errors.Is(err, ErrSession) {
-		return nil, ErrWorkspaceUnavailable
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -158,9 +155,6 @@ func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly 
 		}
 		return nil, ErrWorkspaceBusy
 	})
-	if errors.Is(err, ErrSession) {
-		return ErrWorkspaceUnavailable
-	}
 	if err != nil {
 		return err
 	}

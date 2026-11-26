@@ -202,6 +202,7 @@
   "repository.loadFailed": "未能載入工作區。",
   "repository.previewFailed": "未能載入預覽。",
   "repository.commitFailed": "未能提交已選取的變更。",
+  "repository.selectionChanged": "專案或工作目錄已變更，請重新選取要提交的檔案。",
   "repository.committed": "已提交變更。",
   "repository.setRoot": "設為根目錄",
   "repository.setRootHint": "將此資料夾用於本專案的變更、記錄及提交。",

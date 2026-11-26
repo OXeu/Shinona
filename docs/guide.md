@@ -67,6 +67,8 @@ The workspace panel has **Changes & Commit**, **Git History**, and **Files**. Wo
 
 In the **Files** tab, open a folder and choose **Set as working directory** to use that folder for **Changes & Commit** and **Git History**. The selection applies to all sessions in the project, including sessions in the account's default project. You can change it during a turn while the workspace is available. Changes, history, diffs, and commits stay inside the selected folder. Renames across the folder boundary appear as additions or deletions. **Files** continues to browse the whole workspace, and choosing the workspace root restores the default behavior.
 
+If the project or working directory changes while you review changes, select the files again before committing. API clients include the `selection` returned by `GET /api/v1/sessions/{id}/workspace/changes` in the commit request. The server returns `409 WORKSPACE_SELECTION_CHANGED` if the selection is missing or stale.
+
 Chat renders assistant Markdown in a virtualized transcript. Each activity group expands directly to its thinking and tool calls. On success, the last activity button displays the elapsed time. Tool calls start collapsed, including failures. Chat errors appear as system messages. The composer handles queue and running state.
 
 Use **Revert message** under a user prompt once the session is idle. Confirm to remove that turn and all later turns from the transcript and future model context, and replace the composer draft with the selected prompt and images. Shinona retains the reverted records in SQLite and leaves workspace files and Git history in place.

@@ -25,8 +25,14 @@ export interface WorkspaceList<T> {
   truncated: boolean
 }
 
+interface WorkspaceSelection {
+  projectId: string
+  root: string
+}
+
 export interface WorkspaceChanges extends WorkspaceList<ChangedFile> {
   branch: string
+  selection: WorkspaceSelection
 }
 
 export interface WorkspacePreview {
@@ -54,6 +60,6 @@ export const workspaceApi = {
     if (revision !== undefined) query.set('revision', revision)
     return apiJSON<WorkspacePreview>(workspacePath(sessionId) + '/preview?' + query, 'GET', signal)
   },
-  commit: (sessionId: string, message: string, paths: string[], signal: AbortSignal) =>
-    apiJSON<string>(workspacePath(sessionId) + '/commits', 'POST', signal, { message, paths }),
+  commit: (sessionId: string, message: string, paths: string[], selection: WorkspaceSelection, signal: AbortSignal) =>
+    apiJSON<string>(workspacePath(sessionId) + '/commits', 'POST', signal, { message, paths, selection }),
 }

@@ -202,6 +202,7 @@
   "repository.loadFailed": "无法加载工作区。",
   "repository.previewFailed": "无法加载预览。",
   "repository.commitFailed": "无法提交选中的变更。",
+  "repository.selectionChanged": "项目或工作目录已变更，请重新选择要提交的文件。",
   "repository.committed": "已提交变更。",
   "repository.setRoot": "设为根目录",
   "repository.setRootHint": "将此目录用于本项目的变更、历史与提交。",

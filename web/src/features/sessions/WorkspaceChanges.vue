@@ -18,8 +18,13 @@ const message = ref('')
 const entries = computed(() => props.changes?.entries ?? [])
 const allSelected = computed(() => !!entries.value.length && selected.value.length === entries.value.length)
 
-watch(entries, (items) => {
-  const current = new Set(items.map(({ path }) => path))
+watch(() => props.changes, (changes, previous) => {
+  const before = previous?.selection
+  if (!changes?.selection || !before || changes.selection.root !== before.root || changes.selection.projectId !== before.projectId) {
+    selected.value = []
+    return
+  }
+  const current = new Set(changes.entries.map(({ path }) => path))
   selected.value = selected.value.filter((path) => current.has(path))
 })
 

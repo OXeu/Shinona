@@ -82,10 +82,6 @@ func (r Repository) At(root string) Repository {
 	return r
 }
 
-// Workspace returns the underlying workspace so callers can inspect the whole
-// workspace, such as the files panel browsing to choose a directory.
-func (r Repository) Workspace() sandbox.Workspace { return r.workspace }
-
 // scoped joins a path relative to the scoped directory.
 func (r Repository) scoped(name string) string { return path.Join(r.root, name) }
 

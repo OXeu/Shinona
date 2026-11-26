@@ -53,7 +53,7 @@ type ProjectRepository interface {
 	RenameProject(ctx context.Context, ownerID, id, name string) (Project, error)
 	RemoveProject(ctx context.Context, ownerID, id string) error
 	SaveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config ProjectSandboxConfig) error
-	WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error)
+	WorkspaceSelection(ctx context.Context, ownerID, sessionID string) (WorkspaceSelection, error)
 	SetWorkspaceRoot(ctx context.Context, ownerID, sessionID, projectID, root string) error
 }
 

@@ -15,12 +15,21 @@ type workspaceArgs struct {
 	SessionID string `uri:"id" json:"-"`
 }
 
+type workspaceSelection struct {
+	ProjectID string `json:"projectId"`
+	Root      string `json:"root"`
+}
+
+type workspaceChangesResponse struct {
+	workspace.Changes
+	Selection workspaceSelection `json:"selection"`
+}
+
+var errWorkspaceSelection = codedError{errors.New("the workspace selection changed, review the current changes"), "WORKSPACE_SELECTION_CHANGED"}
+
 func (r *handler) WorkspaceRoot(ctx context.Context, args workspaceArgs) (string, error) {
-	root, err := r.service.WorkspaceRoot(ctx, auth.CurrentUser(ctx).ID, args.SessionID)
-	if err != nil {
-		return "", r.apiError(err)
-	}
-	return root, nil
+	selection, err := r.service.WorkspaceSelection(ctx, auth.CurrentUser(ctx).ID, args.SessionID)
+	return selection.Root, r.apiError(err)
 }
 
 func (r *handler) SetWorkspaceRoot(ctx context.Context, args struct {
@@ -39,12 +48,19 @@ func (r *handler) SetWorkspaceRoot(ctx context.Context, args struct {
 	return root, r.workspaceError(err)
 }
 
-func (r *handler) WorkspaceChanges(ctx context.Context, args workspaceArgs) (workspace.Changes, error) {
-	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, workspace.Repository.Changes)
+func (r *handler) WorkspaceChanges(ctx context.Context, args workspaceArgs) (workspaceChangesResponse, error) {
+	return inRepository(ctx, r, r.service.InspectWorkspace, args.SessionID,
+		func(ctx context.Context, repo workspace.Repository, selection run.WorkspaceSelection) (workspaceChangesResponse, error) {
+			changes, err := repo.Changes(ctx)
+			return workspaceChangesResponse{Changes: changes, Selection: workspaceSelection(selection)}, err
+		})
 }
 
 func (r *handler) WorkspaceHistory(ctx context.Context, args workspaceArgs) (workspace.History, error) {
-	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, workspace.Repository.History)
+	return inRepository(ctx, r, r.service.InspectWorkspace, args.SessionID,
+		func(ctx context.Context, repo workspace.Repository, _ run.WorkspaceSelection) (workspace.History, error) {
+			return repo.History(ctx)
+		})
 }
 
 func (r *handler) WorkspaceDirectory(ctx context.Context, args struct {
@@ -53,8 +69,7 @@ func (r *handler) WorkspaceDirectory(ctx context.Context, args struct {
 }) (workspace.Directory, error) {
 	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, func(repo workspace.Repository, ctx context.Context) (workspace.Directory, error) {
 		defer timing.Start(ctx, "workspace_directory")()
-		// The files panel browses the whole workspace so it can select any folder.
-		return workspace.New(repo.Workspace()).Directory(ctx, args.Path)
+		return repo.Directory(ctx, args.Path)
 	})
 }
 
@@ -64,16 +79,18 @@ func (r *handler) WorkspacePreview(ctx context.Context, args struct {
 	Diff      bool    `form:"diff"`
 	Revision  *string `form:"revision"`
 }) (workspace.Preview, error) {
-	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, func(repo workspace.Repository, ctx context.Context) (workspace.Preview, error) {
-		if args.Diff {
-			revision := ""
-			if args.Revision != nil {
-				revision = *args.Revision
-			}
-			return repo.Diff(ctx, args.Path, revision)
+	if args.Diff {
+		revision := ""
+		if args.Revision != nil {
+			revision = *args.Revision
 		}
-		// Files browse the whole workspace, so a plain preview stays unscoped.
-		return workspace.New(repo.Workspace()).File(ctx, args.Path)
+		return inRepository(ctx, r, r.service.InspectWorkspace, args.SessionID,
+			func(ctx context.Context, repo workspace.Repository, _ run.WorkspaceSelection) (workspace.Preview, error) {
+				return repo.Diff(ctx, args.Path, revision)
+			})
+	}
+	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, func(repo workspace.Repository, ctx context.Context) (workspace.Preview, error) {
+		return repo.File(ctx, args.Path)
 	})
 }
 
@@ -81,26 +98,42 @@ func (r *handler) CommitWorkspace(ctx context.Context, args struct {
 	SessionID string `uri:"id" json:"-"`
 	Message   string
 	Paths     []string
+	Selection *workspaceSelection
 }) (string, error) {
+	if args.Selection == nil {
+		return "", errWorkspaceSelection
+	}
 	user := auth.CurrentUser(ctx)
-	return inWorkspace(ctx, r, r.service.WithWorkspace, args.SessionID, func(repo workspace.Repository, ctx context.Context) (string, error) {
-		return repo.Commit(ctx, user.Email, args.Message, args.Paths)
-	})
+	return inRepository(ctx, r, r.service.WithWorkspace, args.SessionID,
+		func(ctx context.Context, repo workspace.Repository, selection run.WorkspaceSelection) (string, error) {
+			if selection != run.WorkspaceSelection(*args.Selection) {
+				return "", errWorkspaceSelection
+			}
+			return repo.Commit(ctx, user.Email, args.Message, args.Paths)
+		})
 }
 
 type openWorkspace func(context.Context, string, string, func(context.Context, sandbox.Workspace) error) error
 
-// inWorkspace opens the session workspace with the project's working directory
-// for Git operations. File browsing can use the underlying workspace directly.
+// inRepository reads the working directory while the project lease is held.
+// Removing a project can move its sessions to the default workspace.
+func inRepository[T any](ctx context.Context, r *handler, open openWorkspace, id string,
+	use func(context.Context, workspace.Repository, run.WorkspaceSelection) (T, error),
+) (T, error) {
+	return inWorkspace(ctx, r, open, id, func(repo workspace.Repository, ctx context.Context) (T, error) {
+		selection, err := r.service.WorkspaceSelection(ctx, auth.CurrentUser(ctx).ID, id)
+		if err != nil {
+			var result T
+			return result, err
+		}
+		return use(ctx, repo.At(selection.Root), selection)
+	})
+}
+
 func inWorkspace[T any](ctx context.Context, r *handler, open openWorkspace, id string, use func(workspace.Repository, context.Context) (T, error)) (result T, err error) {
-	owner := auth.CurrentUser(ctx).ID
-	root, err := r.service.WorkspaceRoot(ctx, owner, id)
-	if err != nil {
-		return result, r.apiError(err)
-	}
-	err = open(ctx, owner, id, func(ctx context.Context, ws sandbox.Workspace) error {
+	err = open(ctx, auth.CurrentUser(ctx).ID, id, func(ctx context.Context, ws sandbox.Workspace) error {
 		var operationErr error
-		result, operationErr = use(workspace.New(ws).At(root), ctx)
+		result, operationErr = use(workspace.New(ws), ctx)
 		return operationErr
 	})
 	if err != nil {
@@ -114,6 +147,8 @@ func (r *handler) workspaceError(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, errWorkspaceSelection):
+		return errWorkspaceSelection
 	case errors.Is(err, run.ErrWorkspaceUnavailable):
 		return codedError{run.ErrWorkspaceUnavailable, "WORKSPACE_UNAVAILABLE"}
 	case errors.Is(err, run.ErrWorkspaceBusy):

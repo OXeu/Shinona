@@ -202,6 +202,7 @@
   "repository.loadFailed": "Could not load the workspace.",
   "repository.previewFailed": "Could not load the preview.",
   "repository.commitFailed": "Could not commit the selected changes.",
+  "repository.selectionChanged": "The project or working directory changed. Select the files again.",
   "repository.committed": "Changes committed.",
   "repository.setRoot": "Set workspace root",
   "repository.setRootHint": "Use this folder for changes, history, and commits in this project.",

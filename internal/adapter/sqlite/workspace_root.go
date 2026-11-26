@@ -53,17 +53,17 @@ func migrateWorkspaceRoots(db *gorm.DB) error {
 	})
 }
 
-func (r *ProjectStore) WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error) {
-	var record workspaceRootRow
+func (r *ProjectStore) WorkspaceSelection(ctx context.Context, ownerID, sessionID string) (run.WorkspaceSelection, error) {
+	var selection run.WorkspaceSelection
 	err := r.read.WithContext(ctx).Model(&sessionRow{}).
-		Select("COALESCE(roots.root, '') AS root").
+		Select("agent_sessions.project_id, COALESCE(roots.root, '') AS root").
 		Joins("LEFT JOIN project_workspace_roots AS roots ON roots.owner_id = agent_sessions.owner_id AND roots.project_id = agent_sessions.project_id").
 		Where("agent_sessions.owner_id = ? AND agent_sessions.id = ? AND agent_sessions.archived_at IS NULL", ownerID, sessionID).
-		Take(&record).Error
+		Take(&selection).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", run.ErrSession
+		return run.WorkspaceSelection{}, run.ErrSession
 	}
-	return record.Root, err
+	return selection, err
 }
 
 func (r *ProjectStore) SetWorkspaceRoot(ctx context.Context, ownerID, sessionID, projectID, root string) error {

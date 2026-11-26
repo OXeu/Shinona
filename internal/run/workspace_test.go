@@ -165,7 +165,7 @@ func TestInspectWorkspaceBorrowsOnlyTheSessionsLiveLease(t *testing.T) {
 		t.Fatal("inspection could not borrow the active workspace")
 	}
 	for _, other := range []sessionKey{{owner: "other", id: "session"}, {owner: "owner", id: "other"}} {
-		if err := service.InspectWorkspace(ctx, other.owner, other.id, unexpectedUse); !errors.Is(err, ErrWorkspaceUnavailable) {
+		if err := service.InspectWorkspace(ctx, other.owner, other.id, unexpectedUse); !errors.Is(err, ErrSession) {
 			t.Fatalf("inspect another session: %v", err)
 		}
 	}
@@ -227,7 +227,7 @@ func TestInspectWorkspaceBorrowsTheSharedProjectLease(t *testing.T) {
 			}{
 				{sessionKey{"owner", "other"}, nil},
 				{sessionKey{"other", "second"}, nil},
-				{sessionKey{"owner", "missing"}, ErrWorkspaceUnavailable},
+				{sessionKey{"owner", "missing"}, ErrSession},
 			} {
 				err := service.InspectWorkspace(ctx, other.key.owner, other.key.id, func(_ context.Context, ws sandbox.Workspace) error {
 					if ws == box || other.want != nil {

@@ -14,10 +14,15 @@ var ErrWorkspaceRoot = errors.New("select a folder inside the workspace")
 // maxWorkspaceRoot bounds the stored directory so the preference stays small.
 const maxWorkspaceRoot = 1024
 
-// WorkspaceRoot returns the working directory shared by the session's project.
-// An empty result selects the project workspace root.
-func (s *Service) WorkspaceRoot(ctx context.Context, owner, sessionID string) (string, error) {
-	return s.stores.Projects.WorkspaceRoot(ctx, owner, sessionID)
+// WorkspaceSelection pairs a working directory with its project. An empty root
+// selects the project workspace root.
+type WorkspaceSelection struct {
+	ProjectID string
+	Root      string
+}
+
+func (s *Service) WorkspaceSelection(ctx context.Context, owner, sessionID string) (WorkspaceSelection, error) {
+	return s.stores.Projects.WorkspaceSelection(ctx, owner, sessionID)
 }
 
 // SetWorkspaceRoot records the directory that changes, history, and commits use

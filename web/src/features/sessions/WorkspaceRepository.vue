@@ -62,12 +62,7 @@ async function load() {
   const { signal } = reading
   loading.value = true
   try {
-    await Promise.all([
-      workspaceApi.root(props.sessionId, signal).then((savedRoot) => {
-        if (!signal.aborted) root.value = savedRoot
-      }),
-      loadView(signal),
-    ])
+    await loadView(signal)
     if (!signal.aborted) backoff.reset()
   } catch (error) {
     if (signal.aborted || unauthorized(error)) return
@@ -95,8 +90,14 @@ async function loadView(signal: AbortSignal) {
       break
     }
     case 'files': {
-      const result = await workspaceApi.directory(session, folder.value, signal)
-      if (!signal.aborted) files.value = result
+      const [savedRoot, result] = await Promise.all([
+        workspaceApi.root(session, signal),
+        workspaceApi.directory(session, folder.value, signal),
+      ])
+      if (!signal.aborted) {
+        root.value = savedRoot
+        files.value = result
+      }
       break
     }
     case 'history': {
@@ -160,7 +161,9 @@ async function mutate(action: (signal: AbortSignal) => Promise<void>, failure: '
   try {
     await action(signal)
   } catch (error) {
-    if (!signal.aborted && !unauthorized(error)) notify.error(messageFor(error, failure))
+    if (signal.aborted || unauthorized(error)) return
+    if (error instanceof HttpError && error.code === 'WORKSPACE_SELECTION_CHANGED') changes.value = null
+    notify.error(messageFor(error, failure))
   } finally {
     if (!signal.aborted) {
       mutating.value = false
@@ -184,9 +187,10 @@ function setRoot() {
 }
 
 function commit(message: string, paths: string[]) {
-  if (props.active || mutating.value || loading.value || !paths.length || !message.trim()) return
+  const selection = changes.value?.selection
+  if (!selection || props.active || mutating.value || loading.value || !paths.length || !message.trim()) return
   return mutate(async (signal) => {
-    await workspaceApi.commit(props.sessionId, message, paths, signal)
+    await workspaceApi.commit(props.sessionId, message, paths, selection, signal)
     if (signal.aborted) return
     changesPanel.value?.resetCommit()
     changes.value = null
@@ -237,7 +241,7 @@ onUnmounted(() => {
       ref="changesPanel"
       :changes="changes"
       :busy="mutating"
-      :commit-blocked="active || loading"
+      :commit-blocked="active || loading || !changes?.selection"
       @preview="inspectChange"
       @commit="commit"
     />

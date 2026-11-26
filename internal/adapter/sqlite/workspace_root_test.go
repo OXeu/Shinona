@@ -28,12 +28,12 @@ func TestWorkspaceRootDefaultsToTheProjectWorkspace(t *testing.T) {
 	seedAccounts(t, repo, "owner")
 	newSession(t, repo, "owner", "session")
 
-	root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "session")
+	selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "session")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root != "" {
-		t.Fatalf("default root: %q", root)
+	if selection != (run.WorkspaceSelection{}) {
+		t.Fatalf("default selection: %+v", selection)
 	}
 }
 
@@ -50,22 +50,22 @@ func TestWorkspaceRootRoundTripsAndResets(t *testing.T) {
 	if err := repo.Projects.SetWorkspaceRoot(ctx, "owner", "session", "", "packages/api"); err != nil {
 		t.Fatal(err)
 	}
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "session"); err != nil || root != "packages/api" {
-		t.Fatalf("saved root: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "session"); err != nil || selection.Root != "packages/api" {
+		t.Fatalf("saved root: %q, %v", selection.Root, err)
 	}
 	// Setting again replaces the previous directory.
 	if err := repo.Projects.SetWorkspaceRoot(ctx, "owner", "session", "", "packages/web"); err != nil {
 		t.Fatal(err)
 	}
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "session"); err != nil || root != "packages/web" {
-		t.Fatalf("replaced root: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "session"); err != nil || selection.Root != "packages/web" {
+		t.Fatalf("replaced root: %q, %v", selection.Root, err)
 	}
 	// An empty root clears the preference.
 	if err := repo.Projects.SetWorkspaceRoot(ctx, "owner", "session", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "session"); err != nil || root != "" {
-		t.Fatalf("cleared root: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "session"); err != nil || selection.Root != "" {
+		t.Fatalf("cleared root: %q, %v", selection.Root, err)
 	}
 }
 
@@ -99,20 +99,20 @@ func TestWorkspaceRootIsSharedOnlyWithinTheOwnersProject(t *testing.T) {
 	if err := repo.Projects.SetWorkspaceRoot(ctx, "owner", "session", "", "packages/api"); err != nil {
 		t.Fatal(err)
 	}
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "other"); err != nil || root != "packages/api" {
-		t.Fatalf("sibling session root: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "other"); err != nil || selection.Root != "packages/api" {
+		t.Fatalf("sibling session root: %q, %v", selection.Root, err)
 	}
 	if err := repo.Projects.SetWorkspaceRoot(ctx, "owner", "project-session", "project", "src"); err != nil {
 		t.Fatal(err)
 	}
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "project-sibling"); err != nil || root != "src" {
-		t.Fatalf("named project sibling root: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "project-sibling"); err != nil || selection != (run.WorkspaceSelection{ProjectID: "project", Root: "src"}) {
+		t.Fatalf("named project sibling selection: %+v, %v", selection, err)
 	}
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "intruder", "intruder-session"); err != nil || root != "" {
-		t.Fatalf("another account's default root: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "intruder", "intruder-session"); err != nil || selection.Root != "" {
+		t.Fatalf("another account's default root: %q, %v", selection.Root, err)
 	}
 	// Another account cannot read or write the session.
-	if _, err := repo.Projects.WorkspaceRoot(ctx, "intruder", "session"); !errors.Is(err, run.ErrSession) {
+	if _, err := repo.Projects.WorkspaceSelection(ctx, "intruder", "session"); !errors.Is(err, run.ErrSession) {
 		t.Fatalf("cross-account read: %v", err)
 	}
 	if err := repo.Projects.SetWorkspaceRoot(ctx, "intruder", "session", "", "elsewhere"); !errors.Is(err, run.ErrSession) {
@@ -143,15 +143,15 @@ func TestWorkspaceRootIsSharedOnlyWithinTheOwnersProject(t *testing.T) {
 	if err := repo.Projects.SetWorkspaceRoot(ctx, "owner", "project-session", "project", "removed"); !errors.Is(err, run.ErrWorkspaceBusy) {
 		t.Fatalf("write from a stale project: %v", err)
 	}
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "project-session"); err != nil || root != "packages/api" {
-		t.Fatalf("root of a session moved to default: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "project-session"); err != nil || selection.Root != "packages/api" {
+		t.Fatalf("root of a session moved to default: %q, %v", selection.Root, err)
 	}
 	var count int64
 	if err := repo.db.Model(&workspaceRootRow{}).Where("project_id = ?", "project").Count(&count).Error; err != nil || count != 0 {
 		t.Fatalf("root rows after project deletion: %d, %v", count, err)
 	}
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "session"); err != nil || root != "packages/api" {
-		t.Fatalf("root after rejected write: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "session"); err != nil || selection.Root != "packages/api" {
+		t.Fatalf("root after rejected write: %q, %v", selection.Root, err)
 	}
 }
 
@@ -165,7 +165,7 @@ func TestWorkspaceRootRejectsUnknownSessions(t *testing.T) {
 	seedAccounts(t, repo, "owner")
 	newSession(t, repo, "owner", "session")
 
-	if _, err := repo.Projects.WorkspaceRoot(ctx, "owner", "missing"); !errors.Is(err, run.ErrSession) {
+	if _, err := repo.Projects.WorkspaceSelection(ctx, "owner", "missing"); !errors.Is(err, run.ErrSession) {
 		t.Fatalf("missing session read: %v", err)
 	}
 	if err := repo.Projects.SetWorkspaceRoot(ctx, "owner", "missing", "", "api"); !errors.Is(err, run.ErrSession) {
@@ -217,8 +217,8 @@ func TestWorkspaceRootMigratesLegacyPreferencesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo = open()
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "a"); err != nil || root != "packages/api" {
-		t.Fatalf("imported working directory: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "a"); err != nil || selection.Root != "packages/api" {
+		t.Fatalf("imported working directory: %q, %v", selection.Root, err)
 	}
 	if err := repo.Projects.SetWorkspaceRoot(ctx, "owner", "b", "", ""); err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func TestWorkspaceRootMigratesLegacyPreferencesOnce(t *testing.T) {
 	}
 	repo = open()
 	t.Cleanup(func() { _ = repo.Close() })
-	if root, err := repo.Projects.WorkspaceRoot(ctx, "owner", "a"); err != nil || root != "" {
-		t.Fatalf("reopened project restored an old choice: %q, %v", root, err)
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "a"); err != nil || selection.Root != "" {
+		t.Fatalf("reopened project restored an old choice: %q, %v", selection.Root, err)
 	}
 }
