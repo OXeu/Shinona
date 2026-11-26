@@ -17,7 +17,7 @@ func TestCompressNegotiatesZstandardForJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer decoder.Close()
-	large := `{"data":"` + strings.Repeat("x", minimumCompressSize) + `"}`
+	large := `{"data":"` + strings.Repeat("x", MinimumCompressSize) + `"}`
 	for _, tt := range []struct {
 		name, accept, body string
 		status             int

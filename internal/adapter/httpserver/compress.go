@@ -13,22 +13,53 @@ import (
 
 const (
 	ProtobufMediaType   = "application/protobuf"
-	minimumCompressSize = 1024
+	MinimumCompressSize = 1024
 )
 
-var zstdWriters = sync.Pool{New: func() any {
+func newZstdEncoder() any {
 	writer, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest),
-		zstd.WithEncoderConcurrency(1), zstd.WithWindowSize(1<<20))
+		zstd.WithEncoderConcurrency(1), zstd.WithWindowSize(256<<10),
+		zstd.WithLowerEncoderMem(true), zstd.WithEncoderCRC(false))
 	if err != nil {
 		panic(err)
 	}
 	return writer
-}}
+}
+
+var zstdWriters = sync.Pool{New: newZstdEncoder}
+var zstdBuffers = sync.Pool{New: newZstdEncoder}
+
+// EncodeZstd compresses a small, complete representation for response caches.
+func EncodeZstd(body []byte) []byte {
+	encoder := zstdBuffers.Get().(*zstd.Encoder)
+	defer zstdBuffers.Put(encoder)
+	return encoder.EncodeAll(body, nil)
+}
+
+// NewZstdStream borrows an encoder. Finalize with commit=false to discard
+// buffered output after an interrupted or failed response.
+func NewZstdStream(dst io.Writer) (io.Writer, func(commit bool) error) {
+	writer := zstdWriters.Get().(*zstd.Encoder)
+	writer.Reset(dst)
+	return writer, func(commit bool) error {
+		var err error
+		if commit {
+			err = writer.Close()
+		}
+		writer.Reset(io.Discard)
+		zstdWriters.Put(writer)
+		return err
+	}
+}
+
+func AcceptsZstd(r *http.Request) bool {
+	return r.Method != http.MethodHead && acceptsZstd(r.Header.Values("Accept-Encoding"))
+}
 
 // Compress negotiates HTTP Zstandard for large JSON and Protobuf responses.
 func Compress(c *gin.Context) {
 	c.Writer.Header().Add("Vary", "Accept-Encoding")
-	if c.Request.Method == http.MethodHead || !acceptsZstd(c.Request.Header.Values("Accept-Encoding")) {
+	if !AcceptsZstd(c.Request) {
 		return
 	}
 	writer := &zstdResponseWriter{ResponseWriter: c.Writer}
@@ -75,7 +106,7 @@ func (w *zstdResponseWriter) WriteString(value string) (int, error) {
 }
 
 func (w *zstdResponseWriter) Write(data []byte) (int, error) {
-	if w.writer == nil && !w.Written() && len(data) >= minimumCompressSize &&
+	if w.writer == nil && !w.Written() && len(data) >= MinimumCompressSize &&
 		w.Status() != http.StatusPartialContent && w.Status() < http.StatusBadRequest {
 		header := w.Header()
 		mediaType, _, _ := strings.Cut(header.Get("Content-Type"), ";")
