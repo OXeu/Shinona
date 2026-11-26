@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/sky-valley/pi/agent"
@@ -16,8 +15,9 @@ import (
 )
 
 type sessionExecution struct {
-	messages  []agent.AgentMessage
-	compacted []agent.AgentMessage
+	messages        []agent.AgentMessage
+	compacted       []agent.AgentMessage
+	afterCompaction []agent.AgentMessage
 }
 
 func (a *Agent) runSession(ctx context.Context, input run.Input, model ai.Model, reasoning agent.ThinkingLevel,
@@ -57,14 +57,16 @@ func (a *Agent) runSession(ctx context.Context, input run.Input, model ai.Model,
 	prompt, _ := ai.CreateInitialSystemMessage(loadout.prompt, declarations)
 	initial := history.load(session, prompt)
 
-	// The leading instruction has a stable timestamp. Pi's compaction applies
-	// a new leading system message stamped with the time of its checkpoint.
+	// Pi reapplies each checkpoint to subsequent requests. Record its stamped
+	// system message once so later model responses stay after the boundary.
 	transform := engine.TransformContext
+	checkpointTime := prompt.Timestamp
 	var projection []agent.AgentMessage
 	var projectedThrough int
 	engine.TransformContext = func(ctx context.Context, messages []agent.AgentMessage) []agent.AgentMessage {
 		projected := transform(ctx, messages)
-		if head, ok := ai.GetInitialSystemMessage(projected); ok && head.Timestamp != prompt.Timestamp {
+		if head, ok := ai.GetInitialSystemMessage(projected); ok && head.Timestamp != checkpointTime {
+			checkpointTime = head.Timestamp
 			projection, projectedThrough = projected, len(messages)
 		}
 		return projected
@@ -107,7 +109,8 @@ func (a *Agent) runSession(ctx context.Context, input run.Input, model ai.Model,
 	transcript := session.History()
 	execution := sessionExecution{messages: transcript[initial:]}
 	if projection != nil {
-		execution.compacted = slices.Concat(projection, transcript[projectedThrough:])
+		execution.compacted = projection
+		execution.afterCompaction = transcript[projectedThrough:]
 	}
 	return execution, err
 }

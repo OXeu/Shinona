@@ -378,7 +378,7 @@ func TestAgentRestoresPiCompactedContext(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte(hostInstruction), 0600); err != nil {
 		t.Fatal(err)
 	}
-	var summaries atomic.Int32
+	var summaries, replies atomic.Int32
 	var extending, merged atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /models", func(w http.ResponseWriter, _ *http.Request) {
@@ -421,7 +421,11 @@ func TestAgentRestoresPiCompactedContext(t *testing.T) {
 			t.Errorf("regular request should use the Pi summary and recent messages without the summarized prefix (message bytes=%d)", len(messages))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":%q},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", response)
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":%q},\"finish_reason\":\"stop\"}]}\n\n", response)
+		if len(request.Tools) != 0 && replies.Add(1) == 1 {
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12000,\"completion_tokens\":5,\"total_tokens\":12005}}\n\n")
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -443,8 +447,26 @@ func TestAgentRestoresPiCompactedContext(t *testing.T) {
 		t.Fatalf("Pi did not compact the original context: output=%q, summaries=%d, error=%v", result.Output, summaries.Load(), err)
 	}
 	summaryCount := summaries.Load()
+	// Pi's message decoder ignores the added boundary field. A snapshot saved
+	// without it must remain readable and avoid repeating the same summary.
+	legacyMessages, err := appendMessages(nil, result.CompactedContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := json.Marshal(legacyMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRun, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Legacy follow-up.",
+		History: []run.Exchange{{CompactedContext: legacy}}}, &recordingWorkspace{})
+	if err != nil || legacyRun.Output != "Current answer." || summaries.Load() != summaryCount || len(legacyRun.CompactedContext) != 0 {
+		t.Fatalf("could not resume the original snapshot format: output=%q, summaries=%d, error=%v", legacyRun.Output, summaries.Load(), err)
+	}
 	history = append(history, run.Exchange{Prompt: "Continue.", Output: result.Output, AgentMessages: result.AgentMessages, CompactedContext: result.CompactedContext})
-	resumed, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Follow up.", History: history}, &recordingWorkspace{})
+	// Without the measured usage after compaction, Pi estimates this prompt
+	// plus the saved history above its window and summarizes again on resume.
+	followUp := "Follow up. " + strings.Repeat("follow-up ", 8200)
+	resumed, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: followUp, History: history}, &recordingWorkspace{})
 	if err != nil || resumed.Output != "Current answer." || summaries.Load() != summaryCount {
 		t.Fatalf("restoring the saved Pi context summarized the same messages again or failed: output=%q, summaries=%d, error=%v", resumed.Output, summaries.Load(), err)
 	}
@@ -454,7 +476,7 @@ func TestAgentRestoresPiCompactedContext(t *testing.T) {
 
 	extending.Store(true)
 	history = append(history,
-		run.Exchange{Prompt: "Follow up.", Output: resumed.Output, AgentMessages: resumed.AgentMessages},
+		run.Exchange{Prompt: followUp, Output: resumed.Output, AgentMessages: resumed.AgentMessages},
 		run.Exchange{Prompt: "Read another report.", Output: strings.Repeat("More workspace output. ", 4000)},
 		run.Exchange{Prompt: "Retain the latest instructions.", Output: "Ready."},
 	)

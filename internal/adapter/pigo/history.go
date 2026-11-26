@@ -14,7 +14,7 @@ import (
 
 type sessionHistory struct {
 	messages   []agent.AgentMessage
-	checkpoint int // Number of messages recorded in the saved context snapshot.
+	checkpoint int // Index of the first message after the saved compaction.
 }
 
 func (h sessionHistory) load(session *coding.Session, prompt ai.SystemMessage) int {
@@ -64,10 +64,14 @@ func savedPiSummary(message agent.AgentMessage) (string, bool) {
 	return strings.CutSuffix(summary, "\n</summary>")
 }
 
-func encodeMessages(messages []agent.AgentMessage, compacted bool) ([]byte, error) {
+func encodeTurnMessages(messages []agent.AgentMessage) ([]byte, error) {
 	if len(messages) == 0 {
 		return nil, nil
 	}
+	return json.Marshal(messagesForReplay(messages, false))
+}
+
+func messagesForReplay(messages []agent.AgentMessage, compacted bool) []agent.AgentMessage {
 	// The repository already stores the initial user message and its attachments.
 	replay := make([]agent.AgentMessage, 0, len(messages))
 	promptSeen := compacted
@@ -99,7 +103,35 @@ func encodeMessages(messages []agent.AgentMessage, compacted bool) ([]byte, erro
 			replay = append(replay, entry)
 		}
 	}
-	return json.Marshal(replay)
+	return replay
+}
+
+func encodeCompactedContext(projection, tail []agent.AgentMessage) ([]byte, error) {
+	before := messagesForReplay(projection, true)
+	after := messagesForReplay(tail, true)
+	if len(before) == 0 {
+		return json.Marshal(after)
+	}
+	summary, ok := before[0].(ai.UserMessage)
+	if !ok {
+		return json.Marshal(slices.Concat(before, after))
+	}
+	// Keep the summary readable as a regular Pi message for older binaries.
+	// The extra field tells Pi which subsequent usage measured this context.
+	records := make([]any, 1, len(before)+len(after))
+	records[0] = struct {
+		Role             ai.Role        `json:"role"`
+		Content          ai.ContentList `json:"content"`
+		Timestamp        int64          `json:"timestamp"`
+		CompactedThrough int            `json:"compactedThrough"`
+	}{summary.MessageRole(), summary.Content, summary.Timestamp, len(before)}
+	for _, message := range before[1:] {
+		records = append(records, message)
+	}
+	for _, message := range after {
+		records = append(records, message)
+	}
+	return json.Marshal(records)
 }
 
 func conversationHistory(exchanges []run.Exchange, fallbackModel ai.Model) (sessionHistory, error) {
@@ -108,11 +140,10 @@ func conversationHistory(exchanges []run.Exchange, fallbackModel ai.Model) (sess
 	for i := len(exchanges) - 1; i >= 0; i-- {
 		if len(exchanges[i].CompactedContext) > 0 {
 			var err error
-			history, err = appendMessages(history, exchanges[i].CompactedContext)
+			history, checkpoint, err = decodeCompactedContext(exchanges[i].CompactedContext)
 			if err != nil {
 				return sessionHistory{}, err
 			}
-			checkpoint = len(history)
 			exchanges = exchanges[i+1:]
 			break
 		}
@@ -150,11 +181,35 @@ func conversationHistory(exchanges []run.Exchange, fallbackModel ai.Model) (sess
 	return sessionHistory{messages: history, checkpoint: checkpoint}, nil
 }
 
+func decodeCompactedContext(data []byte) ([]agent.AgentMessage, int, error) {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(data, &entries); err != nil || len(entries) == 0 {
+		return nil, 0, err
+	}
+	var metadata struct {
+		CompactedThrough int `json:"compactedThrough"`
+	}
+	if err := json.Unmarshal(entries[0], &metadata); err != nil {
+		return nil, 0, err
+	}
+	boundary := metadata.CompactedThrough
+	if boundary <= 0 || boundary > len(entries) {
+		// Older snapshots recorded no boundary inside the stored messages.
+		boundary = len(entries)
+	}
+	messages, err := appendDecodedMessages(make([]agent.AgentMessage, 0, len(entries)), entries)
+	return messages, boundary, err
+}
+
 func appendMessages(history []agent.AgentMessage, data []byte) ([]agent.AgentMessage, error) {
 	var entries []json.RawMessage
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, err
 	}
+	return appendDecodedMessages(history, entries)
+}
+
+func appendDecodedMessages(history []agent.AgentMessage, entries []json.RawMessage) ([]agent.AgentMessage, error) {
 	for _, entry := range entries {
 		message, err := ai.UnmarshalMessage(entry)
 		if err != nil {

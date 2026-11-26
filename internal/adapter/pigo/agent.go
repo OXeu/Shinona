@@ -132,9 +132,9 @@ func turnResult(result run.Result, execution sessionExecution, err error) (run.R
 		result.TokenUsage = &usage
 	}
 	var encodeErr error
-	result.AgentMessages, encodeErr = encodeMessages(messages, false)
+	result.AgentMessages, encodeErr = encodeTurnMessages(messages)
 	if encodeErr == nil && execution.compacted != nil {
-		result.CompactedContext, encodeErr = encodeMessages(execution.compacted, true)
+		result.CompactedContext, encodeErr = encodeCompactedContext(execution.compacted, execution.afterCompaction)
 	}
 	if encodeErr != nil {
 		return result, errors.Join(err, fmt.Errorf("save agent messages: %w", encodeErr))
