@@ -24,15 +24,16 @@ const panelId = useId()
 const tabs = ref<TerminalTab[]>([])
 const active = ref<string | null>(null)
 const visited = ref(new Set<string>())
-let settledTab: string | null = null
+const settledTab = ref<string | null>(null)
+const checkingTabs = ref(new Set<string>())
 const mountedTabs = computed(() => tabs.value.filter(({ id }) => visited.value.has(id)))
 const loading = ref(true)
 const changing = ref(false)
 
 function select(id: string | null) {
-  if (settledTab && settledTab !== id) {
-    discard(settledTab)
-    settledTab = null
+  if (settledTab.value && settledTab.value !== id) {
+    discard(settledTab.value)
+    settledTab.value = null
   }
   if (id) visited.value.add(id)
   active.value = id
@@ -45,8 +46,23 @@ function discard(id: string) {
 }
 
 function settle(id: string) {
-  if (active.value === id) settledTab = id
+  if (active.value === id) settledTab.value = id
   else discard(id)
+}
+
+async function checkDisconnectedTab(id: string) {
+  checkingTabs.value.add(id)
+  try {
+    const entries = await terminalApi.list(props.sessionId, request.signal)
+    if (request.signal.aborted || !tabs.value.some(tab => tab.id === id)) return
+    if (entries.some(tab => tab.id === id)) notify.error(t('terminal.unavailable'))
+    else settle(id)
+  } catch (error) {
+    if (!request.signal.aborted && error instanceof HttpError && error.status === 404) settle(id)
+    report(error, 'terminal.unavailable')
+  } finally {
+    checkingTabs.value.delete(id)
+  }
 }
 
 async function load() {
@@ -162,7 +178,8 @@ onUnmounted(() => request.abort())
       <UiIconButton
         icon="refresh-line"
         :label="t('terminal.reconnect')"
-        :hidden="!surface?.reconnectable"
+        :hidden="!surface?.reconnectable || settledTab === active"
+        :disabled="active !== null && checkingTabs.has(active)"
         @click="surface?.connect()"
       />
       <UiIconButton
@@ -186,6 +203,8 @@ onUnmounted(() => request.abort())
       :session-id="sessionId"
       :terminal-id="tab.id"
       @settled="settle(tab.id)"
+      @disconnected="checkDisconnectedTab(tab.id)"
+      @unauthorized="emit('unauthorized')"
     />
   </UiSection>
 </template>

@@ -10,7 +10,7 @@ import { UiBox } from '../../shared/ui/elements'
 import { terminalApi } from './terminalApi'
 
 const props = defineProps<{ sessionId: string; terminalId: string }>()
-const emit = defineEmits<{ settled: [] }>()
+const emit = defineEmits<{ settled: []; disconnected: []; unauthorized: [] }>()
 const surface = shallowRef<HTMLElement | null>(null)
 const reconnectable = ref(false)
 const fit = new FitAddon()
@@ -51,11 +51,13 @@ function sendInput(bytes: Uint8Array<ArrayBuffer>) {
 function connect() {
   if (!terminal || socket) return
   fitTerminal()
-  terminal.reset()
   reconnectable.value = false
   const ws = terminalApi.connect(props.sessionId, props.terminalId)
   socket = ws
   ws.binaryType = 'arraybuffer'
+  ws.onopen = () => {
+    if (socket === ws) terminal?.reset()
+  }
   let replayWrites = 0
   let running = false
   let ended = false
@@ -103,9 +105,14 @@ function connect() {
     if (socket !== ws) return
     socket = undefined
     ready = false
-    reconnectable.value = !ended && code !== 1000
-    if (ended) emit('settled')
-    if (reconnectable.value) notify.error(t('terminal.unavailable'))
+    if (ended || code === 1000) {
+      emit('settled')
+    } else if (code === 4401) {
+      emit('unauthorized')
+    } else {
+      emit('disconnected')
+      reconnectable.value = true
+    }
   }
 }
 
