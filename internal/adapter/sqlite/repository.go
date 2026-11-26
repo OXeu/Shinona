@@ -58,6 +58,10 @@ type Repository struct {
 	stopCheckpoint func() error
 }
 
+func newRepository(db *gorm.DB) *Repository {
+	return &Repository{db: db, read: db, sessions: newSessionCache(), latest: newLatestTranscriptCache()}
+}
+
 type timingLogger struct{ logger.Interface }
 
 func (timingLogger) Trace(ctx context.Context, begin time.Time, _ func() (string, int64), _ error) {
@@ -89,7 +93,7 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 	if err := migrate(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
-	repo := &Repository{db: db, read: db}
+	repo := newRepository(db)
 	if readDSN == "" {
 		return repo, nil
 	}

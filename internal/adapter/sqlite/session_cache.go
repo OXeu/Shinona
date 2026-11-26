@@ -1,11 +1,11 @@
 package sqlite
 
 import (
-	"container/list"
 	"sync"
 	"time"
 
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/responsecache"
 )
 
 const (
@@ -19,30 +19,26 @@ type cachedSession struct {
 	expiresAt time.Time
 }
 
-type sessionEntry struct {
-	key string
-	cachedSession
-}
-
 type sessionCache struct {
 	mu         sync.Mutex
-	entries    map[string]*list.Element
-	recent     list.List
+	entries    responsecache.Store[string, cachedSession]
 	generation uint64
 	owners     map[string]int
 	keys       map[string]int
 }
 
+func newSessionCache() sessionCache {
+	return sessionCache{entries: responsecache.NewStore[string, cachedSession](sessionCacheSize, sessionCacheSize)}
+}
+
 func (c *sessionCache) get(key string, now time.Time) (cachedSession, uint64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if element := c.entries[key]; element != nil {
-		entry := element.Value.(sessionEntry)
+	if entry, ok := c.entries.Get(key); ok {
 		if now.Before(entry.expiresAt) {
-			c.recent.MoveToFront(element)
-			return entry.cachedSession, c.generation, true
+			return entry, c.generation, true
 		}
-		c.remove(element)
+		c.entries.Delete(key)
 	}
 	return cachedSession{}, c.generation, false
 }
@@ -53,21 +49,7 @@ func (c *sessionCache) put(key string, generation uint64, entry cachedSession) {
 	if generation != c.generation || c.keys[key] > 0 || c.owners[entry.user.ID] > 0 {
 		return
 	}
-	if element := c.entries[key]; element != nil {
-		c.remove(element)
-	}
-	if c.recent.Len() >= sessionCacheSize {
-		c.remove(c.recent.Back())
-	}
-	if c.entries == nil {
-		c.entries = make(map[string]*list.Element)
-	}
-	c.entries[key] = c.recent.PushFront(sessionEntry{key, entry})
-}
-
-func (c *sessionCache) remove(element *list.Element) {
-	delete(c.entries, element.Value.(sessionEntry).key)
-	c.recent.Remove(element)
+	c.entries.Put(key, entry, 1, nil)
 }
 
 // Remove cached authorization before the transaction and block refills until
@@ -81,19 +63,13 @@ func (c *sessionCache) change(key, owner string) func() {
 			c.keys = make(map[string]int)
 		}
 		pending, id = c.keys, key
-		if element := c.entries[key]; element != nil {
-			c.remove(element)
-		}
+		c.entries.Delete(key)
 	} else {
 		if c.owners == nil {
 			c.owners = make(map[string]int)
 			pending = c.owners
 		}
-		for _, element := range c.entries {
-			if element.Value.(sessionEntry).user.ID == owner {
-				c.remove(element)
-			}
-		}
+		c.entries.DeleteWhere(func(entry cachedSession) bool { return entry.user.ID == owner })
 	}
 	pending[id]++
 	c.mu.Unlock()

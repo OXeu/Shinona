@@ -20,7 +20,22 @@ func TestCacheCapacityAndReplacement(t *testing.T) {
 	if _, ok := cache.Get("second"); ok {
 		t.Fatal("least recently used entry survived eviction")
 	}
-	if _, ok := cache.Get("invalid"); ok || cache.bytes != 8 {
-		t.Fatalf("invalid entry or incorrect size: %d", cache.bytes)
+	if _, ok := cache.Get("invalid"); ok || cache.store.bytes != 8 {
+		t.Fatalf("invalid entry or incorrect size: %d", cache.store.bytes)
+	}
+}
+
+func TestCacheInvalidatesOnlyTheObservedValue(t *testing.T) {
+	cache := New[string, *int](1, 1)
+	previous, current := new(1), new(2)
+	cache.Put("key", previous, 1)
+	cache.Put("key", current, 1)
+	cache.DeleteIf("key", func(value *int) bool { return value == previous })
+	if value, ok := cache.Get("key"); !ok || value != current {
+		t.Fatal("invalidation of an old entry removed its replacement")
+	}
+	cache.DeleteIf("key", func(value *int) bool { return value == current })
+	if _, ok := cache.Get("key"); ok {
+		t.Fatal("invalidation retained its matching entry")
 	}
 }

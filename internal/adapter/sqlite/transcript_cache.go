@@ -1,15 +1,14 @@
 package sqlite
 
 import (
-	"container/list"
 	"context"
 	"errors"
 	"slices"
-	"sync"
 	"time"
 
 	"gorm.io/gorm"
 
+	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -32,24 +31,21 @@ type latestTranscriptPage struct {
 	turnCount int
 	turns     []run.Run
 	next      int
-	bytes     int
 }
 
 type latestTranscriptCache struct {
-	mu      sync.Mutex
-	entries map[latestTranscriptKey]*list.Element
-	order   list.List
-	bytes   int
+	entries *responsecache.Cache[latestTranscriptKey, *latestTranscriptPage]
+}
+
+func newLatestTranscriptCache() latestTranscriptCache {
+	return latestTranscriptCache{
+		entries: responsecache.New[latestTranscriptKey, *latestTranscriptPage](latestTranscriptEntries, latestTranscriptBytes),
+	}
 }
 
 func (c *latestTranscriptCache) get(key latestTranscriptKey) *latestTranscriptPage {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if element := c.entries[key]; element != nil {
-		c.order.MoveToFront(element)
-		return element.Value.(*latestTranscriptPage)
-	}
-	return nil
+	page, _ := c.entries.Get(key)
+	return page
 }
 
 func (c *latestTranscriptCache) put(key latestTranscriptKey, page *run.Transcript) {
@@ -60,37 +56,13 @@ func (c *latestTranscriptCache) put(key latestTranscriptKey, page *run.Transcrip
 	entry := &latestTranscriptPage{
 		key: key, head: page.Turns[len(page.Turns)-1].ID, turns: cloneTranscriptTurns(page.Turns),
 		createdAt: page.Session.CreatedAt, updatedAt: page.Session.UpdatedAt, turnCount: page.Session.TurnCount,
-		next: page.NextBeforeSequence, bytes: size,
+		next: page.NextBeforeSequence,
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.entries == nil {
-		c.entries = make(map[latestTranscriptKey]*list.Element)
-	}
-	if old := c.entries[key]; old != nil {
-		c.removeLocked(old)
-	}
-	for len(c.entries) >= latestTranscriptEntries || c.bytes+size > latestTranscriptBytes {
-		c.removeLocked(c.order.Back())
-	}
-	c.entries[key] = c.order.PushFront(entry)
-	c.bytes += size
+	c.entries.Put(key, entry, size)
 }
 
 func (c *latestTranscriptCache) discard(entry *latestTranscriptPage) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if element := c.entries[entry.key]; element != nil && element.Value == entry {
-		c.removeLocked(element)
-	}
-}
-
-func (c *latestTranscriptCache) removeLocked(element *list.Element) {
-	entry := element.Value.(*latestTranscriptPage)
-	delete(c.entries, entry.key)
-	c.bytes -= entry.bytes
-	c.order.Remove(element)
+	c.entries.DeleteIf(entry.key, func(current *latestTranscriptPage) bool { return current == entry })
 }
 
 func (r *Repository) validateCachedTranscript(ctx context.Context, key latestTranscriptKey, page *latestTranscriptPage) (*run.Transcript, bool, error) {

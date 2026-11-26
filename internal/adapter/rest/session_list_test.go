@@ -10,9 +10,42 @@ import (
 	"time"
 
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/timing"
 )
+
+func TestSessionListHistoryKeepsRevisionIndexInStepWithEviction(t *testing.T) {
+	history := sessionListHistory{
+		versions: responsecache.NewStore[sessionListKey, sessionListVersion](2, 2),
+		latest:   make(map[sessionListScope]sessionListKey),
+	}
+	alice, bob := sessionListScope{owner: "alice"}, sessionListScope{owner: "bob"}
+	aliceOld := sessionListVersion{key: sessionListKey{alice, "former"}, revision: 1}
+	aliceCurrent := sessionListVersion{key: sessionListKey{alice, "current"}, revision: 2}
+	bobCurrent := sessionListVersion{key: sessionListKey{bob, "current"}, revision: 1}
+	history.save(aliceOld)
+	history.save(aliceCurrent)
+	if _, ok := history.get(aliceOld.key); !ok {
+		t.Fatal("delta base disappeared before reaching capacity")
+	}
+	history.save(bobCurrent)
+	if _, ok := history.latest[alice]; ok {
+		t.Fatal("evicting Alice's latest version left its secondary index entry")
+	}
+	if _, ok := history.get(aliceOld.key); !ok {
+		t.Fatal("evicting another version removed Alice's delta base")
+	}
+	history.save(aliceCurrent)
+	history.save(aliceOld)
+	if _, ok := history.current(alice, 2); !ok {
+		t.Fatal("an older request completing later replaced the current revision")
+	}
+	history.save(sessionListVersion{key: aliceCurrent.key, revision: -1})
+	if _, ok := history.current(alice, 2); !ok {
+		t.Fatal("saving an unstable snapshot with the same ETag removed the current revision")
+	}
+}
 
 func TestSessionListPolls(t *testing.T) {
 	repo, router := restFixture(t)

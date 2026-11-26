@@ -1,7 +1,6 @@
 package rest
 
 import (
-	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/responsecache"
 )
 
 const (
@@ -44,28 +44,23 @@ type sessionListVersion struct {
 // versions, including after restart or eviction, use a full response.
 type sessionListHistory struct {
 	mu       sync.Mutex
-	versions map[sessionListKey]*list.Element
-	latest   map[sessionListScope]*list.Element
-	recent   list.List
+	versions responsecache.Store[sessionListKey, sessionListVersion]
+	latest   map[sessionListScope]sessionListKey
 }
 
 func (h *sessionListHistory) get(key sessionListKey) (sessionsResponse, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if entry := h.versions[key]; entry != nil {
-		h.recent.MoveToFront(entry)
-		return entry.Value.(sessionListVersion).body, true
-	}
-	return sessionsResponse{}, false
+	version, found := h.versions.Get(key)
+	return version.body, found
 }
 
 func (h *sessionListHistory) current(scope sessionListScope, revision int64) (sessionListVersion, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if entry := h.latest[scope]; entry != nil {
-		if version := entry.Value.(sessionListVersion); version.revision == revision {
-			h.recent.MoveToFront(entry)
-			return version, true
+	if key, ok := h.latest[scope]; ok {
+		if version, cached := h.versions.Peek(key); cached && version.revision == revision {
+			return h.versions.Get(key)
 		}
 	}
 	return sessionListVersion{}, false
@@ -75,37 +70,27 @@ func (h *sessionListHistory) save(version sessionListVersion) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	key := version.key
+	revision := version.revision
+	if cached, ok := h.versions.Peek(key); ok && cached.revision > version.revision {
+		version = cached
+	}
+	h.versions.Put(key, version, 1, func(evicted sessionListKey) {
+		if scope := evicted.sessionListScope; h.latest[scope] == evicted {
+			delete(h.latest, scope)
+		}
+	})
 	scope := key.sessionListScope
-	if h.versions == nil {
-		h.versions = make(map[sessionListKey]*list.Element)
-		h.latest = make(map[sessionListScope]*list.Element)
-	}
-	element := h.versions[key]
-	if element == nil {
-		if h.recent.Len() == sessionListHistoryLimit {
-			oldest := h.recent.Back()
-			oldKey := oldest.Value.(sessionListVersion).key
-			delete(h.versions, oldKey)
-			if h.latest[oldKey.sessionListScope] == oldest {
-				delete(h.latest, oldKey.sessionListScope)
-			}
-			h.recent.Remove(oldest)
-		}
-		element = h.recent.PushFront(version)
-		h.versions[key] = element
-	} else {
-		if element.Value.(sessionListVersion).revision <= version.revision {
-			element.Value = version
-		}
-		h.recent.MoveToFront(element)
-	}
-	if latest := h.latest[scope]; version.revision >= 0 && (latest == nil || latest.Value.(sessionListVersion).revision <= version.revision) {
-		h.latest[scope] = element
+	latest, exists := h.versions.Peek(h.latest[scope])
+	if revision >= 0 && (!exists || latest.revision <= revision) {
+		h.latest[scope] = key
 	}
 }
 
 func (r *handler) sessionList() gin.HandlerFunc {
-	var history sessionListHistory
+	history := sessionListHistory{
+		versions: responsecache.NewStore[sessionListKey, sessionListVersion](sessionListHistoryLimit, sessionListHistoryLimit),
+		latest:   make(map[sessionListScope]sessionListKey),
+	}
 	return func(c *gin.Context) {
 		var args struct {
 			ProjectID *string `form:"projectId"`
