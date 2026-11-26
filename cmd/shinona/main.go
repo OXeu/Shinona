@@ -50,6 +50,10 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	if err != nil {
 		return err
 	}
+	parallelism, err := environment.boundedInt("SHINONA_AGENT_WORKERS", run.DefaultWorkerConcurrency, 1, 64)
+	if err != nil {
+		return err
+	}
 	address, err := listenAddress(environment)
 	if err != nil {
 		return err
@@ -108,7 +112,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		run.NewWorker(repository, config.ResolveForAccount, logger, controls, run.DefaultWorkerConcurrency).Serve(workerCtx)
+		run.NewWorker(repository, config.ResolveForAccount, logger, controls, parallelism).Serve(workerCtx)
 	}()
 
 	serverDone := make(chan error, 1)
