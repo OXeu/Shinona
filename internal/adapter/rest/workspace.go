@@ -7,6 +7,7 @@ import (
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 	"github.com/OXeu/shinona/internal/workspace"
 )
 
@@ -60,6 +61,7 @@ func (r *handler) WorkspaceDirectory(ctx context.Context, args struct {
 	Path      string `form:"path"`
 }) (workspace.Directory, error) {
 	return inWorkspace(ctx, r, r.service.InspectWorkspace, args.SessionID, func(repo workspace.Repository, ctx context.Context) (workspace.Directory, error) {
+		defer timing.Start(ctx, "workspace_directory")()
 		// The files panel browses the whole workspace so it can select any folder.
 		return workspace.New(repo.Workspace()).Directory(ctx, args.Path)
 	})

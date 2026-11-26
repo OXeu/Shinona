@@ -207,7 +207,7 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	t.Setenv("SHINONA_TRUSTED_SSH_ADDRESSES", listener.Addr().String())
-	app, repo, _ := settingsTestApp(t, nil)
+	app, repo, query := settingsTestApp(t, nil)
 	server := settings.SSHServer{
 		ID: "test-host", Name: "Test host", Address: listener.Addr().String(), User: "worker",
 		Template: "alpine:3", HostFingerprint: ssh.FingerprintSHA256(hostKey.PublicKey()), PrivateKey: key,
@@ -224,7 +224,9 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 		return nil, nil
 	}}
 	config.AddHostKey(hostKey)
-	var paused atomic.Bool
+	var state atomic.Value
+	state.Store("running")
+	var statusCalls, listCalls atomic.Int32
 	accepted := make(chan net.Conn, 8)
 	go func() {
 		for {
@@ -234,13 +236,23 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 			}
 			accepted <- conn
 			go serveSSHTestConnection(conn, config, func(command string) (string, uint32, bool) {
-				if !strings.HasPrefix(command, "exec docker 'ps' ") {
+				current := state.Load().(string)
+				switch {
+				case strings.HasPrefix(command, "exec docker 'ps' "):
+					statusCalls.Add(1)
+					if current == "" {
+						return "", 0, true
+					}
+					return "container-id " + current + "\n", 0, true
+				case strings.HasPrefix(command, "exec docker 'exec' ") && strings.Contains(command, " 'shinona-list' "):
+					listCalls.Add(1)
+					if current != "running" || strings.HasSuffix(command, " 'missing'") {
+						return "", 2, true
+					}
+					return "d\x00src\x00f\x00README.md\x00", 0, true
+				default:
 					return "", 0, false
 				}
-				if paused.Load() {
-					return "container-id paused\n", 0, true
-				}
-				return "container-id running\n", 0, true
 			})
 		}
 	}()
@@ -293,11 +305,11 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	if _, err := first.ReadFile(t.Context(), "file"); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("released workspace could still open a channel: %v", err)
 	}
-	paused.Store(true)
+	state.Store("paused")
 	if _, _, err := open("alice"); !errors.Is(err, sandbox.ErrWorkspaceMissing) {
 		t.Fatalf("did not recheck the container state: %v", err)
 	}
-	paused.Store(false)
+	state.Store("running")
 	if len(accepted) != 0 {
 		t.Fatal("opened another connection for the same account and credentials")
 	}
@@ -305,6 +317,41 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	release("alice", true)
+	conn = nextConnection()
+
+	if err := repo.SaveProjectSandboxConfig(t.Context(), "alice", "", run.ProjectSandboxConfig{Provider: settings.SSHProviderPrefix + server.ID}); err != nil {
+		t.Fatal(err)
+	}
+	var session struct{ ID string }
+	created := query("alice", http.MethodPost, "/sessions", map[string]any{})
+	if err := json.Unmarshal([]byte(created), &session); err != nil || session.ID == "" {
+		t.Fatalf("create SSH session: %s", created)
+	}
+	list := func(folder, want string, wantChecks int32) {
+		t.Helper()
+		beforeLists, beforeChecks := listCalls.Load(), statusCalls.Load()
+		response := query("alice", http.MethodGet, "/sessions/"+session.ID+"/workspace/files?path="+folder, nil)
+		if !strings.Contains(response, want) {
+			t.Fatalf("list %q: %s", folder, response)
+		}
+		if lists, checks := listCalls.Load()-beforeLists, statusCalls.Load()-beforeChecks; lists != 1 || checks != wantChecks {
+			t.Fatalf("list %q made %d directory calls and %d status checks, want 1 and %d", folder, lists, checks, wantChecks)
+		}
+	}
+	list(".", `"name":"README.md"`, 0)
+	list("missing", "WORKSPACE_INVALID_PATH", 1)
+	for _, unavailable := range []string{"paused", "exited", ""} {
+		state.Store(unavailable)
+		list(".", "WORKSPACE_UNAVAILABLE", 1)
+	}
+	state.Store("running")
+	if len(accepted) != 0 {
+		t.Fatal("directory requests did not reuse the connection")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	list(".", `"name":"README.md"`, 0)
 	nextConnection()
 
 	release("bob", true)

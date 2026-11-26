@@ -53,6 +53,12 @@ type ProjectProvider interface {
 	OpenProject(ctx context.Context, spec Spec) (Workspace, error)
 }
 
+// ProjectInspector runs a read-only operation on a retained project. It may
+// retry the operation after a transport failure and owns the workspace lease.
+type ProjectInspector interface {
+	InspectProject(ctx context.Context, spec Spec, inspect func(context.Context, Workspace) error) error
+}
+
 type ProjectState string
 
 const (

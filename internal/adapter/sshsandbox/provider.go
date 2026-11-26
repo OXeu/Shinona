@@ -258,34 +258,69 @@ func (p *Provider) ensureRunning(ctx context.Context, ws *workspace, spec sandbo
 }
 
 func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
-	key := projectConnectionKey{owner: spec.OwnerID, identity: p.identity}
-	for conn := p.projects.take(key); ; conn = nil {
-		reused := conn != nil
-		if !reused {
-			client, err := p.connectClient(ctx)
-			if err != nil {
-				return nil, err
-			}
-			conn = &projectConnection{client: client, opened: time.Now()}
-		}
-		ws := newWorkspace(conn.client, spec)
-		ws.release = func() error { return p.projects.put(key, conn) }
-		status, err := ws.checkProject(ctx)
-		if err == nil && status.State == sandbox.ProjectRunning {
-			return ws, nil
-		}
-		_ = ws.Close(ctx)
-		if err == nil {
-			return nil, sandbox.ErrWorkspaceMissing
-		}
-		// Retry a lost idle transport before any workspace operation has run.
-		if !reused || !ws.discard.Load() || ctx.Err() != nil {
-			return nil, err
-		}
+	ws, err := p.openProject(ctx, spec, func(ws *workspace) error { return ws.requireRunningProject(ctx) })
+	if err != nil {
+		return nil, err
 	}
+	return ws, nil
 }
 
-func (w *workspace) checkProject(ctx context.Context) (sandbox.ProjectStatus, error) {
+func (p *Provider) InspectProject(ctx context.Context, spec sandbox.Spec, inspect func(context.Context, sandbox.Workspace) error) error {
+	ws, err := p.openProject(ctx, spec, func(ws *workspace) error {
+		// A successful inspection already proved the container could run the
+		// command. On failure, distinguish a missing or stopped container from
+		// an ordinary workspace error, such as a path that does not exist.
+		err := inspect(ctx, ws)
+		if err == nil || ws.discard.Load() || ctx.Err() != nil {
+			return err
+		}
+		if statusErr := ws.requireRunningProject(ctx); statusErr != nil {
+			return statusErr
+		}
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	defer timing.Start(ctx, "workspace_release")()
+	// Keep an acknowledged inspection successful if lease cleanup fails.
+	_ = ws.Close(ctx)
+	return nil
+}
+
+func (p *Provider) openProject(ctx context.Context, spec sandbox.Spec, prepare func(*workspace) error) (*workspace, error) {
+	key := projectConnectionKey{owner: spec.OwnerID, identity: p.identity}
+	ws, retry, err := p.tryProject(ctx, spec, key, p.projects.take(key), prepare)
+	if retry {
+		// Preparation only checks status or performs a read-only inspection.
+		ws, _, err = p.tryProject(ctx, spec, key, nil, prepare)
+	}
+	return ws, err
+}
+
+func (p *Provider) tryProject(ctx context.Context, spec sandbox.Spec, key projectConnectionKey, conn *projectConnection, prepare func(*workspace) error) (lease *workspace, retry bool, err error) {
+	reused := conn != nil
+	if !reused {
+		client, err := p.connectClient(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		conn = &projectConnection{client: client, opened: time.Now()}
+	}
+	ws := newWorkspace(conn.client, spec)
+	ws.release = func() error { return p.projects.put(key, conn) }
+	defer func() {
+		if lease == nil {
+			_ = ws.Close(ctx)
+		}
+	}()
+	if err := prepare(ws); err != nil {
+		return nil, reused && ws.discard.Load() && ctx.Err() == nil, err
+	}
+	return ws, false, nil
+}
+
+func (w *workspace) requireRunningProject(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 	// NewSession can block before a channel exists to cancel.
@@ -294,9 +329,12 @@ func (w *workspace) checkProject(ctx context.Context) (sandbox.ProjectStatus, er
 	stop()
 	if ctx.Err() != nil {
 		w.discard.Store(true)
-		return sandbox.ProjectStatus{}, ctx.Err()
+		return ctx.Err()
 	}
-	return status, err
+	if err == nil && status.State != sandbox.ProjectRunning {
+		return sandbox.ErrWorkspaceMissing
+	}
+	return err
 }
 
 func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbox.ProjectStatus, error) {
@@ -336,3 +374,4 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error 
 }
 
 var _ sandbox.ManagedProjectProvider = (*Provider)(nil)
+var _ sandbox.ProjectInspector = (*Provider)(nil)

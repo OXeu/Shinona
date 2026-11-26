@@ -188,12 +188,16 @@ func (w *workspace) command(ctx context.Context, input io.Reader, limit int, arg
 	if err != nil {
 		return sandbox.Result{}, err
 	}
-	session, err := w.client.NewSession()
+	session, err := w.openSession(ctx)
 	if err != nil {
 		w.discard.Store(true)
 		return sandbox.Result{}, err
 	}
 	defer func() { _ = session.Close() }()
+	if err := ctx.Err(); err != nil {
+		w.discard.Store(true)
+		return sandbox.Result{}, err
+	}
 	stop := context.AfterFunc(ctx, func() { _ = session.Close() })
 	defer stop()
 	out := limitedOutput{remaining: limit}
@@ -213,6 +217,20 @@ func (w *workspace) command(ctx context.Context, input io.Reader, limit int, arg
 		w.discard.Store(true)
 	}
 	return result, err
+}
+
+func (w *workspace) openSession(ctx context.Context) (*ssh.Session, error) {
+	// A retained transport belongs to this lease alone. Closing it bounds the
+	// channel-open wait even if a stale SSH server never acknowledges it.
+	if w.release != nil {
+		stop := context.AfterFunc(ctx, func() { _ = w.client.Close() })
+		defer stop()
+	}
+	session, err := w.client.NewSession()
+	if err != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return session, err
 }
 
 type limitedOutput struct {

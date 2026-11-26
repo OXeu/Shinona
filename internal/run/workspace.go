@@ -57,7 +57,7 @@ func (c *Controls) borrowWorkspace(owner, id string) *liveWorkspace {
 func (s *Service) InspectWorkspace(ctx context.Context, owner, id string, inspect func(context.Context, sandbox.Workspace) error) error {
 	live := s.controls.borrowWorkspace(owner, id)
 	if live == nil {
-		return s.WithWorkspace(ctx, owner, id, inspect)
+		return s.withWorkspace(ctx, owner, id, true, inspect)
 	}
 	defer live.readers.Done()
 	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
@@ -73,16 +73,37 @@ func (s *Service) InspectWorkspace(ctx context.Context, owner, id string, inspec
 
 // WithWorkspace shares the lease gate with agent execution. It reopens the
 // retained workspace for an account's session or project.
-func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(context.Context, sandbox.Workspace) error) (err error) {
+func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(context.Context, sandbox.Workspace) error) error {
+	return s.withWorkspace(ctx, owner, id, false, use)
+}
+
+func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly bool, use func(context.Context, sandbox.Workspace) error) (err error) {
 	if !s.controls.leaseMu.TryLock() {
 		return ErrWorkspaceBusy
 	}
 	defer s.controls.leaseMu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
 	defer cancel()
-	open := timing.Start(ctx, "workspace_acquire")
-	ws, err := s.openWorkspace(ctx, owner, id)
-	open()
+	acquired := sync.OnceFunc(timing.Start(ctx, "workspace_acquire"))
+	defer acquired()
+	resolve := timing.Start(ctx, "workspace_resolve")
+	spec, target, err := sessionSandbox(ctx, s.repo, s.resolve, owner, id, "", false)
+	resolve()
+	if errors.Is(err, ErrSession) {
+		return ErrWorkspaceUnavailable
+	}
+	if err != nil {
+		return err
+	}
+	spec.RunID = s.newID()
+	if inspector, ok := target.Provider.(sandbox.ProjectInspector); readOnly && ok {
+		return workspaceAvailability(inspector.InspectProject(ctx, spec, func(ctx context.Context, ws sandbox.Workspace) error {
+			acquired()
+			return use(ctx, ws)
+		}))
+	}
+	ws, err := s.openWorkspace(ctx, spec, target)
+	acquired()
 	if err != nil {
 		return err
 	}
@@ -100,32 +121,26 @@ func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(
 	return use(ctx, ws)
 }
 
-func (s *Service) openWorkspace(ctx context.Context, owner, id string) (sandbox.Workspace, error) {
-	resolve := timing.Start(ctx, "workspace_resolve")
-	spec, target, err := sessionSandbox(ctx, s.repo, s.resolve, owner, id, "", false)
-	resolve()
-	if errors.Is(err, ErrSession) {
-		return nil, ErrWorkspaceUnavailable
+func workspaceAvailability(err error) error {
+	if errors.Is(err, sandbox.ErrWorkspaceMissing) {
+		return ErrWorkspaceUnavailable
 	}
-	if err != nil {
-		return nil, err
-	}
-	spec.RunID = s.newID()
+	return err
+}
+
+func (s *Service) openWorkspace(ctx context.Context, spec sandbox.Spec, target Target) (sandbox.Workspace, error) {
 	if project, ok := target.Provider.(sandbox.ProjectProvider); ok {
 		ws, err := project.OpenProject(ctx, spec)
-		if errors.Is(err, sandbox.ErrWorkspaceMissing) {
-			return nil, ErrWorkspaceUnavailable
-		}
-		return ws, err
+		return ws, workspaceAvailability(err)
 	}
-	turn, err := s.repo.LatestWorkspaceRun(ctx, owner, id)
+	turn, err := s.repo.LatestWorkspaceRun(ctx, spec.OwnerID, spec.SessionID)
 	if err != nil {
 		return nil, err
 	}
 	if turn == nil || turn.Backend == "" || turn.Policy != sandbox.Shared {
 		return nil, ErrWorkspaceUnavailable
 	}
-	target, err = s.resolve(ctx, owner, turn.Backend)
+	target, err = s.resolve(ctx, spec.OwnerID, turn.Backend)
 	if err != nil {
 		return nil, err
 	}
