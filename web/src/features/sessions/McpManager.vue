@@ -2,6 +2,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 
 import { messageFor } from '../../shared/errors'
+import { navigateToOAuth } from '../../shared/http'
 import { t } from '../../shared/i18n'
 import type { MessageKey } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
@@ -119,7 +120,7 @@ async function toggleConnection(server: McpServer) {
       notify.success(t('mcp.oauthDisconnected'))
     } else {
       const { url } = await mcpSettingsApi.connect(server.name, request.signal)
-      if (!request.signal.aborted) location.assign(url)
+      if (!request.signal.aborted) navigateToOAuth(url)
     }
   } catch (error) {
     if (!request.signal.aborted) notify.error(messageFor(error, 'mcp.oauthFailed'))

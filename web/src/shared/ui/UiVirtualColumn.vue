@@ -62,6 +62,7 @@ watch(() => props.items, (items, previous) => {
   void nextTick(() => {
     const currentIndex = props.items.findIndex((item) => props.itemKey(item) === anchor)
     if (currentIndex > 0) virtualizer.value.scrollToIndex(currentIndex, { align: 'start' })
+    prependPadding.value = 0
   })
 }, { flush: 'sync' })
 

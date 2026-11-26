@@ -63,7 +63,7 @@ const fetched = ref<{ value: string; label: string }[]>([])
 const fetchRequest = new AbortController()
 const dirty = computed(() => Object.keys(drafts).length > 0)
 
-watch(() => props.fields, () => {
+watch([() => props.fields, () => props.section], () => {
   for (const key of Object.keys(drafts)) delete drafts[key]
 })
 

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { messageFor } from '../../shared/errors'
+import { navigateToOAuth } from '../../shared/http'
 import { t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
 import UiDialog from '../../shared/ui/UiDialog.vue'
@@ -68,7 +69,7 @@ async function submit() {
       notify.success(t('account.oauthUnlinkSaved'))
     } else {
       const { url } = await accountApi.startOAuthLink(password.value)
-      if (!request.signal.aborted) location.assign(url)
+      if (!request.signal.aborted) navigateToOAuth(url)
     }
   } catch (error) {
     if (!request.signal.aborted) notify.error(messageFor(error, status.value ? 'account.oauthUnlinkFailed' : 'account.oauthLinkFailed'))

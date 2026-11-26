@@ -4,6 +4,14 @@ export class HttpError extends Error {
   }
 }
 
+export function navigateToOAuth(raw: string) {
+  const url = new URL(raw)
+  if (url.protocol !== 'https:' || url.username || url.password) {
+    throw new Error('Invalid OAuth destination.')
+  }
+  location.assign(url.href)
+}
+
 export async function request(path: string, body?: unknown, signal?: AbortSignal, method = body === undefined ? 'GET' : 'POST'): Promise<Response> {
   return checkedFetch(path, {
     method,
