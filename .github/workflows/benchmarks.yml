@@ -71,7 +71,7 @@ jobs:
           npm ci
           npm run build -- --manifest
           node bench/bundle-sizes.js > ../.tmp/web-sizes.json
-          node bench/session-paths.js > ../.tmp/web-bench.json
+          node --experimental-transform-types bench/session-paths.js > ../.tmp/web-bench.json
       - name: Convert Go and web measurements to BMF v1
         run: |
           python3 .github/scripts/benchmark-metrics.py go .tmp/go-bench.txt > .tmp/go-bench.json

@@ -105,7 +105,7 @@ cd web
 npm ci
 npm run build -- --manifest
 node bench/bundle-sizes.js
-node bench/session-paths.js
+node --experimental-transform-types bench/session-paths.js
 ```
 
 The SSH fixture runs a dedicated loopback OpenSSH server with a generated key and a Docker image containing Bash and Git. It needs `sshd`, `sudo -n`, and access to Docker. On Ubuntu and Debian, initialize the system OpenSSH runtime directory with `sudo install -d -o root -g root -m 0755 /run/sshd` if it is missing. Alternatively, use a dedicated SSH/Docker host by setting `SHINONA_BENCH_SSH_ADDRESS`, `SHINONA_BENCH_SSH_USER`, `SHINONA_BENCH_SSH_KEY_PATH`, `SHINONA_BENCH_SSH_HOST_FINGERPRINT`, and `SHINONA_BENCH_SSH_IMAGE`, then run the same Go command without the SSH fixture script.
