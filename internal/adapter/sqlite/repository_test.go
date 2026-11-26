@@ -503,26 +503,41 @@ func TestOpenMigratesSessionAndQueueIndexes(t *testing.T) {
 	}
 
 	type planStep struct{ Detail string }
-	var plan []planStep
-	err = repo.db.Raw(`EXPLAIN QUERY PLAN
-		SELECT agent_sessions.*, EXISTS (SELECT 1 FROM runs WHERE session_id = agent_sessions.id AND status IN ?) AS has_active
-		FROM agent_sessions WHERE owner_id = ? AND archived_at IS NULL
-		ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT 30`, []run.Status{run.Queued, run.Running}, "owner").Scan(&plan).Error
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{"idx_sessions_recent", "COVERING INDEX idx_runs_session_status_sequence"} {
-		if !slices.ContainsFunc(plan, func(step planStep) bool { return strings.Contains(step.Detail, expected) }) {
-			t.Errorf("expected %s in session list query plan: %+v", expected, plan)
+	for _, tc := range []struct {
+		project *string
+		index   string
+	}{
+		{index: "idx_sessions_recent (owner_id=?)"},
+		{project: new("named-project"), index: "idx_sessions_project_recent (owner_id=? AND project_id=?)"},
+		{project: new(""), index: "idx_sessions_project_recent (owner_id=? AND project_id=?)"},
+	} {
+		args := []any{[]run.Status{run.Queued, run.Running}, "owner"}
+		filter := ""
+		if tc.project != nil {
+			filter = " AND project_id = ?"
+			args = append(args, *tc.project)
 		}
-	}
-	if slices.ContainsFunc(plan, func(step planStep) bool { return strings.Contains(step.Detail, "TEMP B-TREE") }) {
-		t.Errorf("expected the session list index to satisfy the sort: %+v", plan)
+		var plan []planStep
+		err := repo.db.Raw(`EXPLAIN QUERY PLAN
+			SELECT agent_sessions.*, EXISTS (SELECT 1 FROM runs WHERE session_id = agent_sessions.id AND status IN ?) AS has_active
+			FROM agent_sessions WHERE owner_id = ? AND archived_at IS NULL`+filter+`
+			ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT 30`, args...).Scan(&plan).Error
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, expected := range []string{tc.index, "COVERING INDEX idx_runs_session_status_sequence"} {
+			if !slices.ContainsFunc(plan, func(step planStep) bool { return strings.Contains(step.Detail, expected) }) {
+				t.Errorf("expected %s in session list query plan: %+v", expected, plan)
+			}
+		}
+		if slices.ContainsFunc(plan, func(step planStep) bool { return strings.Contains(step.Detail, "TEMP B-TREE") }) {
+			t.Errorf("expected the session list index to satisfy the sort: %+v", plan)
+		}
 	}
 	if repo.db.Migrator().HasIndex(&row{}, "idx_runs_session_status") {
 		t.Error("the superseded two-column index is still present")
 	}
-	plan = nil
+	var plan []planStep
 	err = repo.db.Raw(`EXPLAIN QUERY PLAN
 		SELECT candidate.id FROM runs AS candidate
 		WHERE candidate.status = ? AND candidate.owner_id <> '' AND candidate.session_id <> ''

@@ -19,7 +19,13 @@ import (
 var migrations = [...]func(*gorm.DB) error{
 	initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime, deleteRevokedMCPGrants,
 	migrateOwnership, migrateSettingsStorage, addInstanceSettingsRevision,
-	initSessionListRevisions, migrateThinkingSignatures, migrateProjectSSHBindings,
+	initSessionListRevisions, migrateThinkingSignatures, migrateProjectSSHBindings, indexRecentProjectSessions,
+}
+
+func indexRecentProjectSessions(db *gorm.DB) error {
+	return db.Exec(`CREATE INDEX idx_sessions_project_recent
+		ON agent_sessions (owner_id, project_id, pinned DESC, updated_at DESC, id DESC)
+		WHERE archived_at IS NULL`).Error
 }
 
 func addInstanceSettingsRevision(db *gorm.DB) error {
