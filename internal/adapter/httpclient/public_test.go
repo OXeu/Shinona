@@ -1,7 +1,9 @@
 package httpclient
 
 import (
+	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,15 +41,43 @@ func TestEndpointMustHaveHTTPAuthority(t *testing.T) {
 
 type wrappedModelTransport struct{ http.RoundTripper }
 
+func TestPublicClientUsesItsOwnDialerForHTTPS(t *testing.T) {
+	defaultTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = defaultTransport })
+	http.DefaultTransport = &http.Transport{
+		DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("global TLS hook was called")
+		},
+	}
+	client := Public()
+	defer client.CloseIdleConnections()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://127.0.0.1:1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if !errors.Is(err, ErrPrivateEndpoint) {
+		t.Fatalf("HTTPS did not use the public dial policy: %v", err)
+	}
+}
+
 func TestTrustedModelOriginAllowsOnlyMatchingHTTPS(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
 	defer server.Close()
 	policy, err := ParseModelPolicy(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defaultTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = defaultTransport })
+	http.DefaultTransport = wrappedModelTransport{defaultTransport}
 	client := policy.Client()
 	transport := client.Transport.(modelTransport)
 	transport.trusted.(*http.Transport).TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
@@ -64,8 +94,8 @@ func TestTrustedModelOriginAllowsOnlyMatchingHTTPS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("trusted endpoint status: %d", response.StatusCode)
+	if response.StatusCode != http.StatusNoContent || response.ProtoMajor != 2 {
+		t.Fatalf("trusted endpoint returned %s status %d", response.Proto, response.StatusCode)
 	}
 	for _, blocked := range []string{"https://127.0.0.1:1/v1", strings.Replace(server.URL, "https://", "http://", 1)} {
 		if err := policy.CheckEndpoint(blocked); !errors.Is(err, ErrPrivateEndpoint) {

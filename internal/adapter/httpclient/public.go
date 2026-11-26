@@ -16,6 +16,8 @@ import (
 
 var globalIPv6 = netip.MustParsePrefix("2000::/3")
 
+const defaultDialTimeout = 30 * time.Second
+
 // Skip special-purpose ranges even if Go considers them global unicast.
 // Translation and tunneling ranges can route to a different address family.
 var nonPublicNetworks = [...]netip.Prefix{
@@ -74,7 +76,7 @@ func CheckHost(host string) error {
 }
 
 func Public() *http.Client {
-	return &http.Client{Transport: PublicTransport(30*time.Second, false), CheckRedirect: func(*http.Request, []*http.Request) error {
+	return &http.Client{Transport: PublicTransport(defaultDialTimeout, false), CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 }
@@ -100,8 +102,7 @@ func ParseModelPolicy(allowed string) (ModelPolicy, error) {
 func (p ModelPolicy) Client() *http.Client {
 	client := Public()
 	if len(p.origins) > 0 {
-		trusted := http.DefaultTransport.(*http.Transport).Clone()
-		trusted.Proxy = nil
+		trusted := directTransport(&net.Dialer{Timeout: defaultDialTimeout, KeepAlive: 30 * time.Second})
 		client.Transport = modelTransport{public: client.Transport, trusted: trusted, policy: p}
 	}
 	return client
@@ -144,10 +145,20 @@ func httpsAuthority(u *url.URL) string {
 
 // PublicTransport optionally permits loopback for development adapters.
 func PublicTransport(timeout time.Duration, loopback bool) *http.Transport {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
-	transport.DialContext = publicDialer(timeout, loopback).DialContext
-	return transport
+	return directTransport(publicDialer(timeout, loopback))
+}
+
+func directTransport(dialer *net.Dialer) *http.Transport {
+	// A separate transport keeps every connection on the selected dialer.
+	// Process-wide proxy and TLS hooks can select a different dial path.
+	return &http.Transport{
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
 }
 
 func DialPublic(ctx context.Context, network, address string) (net.Conn, error) {
