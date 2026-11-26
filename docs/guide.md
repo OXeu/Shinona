@@ -139,7 +139,7 @@ For OAuth, save the server and select **Sign in**. Shinona discovers the authori
 
 Shinona saves each account's grant in SQLite and refreshes it when the provider issues a refresh token. **Disconnect** removes Shinona's saved grant. [MCP authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
 
-Each account can configure up to 16 MCP servers. Server URLs must omit embedded credentials, queries, and fragments. **Remove all** clears the current account's server list and its saved grants.
+Each account can configure up to 16 MCP servers. Server URLs must omit embedded credentials, queries, and fragments. **Remove all** clears the current account's server list and its saved grants. MCP responses can contain up to 4 MiB per JSON response or server-sent event, and up to 16 MiB per event stream.
 
 ### E2B Cloud and self-hosted E2B
 
@@ -174,7 +174,7 @@ Shinona applies resource limits to existing containers when they next run. Their
 
 ## Session transfer
 
-The session list uses `GET /api/v1/sessions`. Clients can send `If-None-Match` for an unchanged `304` response. Add `delta=true` with a previously received ETag in that header to request changes. When the requested base has left the cache, the server returns the current full list. The browser pauses polling when the tab is hidden. Visible tabs for the same account and list share results when Web Locks and BroadcastChannel are available.
+The session list uses `GET /api/v1/sessions`. Clients can send `If-None-Match` for an unchanged `304` response. Add `delta=true` with a previously received ETag in that header to request changes. When the requested base has left the cache, the server returns the current full list. The browser pauses polling when the tab is hidden. Visible tabs showing the same account and project filter share requests when the browser supports Shared Workers.
 
 `GET /api/v1/sessions/{id}/transcript` returns a Protobuf `TranscriptPage` with media type `application/protobuf`. It returns the latest 30 turns and a cursor for fetching earlier turns with `beforeSequence`.
 
@@ -195,7 +195,7 @@ These startup settings control retained session list and transcript data. Each a
 | `SHINONA_TRANSCRIPT_TURN_CACHE_MIB` | Encoded Protobuf turns | 32 MiB |
 | `SHINONA_TRANSCRIPT_RESPONSE_CACHE_MIB` | Encoded HTTP pages and small exports | 16 MiB |
 
-An open conversation receives Protobuf updates over `/api/v1/live`. Client and server negotiate WebSocket compression when they connect. Growing text and tool output are sent as appended text. Changes to the turn list or status include changed turn records. The browser reconciles with the current transcript on reconnect and polls about once per second while an active session's live socket is unavailable. Intermediate progress can coalesce for slow viewers. The server validates the login on connection and at least every 15 seconds while delivering updates or heartbeats. Login changes from a separate process can take up to two additional seconds to expire from the HTTP authentication cache. Legacy subscriptions that ask for a full transcript in a single frame are limited to 256 turns.
+An open conversation receives Protobuf updates over `/api/v1/live`. Client and server negotiate WebSocket compression when they connect. Growing text and tool output are sent as appended text. Changes to the turn list or status include changed turn records. The browser reconciles with the current transcript on reconnect and polls about once per second while an active session's live socket is unavailable. Requests for transcript pages and read markers time out after 15 seconds. Intermediate progress can coalesce for slow viewers. The server validates the login on connection and at least every 15 seconds while delivering updates or heartbeats. Login changes from a separate process can take up to two additional seconds to expire from the HTTP authentication cache. Legacy subscriptions that ask for a full transcript in a single frame are limited to 256 turns.
 
 On a reverse proxy, forward `/api/v1/` to Shinona and preserve the WebSocket upgrade and browser `Origin` for `/api/v1/live`.
 
@@ -227,7 +227,7 @@ The API uses one Go process and one worker. A turn begins with one user submissi
 
 Shinona shows current activity and completed steps as Pi runs. The completed steps remain available in the conversation. Preview text and tool output can use up to 8 KiB each, and tool input can use up to 4 KiB.
 
-Pi prepares the conversation for the selected model and compacts long histories when the model's context window is known. SQLite saves Pi's compacted context alongside the turn. Later requests resume from the latest applicable compacted context and replay the messages after it. Reverted turns and submissions cancelled before processing stay out of model history. The conversation list returns the newest 30 sessions.
+Pi prepares the conversation for the selected model and compacts long histories when the model's context window is known. SQLite saves Pi's compacted context alongside the turn. Later requests resume from the latest applicable compacted context and replay the messages after it. When another compaction is needed, Pi updates the saved summary with newer history. Reverted turns and submissions cancelled before processing stay out of model history. The conversation list returns the newest 30 sessions.
 
 The worker runs until the agent finishes or errors, the user stops it, or the server shuts down. A model request fails after three minutes without new text, reasoning, tool call activity, or usage. Model endpoints enforce their context windows, output defaults, and quotas.
 
