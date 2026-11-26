@@ -72,10 +72,11 @@ jobs:
           npm run build -- --manifest
           node bench/bundle-sizes.js > ../.tmp/web-sizes.json
           node bench/session-paths.js > ../.tmp/web-bench.json
-      - name: Convert Go and web measurements to BMF
+      - name: Convert Go and web measurements to BMF v1
         run: |
           python3 .github/scripts/benchmark-metrics.py go .tmp/go-bench.txt > .tmp/go-bench.json
-          jq -s add .tmp/go-bench.json .tmp/web-sizes.json .tmp/web-bench.json > .tmp/benchmarks.json
+          jq -s 'add | map_values([{parameters: {}, measures: .}])' \
+            .tmp/go-bench.json .tmp/web-sizes.json .tmp/web-bench.json > .tmp/benchmarks.json
       - uses: actions/upload-artifact@v7
         with:
           name: go-bench
@@ -138,13 +139,14 @@ jobs:
 
           thresholds=()
           for criterion in wire-bytes-per-op:0.05 alloc-bytes-per-op:0.15 allocs-per-op:0.10 gzip-bytes:0.03; do
-            thresholds+=(--threshold-measure "${criterion%:*}" --threshold-test percentage
+            thresholds+=(--threshold-measure "${criterion%:*}" --threshold-metric value --threshold-test percentage
               --threshold-min-sample-size 5 --threshold-max-sample-size 20
               --threshold-upper-boundary "${criterion#*:}")
           done
-          thresholds+=(--threshold-measure latency --threshold-test t_test
+          thresholds+=(--threshold-measure latency --threshold-metric value --threshold-test t_test
             --threshold-min-sample-size 5 --threshold-max-sample-size 20 --threshold-upper-boundary 0.99)
 
+          # The CLI's json adapter follows the project's BMF version.
           bencher run --project shinona --branch "$branch" --hash "$BENCHMARK_SHA" \
             --testbed github-ubuntu-24.04-x64 --adapter json --file .tmp/benchmarks.json \
             --github-actions "$GITHUB_TOKEN" "${thresholds[@]}" "${options[@]}"
@@ -170,7 +172,7 @@ jobs:
             base="$GITHUB_BASE_REF"
           fi
 
-          # The REST API can select BMF v1 per report on a project whose default is v0.
+          # Select BMF v1 explicitly so the report preserves named percentiles.
           if ! jq -n --arg branch "$branch" --arg base "$base" --arg hash "$BENCHMARK_SHA" \
             --arg start "$STARTED_AT" --arg end "$ENDED_AT" --rawfile results .tmp/core-read-load.json '
               {bmf_version: 1, branch: $branch, hash: $hash, testbed: "github-ubuntu-24.04-x64",
@@ -197,7 +199,8 @@ jobs:
           go test -p 1 -cpu 2 -run '^$' \
             -bench '^BenchmarkSandboxAPI$/^e2b$' -benchmem -benchtime=5x -count=1 \
             ./cmd/shinona | tee .tmp/go-bench-e2b.txt
-          python3 .github/scripts/benchmark-metrics.py go .tmp/go-bench-e2b.txt > .tmp/go-bench-e2b.json
+          python3 .github/scripts/benchmark-metrics.py go .tmp/go-bench-e2b.txt |
+            jq 'map_values([{parameters: {}, measures: .}])' > .tmp/go-bench-e2b.json
       - uses: actions/upload-artifact@v7
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.e2b
         with:
