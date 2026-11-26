@@ -1,10 +1,22 @@
 import { defineComponent, h, mergeProps } from 'vue'
+import type { PropType } from 'vue'
 
 function element(tag: keyof HTMLElementTagNameMap, defaults: Record<string, string> = {}) {
   return defineComponent({
     inheritAttrs: false,
-    setup(_, { attrs, slots }) {
-      return () => h(tag, mergeProps(defaults, attrs), slots.default?.())
+    props: {
+      elementRef: {
+        type: Function as PropType<(element: HTMLElement | null) => void>,
+        default: undefined,
+      },
+    },
+    setup(props, { attrs, slots }) {
+      return () => {
+        const elementRef = props.elementRef
+        const bindings = mergeProps(defaults, attrs)
+        if (elementRef) bindings.ref = (value: unknown) => elementRef(value instanceof HTMLElement ? value : null)
+        return h(tag, bindings, slots.default?.())
+      }
     },
   })
 }

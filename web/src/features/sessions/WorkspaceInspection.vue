@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, useTemplateRef } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 
 import { messageFor } from '../../shared/errors'
 import { HttpError } from '../../shared/http'
@@ -13,7 +13,7 @@ import type { WorkspaceInspection } from './workspaceInspection'
 
 const props = defineProps<{ sessionId: string; inspection: WorkspaceInspection }>()
 const emit = defineEmits<{ back: []; unauthorized: [] }>()
-const panel = useTemplateRef<{ $el: HTMLElement }>('panel')
+const panel = shallowRef<HTMLElement | null>(null)
 const preview = ref<WorkspacePreview | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -40,7 +40,7 @@ async function refresh() {
 }
 
 onMounted(() => {
-  panel.value?.$el.focus({ preventScroll: true })
+  panel.value?.focus({ preventScroll: true })
   void refresh()
 })
 onUnmounted(() => reading?.abort())
@@ -48,7 +48,7 @@ onUnmounted(() => reading?.abort())
 
 <template>
   <UiSection
-    ref="panel"
+    :element-ref="element => panel = element"
     class="workspace-view"
     :aria-label="inspection.title"
     :aria-busy="loading"

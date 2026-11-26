@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
-import { onMounted, onUnmounted, ref, useTemplateRef } from 'vue'
+import { onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import '@xterm/xterm/css/xterm.css'
 
 import { t } from '../../shared/i18n'
@@ -11,7 +11,7 @@ import { terminalApi } from './terminalApi'
 
 const props = defineProps<{ sessionId: string; terminalId: string }>()
 const emit = defineEmits<{ settled: [] }>()
-const surface = useTemplateRef<{ $el: HTMLElement }>('surface')
+const surface = shallowRef<HTMLElement | null>(null)
 const reconnectable = ref(false)
 const fit = new FitAddon()
 const encoder = new TextEncoder()
@@ -28,7 +28,7 @@ function sendSize() {
 
 function fitTerminal() {
   const dimensions = fit.proposeDimensions()
-  if (!terminal || !dimensions || !surface.value?.$el.clientWidth || !surface.value.$el.clientHeight) return
+  if (!terminal || !dimensions || !surface.value?.clientWidth || !surface.value.clientHeight) return
   const cols = Math.min(500, Math.max(2, dimensions.cols))
   const rows = Math.min(300, Math.max(2, dimensions.rows))
   if (terminal.cols === cols && terminal.rows === rows) return
@@ -112,8 +112,9 @@ function connect() {
 defineExpose({ terminalId: props.terminalId, connect, reconnectable })
 
 onMounted(() => {
-  if (!surface.value) return
-  const styles = getComputedStyle(surface.value.$el)
+  const element = surface.value
+  if (!element) return
+  const styles = getComputedStyle(element)
   const background = styles.getPropertyValue('--terminal-background').trim()
   const foreground = styles.getPropertyValue('--terminal-foreground').trim()
   terminal = new Terminal({
@@ -123,14 +124,14 @@ onMounted(() => {
     theme: { background, foreground, cursor: foreground },
   })
   terminal.loadAddon(fit)
-  terminal.open(surface.value.$el)
+  terminal.open(element)
   terminal.onData(data => sendInput(encoder.encode(data)))
   terminal.onBinary(data => sendInput(Uint8Array.from(data, char => char.charCodeAt(0))))
   observer = new ResizeObserver(() => {
     cancelAnimationFrame(frame)
     frame = requestAnimationFrame(fitTerminal)
   })
-  observer.observe(surface.value.$el)
+  observer.observe(element)
   connect()
 })
 
@@ -145,7 +146,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <UiBox ref="surface" class="terminal-surface" />
+  <UiBox :element-ref="element => surface = element" class="terminal-surface" />
 </template>
 
 <style lang="less" scoped>

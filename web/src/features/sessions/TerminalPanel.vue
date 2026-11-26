@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, useId, useTemplateRef } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, useId, useTemplateRef } from 'vue'
 
 import { messageFor } from '../../shared/errors'
 import { HttpError } from '../../shared/http'
@@ -17,7 +17,7 @@ const props = defineProps<{ sessionId: string; visible: boolean }>()
 const emit = defineEmits<{ empty: []; unauthorized: [] }>()
 const auth = useAuthStore()
 const request = new AbortController()
-const tabList = useTemplateRef<{ $el: HTMLElement }>('tabs')
+const tabList = shallowRef<HTMLElement | null>(null)
 const surfaces = useTemplateRef<InstanceType<typeof TerminalSurface>[]>('surfaces')
 const surface = computed(() => surfaces.value?.find(item => item.terminalId === active.value))
 const panelId = useId()
@@ -107,7 +107,7 @@ function report(error: unknown, fallback: 'terminal.unavailable' | 'terminal.clo
 async function focusTab() {
   await nextTick()
   if (!props.visible) return
-  tabList.value?.$el.querySelector<HTMLElement>('[aria-selected="true"]')?.focus()
+  tabList.value?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus()
 }
 
 function move(event: KeyboardEvent, index: number) {
@@ -133,7 +133,7 @@ onUnmounted(() => request.abort())
   <UiSection class="terminal-panel" :aria-label="t('terminal.heading')">
     <UiHeader class="terminal-header">
       <UiBox
-        ref="tabs"
+        :element-ref="element => tabList = element"
         class="terminal-tabs"
         role="tablist"
         :aria-label="t('terminal.heading')"
