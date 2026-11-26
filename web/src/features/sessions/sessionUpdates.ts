@@ -17,9 +17,8 @@ interface SessionUpdateCallbacks {
 }
 
 export class SessionUpdates {
-  readonly controller = new AbortController()
-  revision = 0
-  reading?: number
+  private readonly controller = new AbortController()
+  private revision = 0
   private timer?: ReturnType<typeof setTimeout>
   private fetching = false
   private live = false
@@ -27,6 +26,14 @@ export class SessionUpdates {
   private readonly retry = new RetryBackoff()
 
   constructor(readonly id: string, private readonly callbacks: SessionUpdateCallbacks) {}
+
+  get signal() {
+    return this.controller.signal
+  }
+
+  invalidate() {
+    this.revision++
+  }
 
   close() {
     clearTimeout(this.timer)
@@ -49,7 +56,7 @@ export class SessionUpdates {
 
   private scheduleAfter(delay: number) {
     clearTimeout(this.timer)
-    if (this.live || document.hidden || this.controller.signal.aborted) return
+    if (this.live || document.hidden || this.signal.aborted) return
     this.timer = setTimeout(() => {
       void this.refresh()
     }, delay)
@@ -58,7 +65,7 @@ export class SessionUpdates {
   private startLive(entry: AgentSession) {
     if (document.hidden || Date.now() < this.liveRetryAt) return
     this.live = true
-    const { signal } = this.controller
+    const { signal } = this
     void watchLiveSession(entry, {
       sync: (updated, settings) => this.callbacks.sync(updated, settings.selected),
       progress: this.callbacks.progress,
@@ -76,7 +83,7 @@ export class SessionUpdates {
   }
 
   async refresh() {
-    const { signal } = this.controller
+    const { signal } = this
     if (this.fetching || this.live || document.hidden || signal.aborted) return
     clearTimeout(this.timer)
     this.fetching = true
