@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
@@ -122,8 +123,12 @@ type userResponse struct {
 }
 
 func publicUser(user auth.User) userResponse {
+	avatarURL := user.AvatarURL
+	if user.AvatarVersion != "" {
+		avatarURL = "/auth/account/avatar/" + url.PathEscape(user.ID) + "/" + url.PathEscape(user.AvatarVersion)
+	}
 	return userResponse{ID: user.ID, Email: user.Email, LoginEmail: user.LoginEmail, Name: user.Name,
-		AvatarURL: user.AvatarURL, HasAvatar: user.HasAvatar, HasPassword: user.HasPassword, Admin: user.Admin, Disabled: user.Disabled}
+		AvatarURL: avatarURL, HasAvatar: user.AvatarVersion != "", HasPassword: user.HasPassword, Admin: user.Admin, Disabled: user.Disabled}
 }
 
 func (h *Handler) respond(w http.ResponseWriter, user *auth.User) {

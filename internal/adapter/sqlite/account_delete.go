@@ -40,6 +40,8 @@ func protectDeletedAccounts(db *gorm.DB) error {
 }
 
 func (r *Repository) DeleteAccount(ctx context.Context, actor, target string) error {
+	done := r.sessions.change("", target)
+	defer done()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := ensureAdmin(tx, actor); err != nil {
 			return err
@@ -62,8 +64,7 @@ func (r *Repository) DeleteAccount(ctx context.Context, actor, target string) er
 				return fmt.Errorf("delete account rows from %s: %w", table.TableName(), err)
 			}
 		}
-		return nil
+		return tx.Exec("DELETE FROM session_list_revisions WHERE owner_id = ?", target).Error
 	})
-	r.sessions.invalidateOwner(target, err)
 	return err
 }

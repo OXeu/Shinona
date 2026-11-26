@@ -16,6 +16,8 @@ import (
 
 const SessionLifetime = 7 * 24 * time.Hour
 const FlowLifetime = 10 * time.Minute
+const MinPasswordBytes = 12
+const MaxPasswordBytes = 128
 
 var (
 	ErrCredentials = errors.New("email or password is incorrect")
@@ -24,15 +26,15 @@ var (
 )
 
 type User struct {
-	ID          string
-	Email       string
-	LoginEmail  string
-	Name        string
-	AvatarURL   string
-	HasAvatar   bool
-	HasPassword bool
-	Admin       bool
-	Disabled    bool
+	ID            string
+	Email         string
+	LoginEmail    string
+	Name          string
+	AvatarURL     string
+	AvatarVersion string
+	HasPassword   bool
+	Admin         bool
+	Disabled      bool
 }
 
 type Identity struct {
@@ -87,7 +89,7 @@ func (s *Service) CreatePasswordUser(ctx context.Context, email, password string
 	if err != nil {
 		return User{}, err
 	}
-	if len(password) < 12 || len(password) > 128 {
+	if len(password) < MinPasswordBytes || len(password) > MaxPasswordBytes {
 		return User{}, ErrPassword
 	}
 	user := User{ID: s.newID(), Email: email, LoginEmail: email, HasPassword: true}
@@ -96,7 +98,7 @@ func (s *Service) CreatePasswordUser(ctx context.Context, email, password string
 
 func (s *Service) PasswordUser(ctx context.Context, email, password string) (User, error) {
 	email, err := normalizeEmail(email)
-	if err != nil || len(password) > 128 {
+	if err != nil || len(password) > MaxPasswordBytes {
 		return User{}, ErrCredentials
 	}
 	lookup := timing.Start(ctx, "auth_password_lookup")

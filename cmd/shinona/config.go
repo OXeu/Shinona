@@ -19,6 +19,7 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/e2b"
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/oidc"
+	"github.com/OXeu/shinona/internal/adapter/password"
 	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -48,6 +49,32 @@ func (e environment) value(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func (e environment) boundedInt(key string, fallback, from, through int) (int, error) {
+	raw := e.value(key, strconv.Itoa(fallback))
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < from || value > through {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", key, from, through)
+	}
+	return value, nil
+}
+
+func passwordHasher(e environment) (password.Argon2id, error) {
+	defaults := password.DefaultParameters()
+	timeCost, err := e.boundedInt("SHINONA_ARGON2_TIME", int(defaults.Time), 1, 10)
+	if err != nil {
+		return password.Argon2id{}, err
+	}
+	memory, err := e.boundedInt("SHINONA_ARGON2_MEMORY_KIB", int(defaults.MemoryKiB), 16*1024, 256*1024)
+	if err != nil {
+		return password.Argon2id{}, err
+	}
+	threads, err := e.boundedInt("SHINONA_ARGON2_THREADS", int(defaults.Threads), 1, 8)
+	if err != nil {
+		return password.Argon2id{}, err
+	}
+	return password.New(password.Parameters{Time: uint32(timeCost), MemoryKiB: uint32(memory), Threads: uint8(threads)})
 }
 
 func trustedProxyNetworks(raw string) ([]netip.Prefix, error) {

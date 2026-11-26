@@ -2,16 +2,18 @@ package sqlite
 
 import (
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 
+	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
 // Migrations are applied in order under the writer transaction. An unversioned
 // database may be empty or contain the pre-migration Shinona schema.
-var migrations = [...]func(*gorm.DB) error{initializeSchema, replaceLegacyTriggers, migrateRunAttachments}
+var migrations = [...]func(*gorm.DB) error{initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime}
 
 func migrate(db *gorm.DB) error {
 	version, err := schemaVersion(db)
@@ -93,4 +95,16 @@ func replaceLegacyTriggers(db *gorm.DB) error {
 	}
 	return db.Exec(`DELETE FROM session_list_revisions
 		WHERE owner_id IN (SELECT id FROM deleted_accounts)`).Error
+}
+
+func migrateAuthenticationTime(db *gorm.DB) error {
+	if migrator := db.Migrator(); !migrator.HasColumn(&loginRow{}, "AuthenticatedAt") {
+		if err := migrator.AddColumn(&loginRow{}, "AuthenticatedAt"); err != nil {
+			return err
+		}
+	}
+	// Prior releases recorded a fixed expiry instead of the authentication time.
+	modifier := fmt.Sprintf("-%d seconds", auth.SessionLifetime/time.Second)
+	return db.Exec(`UPDATE login_sessions SET authenticated_at = strftime('%Y-%m-%d %H:%M:%f', expires_at, ?)
+		WHERE authenticated_at IS NULL`, modifier).Error
 }

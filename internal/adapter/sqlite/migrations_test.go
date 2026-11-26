@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 )
 
@@ -12,6 +13,44 @@ func asLegacyDatabase(t *testing.T, repo *Repository) {
 	t.Helper()
 	if err := repo.db.Exec("DROP TABLE run_attachments; PRAGMA user_version = 0").Error; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMigratesAuthenticationTimeFromLegacyExpiry(t *testing.T) {
+	ctx := t.Context()
+	filename := filepath.Join(t.TempDir(), "legacy.db")
+	old, err := Open(ctx, filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = old.Close() })
+	const owner, key = "owner", "legacy-session"
+	user := auth.User{ID: owner, Email: "owner@example.com", Name: "Owner"}
+	if err := old.CreatePasswordUser(ctx, user, []byte("stored-hash")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	signedIn := now.Add(-2 * time.Hour)
+	if err := old.SaveSession(ctx, key, owner, signedIn.Add(auth.SessionLifetime)); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.db.Exec("ALTER TABLE login_sessions DROP COLUMN authenticated_at; PRAGMA user_version = 3").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(ctx, filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	state, err := repo.AccountCredentials(ctx, owner, key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.AuthenticatedAt.Equal(signedIn) {
+		t.Fatalf("migrated authentication time = %v, want %v", state.AuthenticatedAt, signedIn)
 	}
 }
 

@@ -26,14 +26,10 @@ type userRow struct {
 func (userRow) TableName() string { return "users" }
 
 func (row userRow) user() auth.User {
-	user := auth.User{ID: row.ID, Email: row.Email, Name: row.Name, AvatarURL: row.AvatarURL,
+	user := auth.User{ID: row.ID, Email: row.Email, Name: row.Name, AvatarURL: row.AvatarURL, AvatarVersion: row.AvatarVersion,
 		HasPassword: len(row.PasswordHash) > 0, Admin: row.Admin, Disabled: row.Disabled}
 	if row.Login != nil {
 		user.LoginEmail = *row.Login
-	}
-	if row.AvatarVersion != "" {
-		user.HasAvatar = true
-		user.AvatarURL = "/auth/account/avatar/" + row.ID + "/" + row.AvatarVersion
 	}
 	return user
 }
@@ -47,9 +43,10 @@ type identityRow struct {
 func (identityRow) TableName() string { return "oauth_identities" }
 
 type loginRow struct {
-	Key       string    `gorm:"primaryKey"`
-	OwnerID   string    `gorm:"not null;index"`
-	ExpiresAt time.Time `gorm:"not null;index"`
+	Key             string    `gorm:"primaryKey"`
+	OwnerID         string    `gorm:"not null;index"`
+	ExpiresAt       time.Time `gorm:"not null;index"`
+	AuthenticatedAt time.Time
 }
 
 func (loginRow) TableName() string { return "login_sessions" }
@@ -83,7 +80,12 @@ func (r *Repository) PasswordUser(ctx context.Context, email string) (auth.User,
 
 func (r *Repository) OAuthUser(ctx context.Context, identity auth.Identity, id string) (auth.User, error) {
 	var user userRow
-	var avatarChanged bool
+	var finishChange func()
+	defer func() {
+		if finishChange != nil {
+			finishChange()
+		}
+	}()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var record identityRow
 		err := tx.First(&record, "issuer = ? AND subject = ?", identity.Issuer, identity.Subject).Error
@@ -95,7 +97,7 @@ func (r *Repository) OAuthUser(ctx context.Context, identity auth.Identity, id s
 				return nil
 			}
 			user.AvatarURL = identity.AvatarURL
-			avatarChanged = true
+			finishChange = r.sessions.change("", user.ID)
 			return tx.Model(&user).Update("avatar_url", user.AvatarURL).Error
 		}
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -107,9 +109,6 @@ func (r *Repository) OAuthUser(ctx context.Context, identity auth.Identity, id s
 		}
 		return tx.Create(&identityRow{Issuer: identity.Issuer, Subject: identity.Subject, OwnerID: id}).Error
 	})
-	if avatarChanged {
-		r.sessions.invalidateOwner(user.ID, err)
-	}
 	return user.user(), err
 }
 
@@ -138,10 +137,11 @@ func saveSession(tx *gorm.DB, key, ownerID string, expiresAt time.Time) error {
 	if err := readEnabledAccount(tx, ownerID, &account); err != nil {
 		return err
 	}
-	if err := tx.Where("expires_at <= ?", time.Now().UTC()).Delete(&loginRow{}).Error; err != nil {
+	now := time.Now().UTC()
+	if err := tx.Where("expires_at <= ?", now).Delete(&loginRow{}).Error; err != nil {
 		return err
 	}
-	return tx.Create(&loginRow{Key: key, OwnerID: ownerID, ExpiresAt: expiresAt}).Error
+	return tx.Create(&loginRow{Key: key, OwnerID: ownerID, ExpiresAt: expiresAt, AuthenticatedAt: now}).Error
 }
 
 func (r *Repository) SessionUser(ctx context.Context, key string, now time.Time) (*auth.User, error) {
@@ -174,11 +174,9 @@ func (r *Repository) SessionUser(ctx context.Context, key string, now time.Time)
 }
 
 func (r *Repository) DeleteSession(ctx context.Context, key string) error {
-	err := r.db.WithContext(ctx).Delete(&loginRow{}, "key = ?", key).Error
-	if err == nil {
-		r.sessions.invalidateKey(key)
-	}
-	return err
+	done := r.sessions.change(key, "")
+	defer done()
+	return r.db.WithContext(ctx).Delete(&loginRow{}, "key = ?", key).Error
 }
 
 func (r *Repository) SaveFlow(ctx context.Context, flow auth.Flow, now time.Time) error {
@@ -206,6 +204,8 @@ var _ auth.Repository = (*Repository)(nil)
 
 // SetAdmin changes privileges for an existing account selected by its ID.
 func (r *Repository) SetAdmin(ctx context.Context, id string, admin bool) error {
+	done := r.sessions.change("", id)
+	defer done()
 	result := r.db.WithContext(ctx).Model(&userRow{}).Where("id = ?", id).Update("admin", admin)
 	if result.Error != nil {
 		return result.Error
@@ -213,6 +213,5 @@ func (r *Repository) SetAdmin(ctx context.Context, id string, admin bool) error 
 	if result.RowsAffected == 0 {
 		return errors.New("account not found")
 	}
-	r.sessions.invalidateOwner(id, nil)
 	return nil
 }

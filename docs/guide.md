@@ -41,7 +41,7 @@ Shinona supports English (US), Simplified Chinese (China), and Traditional Chine
 
 Set the listen address with `SHINONA_ADDR`, the SQLite path with `SHINONA_DATABASE`, and the browser origin with `SHINONA_WEB_ORIGIN` in the startup environment or `.env`. If upgrading from a release with a saved Web origin, copy its value to `SHINONA_WEB_ORIGIN` before restarting. Shinona removes retired settings from SQLite at startup.
 
-Password and OAuth sign-in limits are per IP. If you run Shinona behind a reverse proxy, set `SHINONA_TRUSTED_PROXIES` to the proxy's CIDR range and have the proxy append the client address to `X-Forwarded-For`.
+Password and OAuth sign-in limits are per IPv4 address or IPv6 /64 network. If you run Shinona behind a reverse proxy, set `SHINONA_TRUSTED_PROXIES` to the proxy's CIDR range and have the proxy append the client address to `X-Forwarded-For`.
 
 **Sandbox** and **Shinona SSO** configure the instance. These settings use saved SQLite overrides first, then the startup environment, then built-in defaults. **Use startup value** removes an individual override. Each account configures its own **Model** and **MCP servers**. Those endpoints use public network addresses by default. An operator can allow specific private model endpoints by listing their HTTPS origins in `SHINONA_TRUSTED_MODEL_ORIGINS`. After upgrading from shared settings, enter the model and MCP settings for each account. Save applies a validated change without restarting Shinona.
 

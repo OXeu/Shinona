@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/term"
 
-	"github.com/OXeu/shinona/internal/adapter/password"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
 )
@@ -46,7 +45,11 @@ func execute(ctx context.Context, logger *slog.Logger, args []string) error {
 		if err != nil {
 			return err
 		}
-		service := auth.New(repository, password.Argon2id{}, uuid.NewString)
+		hasher, err := passwordHasher(environment)
+		if err != nil {
+			return err
+		}
+		service := auth.New(repository, hasher, uuid.NewString)
 		user, err := service.CreatePasswordUser(ctx, args[1], value)
 		if err != nil {
 			return err
@@ -73,7 +76,8 @@ func readPassword() (string, error) {
 		_, _ = fmt.Fprintln(os.Stderr)
 		return string(value), err
 	}
-	reader := bufio.NewReader(io.LimitReader(os.Stdin, 131))
+	const lineEndingAndOverflow = len("\r\n") + 1
+	reader := bufio.NewReader(io.LimitReader(os.Stdin, int64(auth.MaxPasswordBytes+lineEndingAndOverflow)))
 	line, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err

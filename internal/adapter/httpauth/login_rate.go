@@ -1,6 +1,7 @@
 package httpauth
 
 import (
+	"container/list"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -18,11 +19,12 @@ const (
 
 type loginRate struct {
 	mu      sync.Mutex
-	clients map[netip.Addr]loginClient
-	sweepAt time.Time
+	clients map[netip.Addr]*list.Element
+	recent  list.List
 }
 
 type loginClient struct {
+	ip      netip.Addr
 	limiter *rate.Limiter
 	last    time.Time
 }
@@ -30,27 +32,32 @@ type loginClient struct {
 func (l *loginRate) allow(ip netip.Addr, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !now.Before(l.sweepAt) {
-		for address, entry := range l.clients {
-			if now.Sub(entry.last) >= loginAddressIdle {
-				delete(l.clients, address)
-			}
-		}
-		l.sweepAt = now.Add(loginAddressIdle)
+	if ip.Is6() {
+		ip = netip.PrefixFrom(ip, 64).Masked().Addr()
 	}
-	entry, ok := l.clients[ip]
-	if !ok {
-		if len(l.clients) >= loginAddressLimit {
-			return false
+	for oldest := l.recent.Back(); oldest != nil && now.Sub(oldest.Value.(*loginClient).last) >= loginAddressIdle; oldest = l.recent.Back() {
+		l.remove(oldest)
+	}
+	element := l.clients[ip]
+	if element == nil {
+		if l.recent.Len() == loginAddressLimit {
+			l.remove(l.recent.Back())
 		}
 		if l.clients == nil {
-			l.clients = make(map[netip.Addr]loginClient)
+			l.clients = make(map[netip.Addr]*list.Element)
 		}
-		entry.limiter = rate.NewLimiter(rate.Every(time.Second), 5)
+		element = l.recent.PushFront(&loginClient{ip: ip, limiter: rate.NewLimiter(rate.Every(time.Second), 5)})
+		l.clients[ip] = element
 	}
+	entry := element.Value.(*loginClient)
 	entry.last = now
-	l.clients[ip] = entry
+	l.recent.MoveToFront(element)
 	return entry.limiter.AllowN(now, 1)
+}
+
+func (l *loginRate) remove(element *list.Element) {
+	delete(l.clients, element.Value.(*loginClient).ip)
+	l.recent.Remove(element)
 }
 
 func loginIP(r *http.Request, proxies []netip.Prefix) netip.Addr {

@@ -20,7 +20,6 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
-	"github.com/OXeu/shinona/internal/adapter/password"
 	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
@@ -47,6 +46,10 @@ func main() {
 }
 
 func serve(ctx context.Context, logger *slog.Logger, environment environment) error {
+	hasher, err := passwordHasher(environment)
+	if err != nil {
+		return err
+	}
 	address, err := listenAddress(environment)
 	if err != nil {
 		return err
@@ -89,7 +92,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		current.TrustedProxies = proxies
 		return current
 	}
-	authHandler := httpauth.NewWithConfig(auth.New(repository, password.Argon2id{}, uuid.NewString), authConfig, logger)
+	authHandler := httpauth.NewWithConfig(auth.New(repository, hasher, uuid.NewString), authConfig, logger)
 	router := newAPIRouter(ctx, config.origin.String(), service, config, authHandler, logger)
 	config.mcpOAuth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)

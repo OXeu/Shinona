@@ -37,6 +37,8 @@ type emailChallengeRow struct {
 func (emailChallengeRow) TableName() string { return "account_email_challenges" }
 
 func (r *Repository) UpdateProfile(ctx context.Context, owner string, change auth.ProfileChange) (auth.User, error) {
+	done := r.sessions.change("", owner)
+	defer done()
 	var row userRow
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := readEnabledAccount(tx, owner, &row); err != nil {
@@ -56,7 +58,6 @@ func (r *Repository) UpdateProfile(ctx context.Context, owner string, change aut
 		}
 		return tx.Model(&row).Select("name", "avatar_version").Updates(&row).Error
 	})
-	r.sessions.invalidateOwner(owner, err)
 	return row.user(), err
 }
 
@@ -78,17 +79,17 @@ func (r *Repository) AccountCredentials(ctx context.Context, owner, sessionKey s
 
 func accountCredentials(db *gorm.DB, owner, sessionKey string, now time.Time) (auth.CredentialState, error) {
 	var entry struct {
-		Account       userRow `gorm:"embedded"`
-		SessionExpiry time.Time
+		Account         userRow `gorm:"embedded"`
+		AuthenticatedAt time.Time
 	}
-	err := db.Model(&userRow{}).Select("users.*, login_sessions.expires_at AS session_expiry").
+	err := db.Model(&userRow{}).Select("users.*, login_sessions.authenticated_at").
 		Joins("JOIN login_sessions ON login_sessions.owner_id = users.id").
 		Take(&entry, "users.id = ? AND users.disabled = ? AND login_sessions.key = ? AND login_sessions.expires_at > ?",
 			owner, false, sessionKey, now).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return auth.CredentialState{}, auth.ErrRecentSignIn
 	}
-	return auth.CredentialState{User: entry.Account.user(), PasswordHash: entry.Account.PasswordHash, ExpiresAt: entry.SessionExpiry}, err
+	return auth.CredentialState{User: entry.Account.user(), PasswordHash: entry.Account.PasswordHash, AuthenticatedAt: entry.AuthenticatedAt}, err
 }
 
 func ensureCredentials(tx *gorm.DB, state auth.CredentialState, sessionKey string, now time.Time) error {
@@ -103,6 +104,8 @@ func ensureCredentials(tx *gorm.DB, state auth.CredentialState, sessionKey strin
 }
 
 func (r *Repository) ChangePassword(ctx context.Context, state auth.CredentialState, sessionKey string, hash []byte, now time.Time) error {
+	done := r.sessions.change("", state.User.ID)
+	defer done()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := ensureCredentials(tx, state, sessionKey, now); err != nil {
 			return err
@@ -116,7 +119,6 @@ func (r *Repository) ChangePassword(ctx context.Context, state auth.CredentialSt
 		}
 		return revokeOtherSessions(tx, owner, sessionKey)
 	})
-	r.sessions.invalidateOwner(state.User.ID, err)
 	return err
 }
 
@@ -145,6 +147,8 @@ func (r *Repository) SaveEmailChallenge(ctx context.Context, state auth.Credenti
 }
 
 func (r *Repository) VerifyEmailChallenge(ctx context.Context, owner, sessionKey, id, codeHash string, now time.Time) error {
+	done := r.sessions.change("", owner)
+	defer done()
 	var rejected error
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if _, err := accountCredentials(tx, owner, sessionKey, now); err != nil {
@@ -175,9 +179,10 @@ func (r *Repository) VerifyEmailChallenge(ctx context.Context, owner, sessionKey
 		}
 		return tx.Delete(&challenge).Error
 	})
-	err = errors.Join(err, rejected)
-	r.sessions.invalidateOwner(owner, err)
-	return err
+	if err != nil {
+		return err
+	}
+	return rejected
 }
 
 func (r *Repository) ListAccounts(ctx context.Context, search string, offset, limit int) (auth.AccountPage, error) {
@@ -214,6 +219,8 @@ func (r *Repository) CreateManagedAccount(ctx context.Context, actor string, use
 }
 
 func (r *Repository) SetAccountAccess(ctx context.Context, actor, target string, access auth.AccountAccess) (auth.User, error) {
+	done := r.sessions.change("", target)
+	defer done()
 	var row userRow
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := ensureAdmin(tx, actor); err != nil {
@@ -239,7 +246,6 @@ func (r *Repository) SetAccountAccess(ctx context.Context, actor, target string,
 		}
 		return nil
 	})
-	r.sessions.invalidateOwner(target, err)
 	return row.user(), err
 }
 

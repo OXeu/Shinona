@@ -205,10 +205,11 @@ func TestAccountProfileAndAdminAccess(t *testing.T) {
 	}
 	assertStatus(t, perform(t, mux, "POST", accessPath, `{"disabled":false}`, adminCookie), http.StatusOK)
 	restored, err := service.OAuthUser(t.Context(), identity)
-	if err != nil || restored.Name != "New Name" || restored.AvatarURL != avatar {
+	if err != nil || restored.Name != "New Name" {
 		t.Fatalf("custom profile did not survive OAuth login: %+v, %v", restored, err)
 	}
 	restoredCookie := accountCookie(t, service, restored)
+	assertAvatar(t, mux, restoredCookie, member.ID, avatar)
 	assertStatus(t, perform(t, mux, "POST", "/auth/account/profile", `{"name":"New Name","removeAvatar":true}`, restoredCookie), http.StatusOK)
 	assertAvatar(t, mux, restoredCookie, member.ID, userInfoAvatar)
 	assertStatus(t, perform(t, mux, "GET", avatar, "", adminCookie), http.StatusNotFound)

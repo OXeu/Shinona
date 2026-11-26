@@ -24,6 +24,8 @@ func hasOAuthIdentity(db *gorm.DB, owner string) (bool, error) {
 }
 
 func (r *Repository) LinkOAuthIdentity(ctx context.Context, owner, sessionKey string, identity auth.Identity, now time.Time) error {
+	done := r.sessions.change("", owner)
+	defer done()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if _, err := accountCredentials(tx, owner, sessionKey, now); err != nil {
 			return err
@@ -48,11 +50,12 @@ func (r *Repository) LinkOAuthIdentity(ctx context.Context, owner, sessionKey st
 		}
 		return tx.Model(&userRow{}).Where("id = ?", owner).Update("avatar_url", identity.AvatarURL).Error
 	})
-	r.sessions.invalidateOwner(owner, err)
 	return err
 }
 
 func (r *Repository) UnlinkOAuthIdentity(ctx context.Context, state auth.CredentialState, sessionKey string, now time.Time) error {
+	done := r.sessions.change("", state.User.ID)
+	defer done()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := ensureCredentials(tx, state, sessionKey, now); err != nil {
 			return err
@@ -73,6 +76,5 @@ func (r *Repository) UnlinkOAuthIdentity(ctx context.Context, state auth.Credent
 		}
 		return revokeOtherSessions(tx, owner, sessionKey)
 	})
-	r.sessions.invalidateOwner(state.User.ID, err)
 	return err
 }

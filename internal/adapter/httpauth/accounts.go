@@ -96,18 +96,31 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) startEmailBinding(w http.ResponseWriter, r *http.Request) {
 	var input struct{ Email, CurrentPassword string }
-	if !accountInput(w, r, &input, 4096) || !h.accountPasswordSlot(w) {
+	if !accountInput(w, r, &input, 4096) {
 		return
 	}
-	defer func() { <-h.passwordSlots }()
-	id, err := h.service.SendEmailCode(r.Context(), h.config().Mailer, readCookie(r, sessionCookie), input.CurrentPassword, input.Email)
+	mailer := h.config().Mailer
+	if mailer == nil {
+		h.accountError(w, auth.ErrEmailDisabled)
+		return
+	}
+	if !h.accountPasswordSlot(w) {
+		return
+	}
+	verification, err := func() (auth.EmailVerification, error) {
+		defer func() { <-h.passwordSlots }()
+		return h.service.PrepareEmailCode(r.Context(), readCookie(r, sessionCookie), input.CurrentPassword, input.Email)
+	}()
+	if err == nil {
+		err = verification.Send(r.Context(), mailer)
+	}
 	if err != nil {
 		h.accountError(w, err)
 		return
 	}
 	h.writeJSON(w, struct {
 		Request string `json:"request"`
-	}{id})
+	}{verification.RequestID})
 }
 
 func (h *Handler) verifyEmailBinding(w http.ResponseWriter, r *http.Request) {

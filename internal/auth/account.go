@@ -55,9 +55,9 @@ type ProfileChange struct {
 }
 
 type CredentialState struct {
-	User         User
-	PasswordHash []byte
-	ExpiresAt    time.Time
+	User            User
+	PasswordHash    []byte
+	AuthenticatedAt time.Time
 }
 
 type EmailChallenge struct {
@@ -125,7 +125,7 @@ func (s *Service) Avatar(ctx context.Context, owner, version string) (*Avatar, e
 
 func (s *Service) ChangePassword(ctx context.Context, token, current, password string) error {
 	defer timing.Start(ctx, "account_password_change")()
-	if len(password) < 12 || len(password) > 128 {
+	if len(password) < MinPasswordBytes || len(password) > MaxPasswordBytes {
 		return ErrPassword
 	}
 	now := time.Now().UTC()
@@ -142,41 +142,46 @@ func (s *Service) ChangePassword(ctx context.Context, token, current, password s
 	return s.repo.ChangePassword(ctx, state, digest(token), hash, now)
 }
 
-func (s *Service) SendEmailCode(ctx context.Context, mailer VerificationMailer, token, current, email string) (string, error) {
+type EmailVerification struct {
+	RequestID, Address, Code string
+}
+
+func (s *Service) PrepareEmailCode(ctx context.Context, token, current, email string) (EmailVerification, error) {
 	defer timing.Start(ctx, "account_email_begin")()
-	if mailer == nil {
-		return "", ErrEmailDisabled
-	}
 	email, err := normalizeEmail(email)
 	if err != nil {
-		return "", err
+		return EmailVerification{}, err
 	}
 	now := time.Now().UTC()
 	state, err := s.verifyCredentials(ctx, token, current, now)
 	if err != nil {
-		return "", err
+		return EmailVerification{}, err
 	}
 	if state.User.LoginEmail == email {
-		return "", ErrEmailUnchanged
+		return EmailVerification{}, ErrEmailUnchanged
 	}
 	number, err := rand.Int(rand.Reader, big.NewInt(100_000_000))
 	if err != nil {
-		return "", err
+		return EmailVerification{}, err
 	}
 	code := fmt.Sprintf("%08d", number.Int64())
 	id := rand.Text()
 	challenge := EmailChallenge{ID: id, OwnerID: state.User.ID, SessionKey: digest(token), Email: email,
 		CodeHash: emailCodeHash(token, id, code), SentAt: now, ExpiresAt: now.Add(EmailLifetime)}
 	if err := s.repo.SaveEmailChallenge(ctx, state, challenge); err != nil {
-		return "", err
+		return EmailVerification{}, err
 	}
+	return EmailVerification{RequestID: id, Address: email, Code: code}, nil
+}
+
+func (v EmailVerification) Send(ctx context.Context, mailer VerificationMailer) error {
 	send := timing.Start(ctx, "account_email_delivery")
-	err = mailer.SendVerification(ctx, email, code, id)
+	err := mailer.SendVerification(ctx, v.Address, v.Code, v.RequestID)
 	send()
 	if err != nil {
-		return "", errors.Join(ErrEmailDelivery, err)
+		return errors.Join(ErrEmailDelivery, err)
 	}
-	return id, nil
+	return nil
 }
 
 func (s *Service) VerifyEmailCode(ctx context.Context, token, id, code string) error {
@@ -195,13 +200,13 @@ func (s *Service) verifyCredentials(ctx context.Context, token, current string, 
 		return state, err
 	}
 	if len(state.PasswordHash) == 0 {
-		if state.ExpiresAt.Before(now.Add(SessionLifetime - recentSignIn)) {
+		if state.AuthenticatedAt.Before(now.Add(-recentSignIn)) {
 			return state, ErrRecentSignIn
 		}
 		return state, nil
 	}
 	verify := timing.Start(ctx, "account_current_password")
-	valid := len(current) <= 128 && s.hash.Match(current, state.PasswordHash)
+	valid := len(current) <= MaxPasswordBytes && s.hash.Match(current, state.PasswordHash)
 	verify()
 	if !valid {
 		return state, ErrCurrent
@@ -231,7 +236,7 @@ func (s *Service) CreateManagedAccount(ctx context.Context, email, password, nam
 	if err != nil {
 		return User{}, err
 	}
-	if len(password) < 12 || len(password) > 128 {
+	if len(password) < MinPasswordBytes || len(password) > MaxPasswordBytes {
 		return User{}, ErrPassword
 	}
 	user := User{ID: s.newID(), Email: email, LoginEmail: email, Name: name, HasPassword: true}
