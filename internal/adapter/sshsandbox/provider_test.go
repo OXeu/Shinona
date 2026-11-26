@@ -76,6 +76,7 @@ func TestDestroyProjectTargetsTheInspectedContainer(t *testing.T) {
 		{name: "replaced", selection: original, remaining: replacement},
 		{name: "still present", selection: original, remaining: original, exitStatus: 1},
 		{name: "stale selection", selection: replacement},
+		{name: "provisioned after an empty selection"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var checks, removals atomic.Int32
@@ -112,7 +113,7 @@ func TestDestroyProjectTargetsTheInspectedContainer(t *testing.T) {
 			})
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			err := provider.DestroyProject(ctx, sandbox.Spec{OwnerID: "owner", ProjectID: "project"}, tc.selection)
+			err := provider.DestroyProject(ctx, sandbox.Spec{OwnerID: "owner", ProjectID: "project"}, &tc.selection)
 			if tc.selection != original {
 				if !errors.Is(err, sandbox.ErrProjectChanged) || checks.Load() != 1 || removals.Load() != 0 {
 					t.Fatalf("stale selection returned %v after %d status checks and %d removals", err, checks.Load(), removals.Load())

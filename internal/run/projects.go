@@ -3,7 +3,6 @@ package run
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"unicode/utf8"
 
@@ -48,14 +47,8 @@ func (s *Service) RemoveProject(ctx context.Context, owner, id string) error {
 		return ErrProject
 	}
 	return s.changeProjectSandbox(ctx, owner, id, func(ctx context.Context, config ProjectSandboxConfig, spec sandbox.Spec) error {
-		if err := s.terminals.stopProject(ctx, owner, id); err != nil {
+		if err := s.cleanPreviousSandbox(ctx, config.Provider, spec, nil); err != nil {
 			return err
-		}
-		if config.Provider != "" {
-			if err := s.cleanPreviousSandbox(ctx, config.Provider, spec); err != nil {
-				slog.Warn("clean up deleted project workspace", "provider", config.Provider, "error", err)
-				return ErrProjectSandboxCleanup
-			}
 		}
 		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), completionWriteTimeout)
 		defer cancel()

@@ -95,13 +95,15 @@ func TestProjectLifecycleUsesProjectTemplateAndTimeout(t *testing.T) {
 	if err != nil || status.ID != "project-box" || status.State != sandbox.ProjectPaused {
 		t.Fatalf("paused status: %+v, %v", status, err)
 	}
-	if err := provider.DestroyProject(ctx, spec, "previous-box"); !errors.Is(err, sandbox.ErrProjectChanged) || deletes.Load() != 0 {
-		t.Fatalf("destroy with a stale ID: %v, %d deletes", err, deletes.Load())
+	for _, expected := range []string{"previous-box", ""} {
+		if err := provider.DestroyProject(ctx, spec, &expected); !errors.Is(err, sandbox.ErrProjectChanged) || deletes.Load() != 0 {
+			t.Fatalf("destroy with a stale ID %q: %v, %d deletes", expected, err, deletes.Load())
+		}
 	}
-	if err := provider.DestroyProject(ctx, spec, status.ID); err != nil {
+	if err := provider.DestroyProject(ctx, spec, &status.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.DestroyProject(ctx, spec, ""); err != nil {
+	if err := provider.DestroyProject(ctx, spec, nil); err != nil {
 		t.Fatal(err)
 	}
 	status, err = provider.ProjectStatus(ctx, spec)

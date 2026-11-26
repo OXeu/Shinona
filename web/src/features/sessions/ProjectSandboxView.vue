@@ -157,7 +157,7 @@ async function perform() {
   if (!selection || (operation === 'destroy' || operation === 'recreate') && !selection.sandboxId) return
   busy.value = true
   try {
-    if (operation === 'save') await projectSandboxApi.save(project, next.value, signal, skipCleanupFor.value)
+    if (operation === 'save') await projectSandboxApi.save(project, next.value, selection, signal, skipCleanupFor.value)
     else if (operation === 'create') await projectSandboxApi.create(project, signal)
     else await projectSandboxApi[operation](project, selection, signal)
     if (!signal.aborted) {

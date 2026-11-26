@@ -80,7 +80,7 @@ func TestRemovingProjectAndSwitchingProviderAllowFullSandboxLifecycle(t *testing
 				limits := WorkspaceTimeouts{Operation: time.Second, Lifecycle: 3 * time.Second}
 				const destroyDuration = 2 * time.Second
 				repo := &projectCleanupRepository{provider: sandbox.ProviderSSH}
-				previous := timedWorkspaceProvider{destroy: func(ctx context.Context) error {
+				previous := timedWorkspaceProvider{status: sandbox.ProjectStatus{ID: "current-sandbox"}, destroy: func(ctx context.Context) error {
 					timer := time.NewTimer(destroyDuration)
 					defer timer.Stop()
 					select {
@@ -104,7 +104,14 @@ func TestRemovingProjectAndSwitchingProviderAllowFullSandboxLifecycle(t *testing
 					wantProvider = ""
 					err = service.RemoveProject(t.Context(), "owner", "project")
 				} else {
-					err = service.SaveProjectSandbox(t.Context(), "owner", "project", ProjectSandboxConfig{Provider: wantProvider}, "")
+					next := ProjectSandboxConfig{Provider: wantProvider}
+					expected := ProjectSandboxExpectation{Config: ProjectSandboxConfig{Provider: sandbox.ProviderSSH}, SandboxID: new("old-sandbox")}
+					err = service.SaveProjectSandbox(t.Context(), "owner", "project", next, "", &expected)
+					if !errors.Is(err, sandbox.ErrProjectChanged) || time.Since(start) != 0 || repo.provider != sandbox.ProviderSSH {
+						t.Fatalf("stale switch processed after %v with provider %q and error %v", time.Since(start), repo.provider, err)
+					}
+					expected.SandboxID = &previous.status.ID
+					err = service.SaveProjectSandbox(t.Context(), "owner", "project", next, "", &expected)
 				}
 				if err != nil || time.Since(start) != destroyDuration || repo.provider != wantProvider {
 					t.Fatalf("%s finished after %v with provider %q and error %v", operation, time.Since(start), repo.provider, err)
@@ -171,13 +178,18 @@ type timedWorkspaceProvider struct {
 	sandbox.ManagedProjectProvider
 	open    func(context.Context) (sandbox.Workspace, error)
 	destroy func(context.Context) error
+	status  sandbox.ProjectStatus
+}
+
+func (p timedWorkspaceProvider) ProjectStatus(context.Context, sandbox.Spec) (sandbox.ProjectStatus, error) {
+	return p.status, nil
 }
 
 func (p timedWorkspaceProvider) OpenProject(ctx context.Context, _ sandbox.Spec) (sandbox.Workspace, error) {
 	return p.open(ctx)
 }
 
-func (p timedWorkspaceProvider) DestroyProject(ctx context.Context, _ sandbox.Spec, _ string) error {
+func (p timedWorkspaceProvider) DestroyProject(ctx context.Context, _ sandbox.Spec, _ *string) error {
 	return p.destroy(ctx)
 }
 

@@ -338,7 +338,7 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 	return status, nil
 }
 
-func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expectedID string) error {
+func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expectedID *string) error {
 	release, err := provisionGates.Acquire(ctx, spec.ProjectKey(), false)
 	if err != nil {
 		return err
@@ -355,7 +355,7 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expect
 	if err != nil {
 		return err
 	}
-	if expectedID != "" && status.ID != expectedID {
+	if expectedID != nil && status.ID != *expectedID {
 		return sandbox.ErrProjectChanged
 	}
 	if status.State == sandbox.ProjectNone {

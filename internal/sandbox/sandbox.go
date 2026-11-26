@@ -100,9 +100,9 @@ type ProjectStatus struct {
 type ManagedProjectProvider interface {
 	ProjectProvider
 	ProjectStatus(context.Context, Spec) (ProjectStatus, error)
-	// An empty expectedID selects the current sandbox. Otherwise destroy only
-	// the matching sandbox, after checking the ID under the provisioning lock.
-	DestroyProject(ctx context.Context, spec Spec, expectedID string) error
+	// A nil expectedID selects the current sandbox. A non-nil ID must match
+	// under the provisioning lock. An empty ID expects no sandbox.
+	DestroyProject(ctx context.Context, spec Spec, expectedID *string) error
 }
 
 const (

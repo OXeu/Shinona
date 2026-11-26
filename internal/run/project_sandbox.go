@@ -39,6 +39,11 @@ type ProjectSandboxSelection struct {
 	SandboxID string
 }
 
+type ProjectSandboxExpectation struct {
+	Config    ProjectSandboxConfig
+	SandboxID *string
+}
+
 func projectTarget(ctx context.Context, repo ProjectSandboxRepository, resolve ResolveTarget, spec sandbox.Spec, backend string, provision bool) (sandbox.Spec, Target, error) {
 	config, err := repo.ProjectSandboxConfig(ctx, spec.OwnerID, spec.ProjectID)
 	if err != nil {
@@ -127,7 +132,9 @@ func (s *Service) ProjectSandbox(ctx context.Context, owner, id string) (Project
 	return result, nil
 }
 
-func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next ProjectSandboxConfig, skipCleanupFor string) error {
+func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next ProjectSandboxConfig,
+	skipCleanupFor string, expected *ProjectSandboxExpectation,
+) error {
 	next.Template = strings.TrimSpace(next.Template)
 	if len(next.Provider) > 64 || next.Template != "" && !templateName.MatchString(next.Template) ||
 		next.TimeoutSeconds < 0 || next.TimeoutSeconds > sandbox.MaxTimeoutSeconds ||
@@ -135,6 +142,13 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 		return ErrProjectSandboxConfig
 	}
 	return s.changeProjectSandbox(ctx, owner, id, func(ctx context.Context, current ProjectSandboxConfig, spec sandbox.Spec) error {
+		var expectedID *string
+		if expected != nil {
+			if current != expected.Config {
+				return sandbox.ErrProjectChanged
+			}
+			expectedID = expected.SandboxID
+		}
 		target, err := s.resolve(ctx, owner, next.Provider)
 		if err != nil {
 			return err
@@ -159,17 +173,15 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 		switch {
 		case current.Provider == "":
 		case current.Provider != next.Provider:
-			if err := s.terminals.stopProject(ctx, owner, id); err != nil {
+			if skipCleanupFor == "" {
+				if err := s.cleanPreviousSandbox(ctx, current.Provider, spec, expectedID); err != nil {
+					return err
+				}
+			} else if err := s.terminals.stopProject(ctx, owner, id); err != nil {
 				return err
 			}
-			if skipCleanupFor == "" {
-				if err := s.cleanPreviousSandbox(ctx, current.Provider, spec); err != nil {
-					slog.Warn("clean up project sandbox before provider change", "provider", current.Provider, "error", err)
-					return ErrProjectSandboxCleanup
-				}
-			}
 		case before.Template != after.Template || before.OnTimeout != after.OnTimeout:
-			if err := s.destroyProjectSandbox(ctx, provider, spec, ""); err != nil {
+			if err := s.destroyProjectSandbox(ctx, provider, spec, expectedID); err != nil {
 				return err
 			}
 		}
@@ -179,15 +191,23 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 	})
 }
 
-func (s *Service) cleanPreviousSandbox(ctx context.Context, name string, spec sandbox.Spec) error {
+func (s *Service) cleanPreviousSandbox(ctx context.Context, name string, spec sandbox.Spec, expectedID *string) error {
+	if name == "" {
+		return s.terminals.stopProject(ctx, spec.OwnerID, spec.ProjectID)
+	}
 	previous, err := s.resolve(ctx, spec.OwnerID, name)
-	if err != nil {
+	if err == nil {
+		if provider, ok := previous.Provider.(sandbox.ManagedProjectProvider); ok {
+			err = s.destroyProjectSandbox(ctx, provider, spec, expectedID)
+		} else {
+			err = ErrSandboxProvider
+		}
+	}
+	if err == nil || errors.Is(err, sandbox.ErrProjectChanged) || ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 		return err
 	}
-	if provider, ok := previous.Provider.(sandbox.ManagedProjectProvider); ok {
-		return provider.DestroyProject(ctx, spec, "")
-	}
-	return ErrSandboxProvider
+	slog.Warn("clean up previous project sandbox", "provider", name, "error", err)
+	return ErrProjectSandboxCleanup
 }
 
 func (s *Service) ResetProjectSandbox(ctx context.Context, owner, id string, recreate bool, selection *ProjectSandboxSelection) error {
@@ -203,18 +223,9 @@ func (s *Service) ResetProjectSandbox(ctx context.Context, owner, id string, rec
 		if !ok {
 			return ErrSandboxProvider
 		}
-		var expectedID string
+		var expectedID *string
 		if selection != nil {
-			expectedID = selection.SandboxID
-			// Check before stopping terminals. The provider verifies the ID
-			// again immediately before removal.
-			status, err := provider.ProjectStatus(ctx, spec)
-			if status.ID != expectedID {
-				if err != nil {
-					return err
-				}
-				return sandbox.ErrProjectChanged
-			}
+			expectedID = &selection.SandboxID
 		}
 		if err := s.destroyProjectSandbox(ctx, provider, spec, expectedID); err != nil || !recreate {
 			return err
@@ -315,12 +326,20 @@ func (s *Service) tryProjectChange(owner, id string) (func(), bool) {
 	}, true
 }
 
-func (s *Service) destroyProjectSandbox(ctx context.Context, provider sandbox.ManagedProjectProvider, spec sandbox.Spec, expectedID string) error {
+func (s *Service) destroyProjectSandbox(ctx context.Context, provider sandbox.ManagedProjectProvider, spec sandbox.Spec, expectedID *string) error {
+	if expectedID != nil {
+		// Verify before stopping terminals. The provider checks the ID again
+		// under its provisioning lock immediately before removal.
+		status, err := provider.ProjectStatus(ctx, spec)
+		if err != nil && (*expectedID == "" || status.ID != *expectedID) {
+			return err
+		}
+		if status.ID != *expectedID {
+			return sandbox.ErrProjectChanged
+		}
+	}
 	if err := s.terminals.stopProject(ctx, spec.OwnerID, spec.ProjectID); err != nil {
 		return err
-	}
-	if provider == nil {
-		return nil
 	}
 	return provider.DestroyProject(ctx, spec, expectedID)
 }

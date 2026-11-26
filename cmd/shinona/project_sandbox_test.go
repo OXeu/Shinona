@@ -24,7 +24,7 @@ import (
 	"github.com/OXeu/shinona/internal/settings"
 )
 
-func TestProjectSandboxResetRejectsAStaleSelection(t *testing.T) {
+func TestProjectSandboxChangesRejectStaleSelections(t *testing.T) {
 	var deleted atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +69,25 @@ func TestProjectSandboxResetRejectsAStaleSelection(t *testing.T) {
 			t.Errorf("%s %s with an old sandbox ID: %s", operation.method, operation.path, body)
 		}
 	}
+	saveTemplate := func(sandboxID string) string {
+		t.Helper()
+		return query(owner, http.MethodPut, path+"/config", map[string]any{
+			"input":    map[string]any{"provider": sandbox.ProviderE2B, "template": "new-template"},
+			"expected": map[string]any{"config": map[string]any{"provider": sandbox.ProviderE2B}, "sandboxId": sandboxID},
+		})
+	}
+	for _, sandboxID := range []string{selection.SandboxID, ""} {
+		body := saveTemplate(sandboxID)
+		if !strings.Contains(body, "PROJECT_SANDBOX_CHANGED") {
+			t.Errorf("change template with a stale sandbox ID %q: %s", sandboxID, body)
+		}
+	}
+	if body := query(owner, http.MethodPut, path+"/config", map[string]any{
+		"input":    map[string]any{"provider": sandbox.ProviderE2B, "timeoutSeconds": 60},
+		"expected": map[string]any{"config": map[string]any{"provider": sandbox.ProviderE2B, "timeoutSeconds": 30}, "sandboxId": "replacement"},
+	}); !strings.Contains(body, "PROJECT_SANDBOX_CHANGED") {
+		t.Errorf("change timeout with a stale project config: %s", body)
+	}
 	selector.Set("sandboxId", "replacement")
 	selector.Set("provider", sandbox.ProviderSSH)
 	if body := query(owner, http.MethodDelete, path+"?"+selector.Encode(), nil); !strings.Contains(body, "PROJECT_SANDBOX_CHANGED") {
@@ -80,6 +99,14 @@ func TestProjectSandboxResetRejectsAStaleSelection(t *testing.T) {
 	selector.Set("provider", sandbox.ProviderE2B)
 	if body := query(owner, http.MethodDelete, path+"?"+selector.Encode(), nil); body != "" || deleted.Load() != 1 {
 		t.Fatalf("delete a confirmed sandbox: %s (remote deletes: %d)", body, deleted.Load())
+	}
+	save("", "confirmed-sandbox")
+	if body := saveTemplate("confirmed-sandbox"); body != "" || deleted.Load() != 2 {
+		t.Fatalf("replace a confirmed sandbox: %s (remote deletes: %d)", body, deleted.Load())
+	}
+	config, err := db.Projects.ProjectSandboxConfig(t.Context(), owner, "")
+	if err != nil || config == nil || config.Template != "new-template" {
+		t.Fatalf("confirmed template change was not saved: %+v, %v", config, err)
 	}
 }
 
@@ -282,7 +309,7 @@ func TestChangingE2BDurationKeepsTheProjectSandbox(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := service.SaveProjectSandbox(ctx, owner, "", run.ProjectSandboxConfig{Provider: sandbox.ProviderE2B, TimeoutSeconds: 90}, ""); err != nil {
+	if err := service.SaveProjectSandbox(ctx, owner, "", run.ProjectSandboxConfig{Provider: sandbox.ProviderE2B, TimeoutSeconds: 90}, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	open()
@@ -290,7 +317,7 @@ func TestChangingE2BDurationKeepsTheProjectSandbox(t *testing.T) {
 	if _, err := app.Update(ctx, []settings.Change{{Key: settings.E2BTimeout, Value: new("30")}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.SaveProjectSandbox(ctx, owner, "", run.ProjectSandboxConfig{Provider: sandbox.ProviderE2B}, ""); err != nil {
+	if err := service.SaveProjectSandbox(ctx, owner, "", run.ProjectSandboxConfig{Provider: sandbox.ProviderE2B}, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	open()

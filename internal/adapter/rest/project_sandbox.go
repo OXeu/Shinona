@@ -21,6 +21,13 @@ func sandboxConfig(config run.ProjectSandboxConfig) projectSandboxConfig {
 	}
 }
 
+func (config projectSandboxConfig) domain() run.ProjectSandboxConfig {
+	return run.ProjectSandboxConfig{
+		Provider: config.Provider, Template: config.Template,
+		TimeoutSeconds: int(config.TimeoutSeconds), OnTimeout: config.OnTimeout,
+	}
+}
+
 type projectSandboxResponse struct {
 	Project         projectResponse          `json:"project"`
 	Config          projectSandboxConfig     `json:"config"`
@@ -60,15 +67,23 @@ func (r *handler) SaveProjectSandbox(ctx context.Context, args struct {
 	ID             string `uri:"id" json:"-"`
 	Input          projectSandboxConfig
 	SkipCleanupFor *string
+	Expected       *struct {
+		Config    *projectSandboxConfig `json:"config"`
+		SandboxID *string               `json:"sandboxId"`
+	} `json:"expected"`
 }) error {
 	var skipCleanupFor string
 	if args.SkipCleanupFor != nil {
 		skipCleanupFor = *args.SkipCleanupFor
 	}
-	err := r.service.SaveProjectSandbox(ctx, auth.CurrentUser(ctx).ID, projectID(args.ID), run.ProjectSandboxConfig{
-		Provider: args.Input.Provider, Template: args.Input.Template,
-		TimeoutSeconds: int(args.Input.TimeoutSeconds), OnTimeout: args.Input.OnTimeout,
-	}, skipCleanupFor)
+	var expected *run.ProjectSandboxExpectation
+	if args.Expected != nil {
+		if args.Expected.Config == nil {
+			return r.apiError(run.ErrProjectSandboxConfig)
+		}
+		expected = &run.ProjectSandboxExpectation{Config: args.Expected.Config.domain(), SandboxID: args.Expected.SandboxID}
+	}
+	err := r.service.SaveProjectSandbox(ctx, auth.CurrentUser(ctx).ID, projectID(args.ID), args.Input.domain(), skipCleanupFor, expected)
 	return r.apiError(err)
 }
 

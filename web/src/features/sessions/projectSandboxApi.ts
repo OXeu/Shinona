@@ -34,8 +34,13 @@ function selectionQuery(selection: SandboxSelection) {
 export const projectSandboxApi = {
   load: (project: ProjectTarget, signal: AbortSignal) =>
     apiJSON<ProjectSandbox>(sandboxPath(project), 'GET', signal),
-  save: (project: ProjectTarget, input: ProjectSandboxConfig, signal: AbortSignal, skipCleanupFor?: string) =>
-    apiJSON<void>(sandboxPath(project) + '/config', 'PUT', signal, { input, skipCleanupFor }),
+  save: (project: ProjectTarget, input: ProjectSandboxConfig, selection: ProjectSandbox, signal: AbortSignal, skipCleanupFor?: string) => {
+    const expected = {
+      config: selection.config,
+      sandboxId: selection.sandboxId || (selection.state === 'NONE' ? '' : undefined),
+    }
+    return apiJSON<void>(sandboxPath(project) + '/config', 'PUT', signal, { input, skipCleanupFor, expected })
+  },
   create: (project: ProjectTarget, signal: AbortSignal) =>
     apiJSON<void>(sandboxPath(project), 'POST', signal),
   destroy: (project: ProjectTarget, selection: SandboxSelection, signal: AbortSignal) =>

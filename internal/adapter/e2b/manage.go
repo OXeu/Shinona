@@ -37,7 +37,7 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 	return status, nil
 }
 
-func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expectedID string) error {
+func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expectedID *string) error {
 	key := p.leaseKey(spec)
 	release, err := p.leases.gates.Acquire(ctx, key, false)
 	if err != nil {
@@ -48,7 +48,7 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expect
 	if err != nil {
 		return err
 	}
-	if expectedID != "" && id != expectedID {
+	if expectedID != nil && id != *expectedID {
 		return sandbox.ErrProjectChanged
 	}
 	if id == "" {
