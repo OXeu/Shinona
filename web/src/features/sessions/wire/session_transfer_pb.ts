@@ -2,15 +2,15 @@
 // @generated from file session_transfer.proto (package shinona.sessions.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file session_transfer.proto.
  */
 export const file_session_transfer: GenFile = /*@__PURE__*/
-  fileDesc("ChZzZXNzaW9uX3RyYW5zZmVyLnByb3RvEhNzaGlub25hLnNlc3Npb25zLnYxIsIBCg5TZXNzaW9uU3VtbWFyeRIKCgJpZBgBIAEoCRIXCgpwcm9qZWN0X2lkGAIgASgJSACIAQESDQoFdGl0bGUYAyABKAkSFQoNZGVmYXVsdF90aXRsZRgEIAEoCBISCgp0dXJuX2NvdW50GAUgASgFEhIKCnVwZGF0ZWRfYXQYBiABKAkSDgoGcGlubmVkGAcgASgIEg4KBmFjdGl2ZRgIIAEoCBIOCgZ1bnJlYWQYCSABKAhCDQoLX3Byb2plY3RfaWQibgoKUnVuT3B0aW9ucxINCgVtb2RlbBgBIAEoCRISCgpwZXJtaXNzaW9uGAIgASgJEhAKCHRoaW5raW5nGAMgASgJEhMKC21jcF9zZXJ2ZXJzGAQgAygJEhAKCGFycm93X2pzGAYgASgISgQIBRAGIkgKD1NhbmRib3hTZXR0aW5ncxIRCglhdmFpbGFibGUYASADKAkSFQoIc2VsZWN0ZWQYAiABKAlIAIgBAUILCglfc2VsZWN0ZWQi7QMKBFR1cm4SCgoCaWQYASABKAkSEAoIc2VxdWVuY2UYAiABKAUSDgoGcHJvbXB0GAMgASgJEg4KBnN0YXR1cxgEIAEoCRITCgZwb2xpY3kYBSABKAlIAIgBARIOCgZvdXRwdXQYBiABKAkSEgoKY3JlYXRlZF9hdBgHIAEoCRIXCgpzdGFydGVkX2F0GAggASgJSAGIAQESEgoKdXBkYXRlZF9hdBgJIAEoCRINCgVtb2RlbBgKIAEoCRITCgthdHRhY2htZW50cxgLIAMoCRI2CghzdGVlcmluZxgMIAMoCzIkLnNoaW5vbmEuc2Vzc2lvbnMudjEuU3RlZXJpbmdNZXNzYWdlEiwKBXBhcnRzGA0gAygLMh0uc2hpbm9uYS5zZXNzaW9ucy52MS5UdXJuUGFydBIWCg5jb250ZXh0X3Rva2VucxgOIAEoBRIWCg5jb250ZXh0X3dpbmRvdxgPIAEoBRI3CgxsaXZlX2NvbnRleHQYECABKAsyIS5zaGlub25hLnNlc3Npb25zLnYxLkNvbnRleHRVc2FnZRI0Cgt0b2tlbl91c2FnZRgRIAEoCzIfLnNoaW5vbmEuc2Vzc2lvbnMudjEuVG9rZW5Vc2FnZUIJCgdfcG9saWN5Qg0KC19zdGFydGVkX2F0IjsKClRva2VuVXNhZ2USDQoFaW5wdXQYASABKAUSDgoGY2FjaGVkGAIgASgFEg4KBm91dHB1dBgDIAEoBSJBCgxDb250ZXh0VXNhZ2USDgoGdG9rZW5zGAEgASgFEg4KBndpbmRvdxgCIAEoBRIRCgllc3RpbWF0ZWQYAyABKAgiPgoPU3RlZXJpbmdNZXNzYWdlEgwKBHRleHQYASABKAkSEQoJZGVsaXZlcmVkGAIgASgIEgoKAmlkGAMgASgJIn0KCFR1cm5QYXJ0EgwKBGtpbmQYASABKAkSDAoEdGV4dBgCIAEoCRIMCgR0b29sGAMgASgJEg0KBWlucHV0GAQgASgJEg4KBm91dHB1dBgFIAEoCRIOCgZzdGF0dXMYBiABKAkSGAoQZXN0aW1hdGVkX3Rva2VucxgHIAEoBSKXAgoOVHJhbnNjcmlwdFBhZ2USNAoHc2Vzc2lvbhgBIAEoCzIjLnNoaW5vbmEuc2Vzc2lvbnMudjEuU2Vzc2lvblN1bW1hcnkSPgoQc2FuZGJveF9zZXR0aW5ncxgCIAEoCzIkLnNoaW5vbmEuc2Vzc2lvbnMudjEuU2FuZGJveFNldHRpbmdzEjUKDGxhc3Rfb3B0aW9ucxgDIAEoCzIfLnNoaW5vbmEuc2Vzc2lvbnMudjEuUnVuT3B0aW9ucxIcChRuZXh0X2JlZm9yZV9zZXF1ZW5jZRgEIAEoBRIoCgV0dXJucxgFIAMoCzIZLnNoaW5vbmEuc2Vzc2lvbnMudjEuVHVybhIQCghjb21wbGV0ZRgGIAEoCCJ2CgtMaXZlUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEjUKC2tub3duX3R1cm5zGAIgAygLMiAuc2hpbm9uYS5zZXNzaW9ucy52MS5UdXJuVmVyc2lvbhISCgVwYWdlZBgDIAEoCEgAiAEBQggKBl9wYWdlZCI9CgtUdXJuVmVyc2lvbhIKCgJpZBgBIAEoCRISCgp1cGRhdGVkX2F0GAIgASgJEg4KBnN0YXR1cxgDIAEoCSKiAQoLTGl2ZU1lc3NhZ2USEAoIc2VxdWVuY2UYASABKA0SLQoEc3luYxgCIAEoCzIdLnNoaW5vbmEuc2Vzc2lvbnMudjEuTGl2ZVN5bmNIABI1Cghwcm9ncmVzcxgDIAEoCzIhLnNoaW5vbmEuc2Vzc2lvbnMudjEuTGl2ZVByb2dyZXNzSAASEwoJaGVhcnRiZWF0GAQgASgISABCBgoEaXRlbSKZAgoITGl2ZVN5bmMSNAoHc2Vzc2lvbhgBIAEoCzIjLnNoaW5vbmEuc2Vzc2lvbnMudjEuU2Vzc2lvblN1bW1hcnkSPgoQc2FuZGJveF9zZXR0aW5ncxgCIAEoCzIkLnNoaW5vbmEuc2Vzc2lvbnMudjEuU2FuZGJveFNldHRpbmdzEhAKCHR1cm5faWRzGAMgAygJEjAKDWNoYW5nZWRfdHVybnMYBCADKAsyGS5zaGlub25hLnNlc3Npb25zLnYxLlR1cm4SNQoMbGFzdF9vcHRpb25zGAUgASgLMh8uc2hpbm9uYS5zZXNzaW9ucy52MS5SdW5PcHRpb25zEhwKFG5leHRfYmVmb3JlX3NlcXVlbmNlGAYgASgFItABCgxMaXZlUHJvZ3Jlc3MSDwoHdHVybl9pZBgBIAEoCRISCgpwYXJ0X2NvdW50GAIgASgNEjIKBXBhcnRzGAMgAygLMiMuc2hpbm9uYS5zZXNzaW9ucy52MS5MaXZlUGFydENoYW5nZRIzCghzdGVlcmluZxgEIAEoCzIhLnNoaW5vbmEuc2Vzc2lvbnMudjEuTGl2ZVN0ZWVyaW5nEjIKB2NvbnRleHQYBSABKAsyIS5zaGlub25hLnNlc3Npb25zLnYxLkNvbnRleHRVc2FnZSJGCgxMaXZlU3RlZXJpbmcSNgoIbWVzc2FnZXMYASADKAsyJC5zaGlub25hLnNlc3Npb25zLnYxLlN0ZWVyaW5nTWVzc2FnZSKQAQoOTGl2ZVBhcnRDaGFuZ2USDQoFaW5kZXgYASABKA0SMAoHcmVwbGFjZRgCIAEoCzIdLnNoaW5vbmEuc2Vzc2lvbnMudjEuVHVyblBhcnRIABI1CgZhcHBlbmQYAyABKAsyIy5zaGlub25hLnNlc3Npb25zLnYxLkxpdmVQYXJ0QXBwZW5kSABCBgoEaXRlbSJICg5MaXZlUGFydEFwcGVuZBIMCgR0ZXh0GAEgASgJEg4KBm91dHB1dBgCIAEoCRIYChBlc3RpbWF0ZWRfdG9rZW5zGAMgASgFQkRaQmdpdGh1Yi5jb20vT1hldS9zaGlub25hL2ludGVybmFsL2FkYXB0ZXIvc2Vzc2lvbnRyYW5zZmVyL3Nlc3Npb25wYmIGcHJvdG8z");
+  fileDesc("ChZzZXNzaW9uX3RyYW5zZmVyLnByb3RvEhNzaGlub25hLnNlc3Npb25zLnYxIsIBCg5TZXNzaW9uU3VtbWFyeRIKCgJpZBgBIAEoCRIXCgpwcm9qZWN0X2lkGAIgASgJSACIAQESDQoFdGl0bGUYAyABKAkSFQoNZGVmYXVsdF90aXRsZRgEIAEoCBISCgp0dXJuX2NvdW50GAUgASgFEhIKCnVwZGF0ZWRfYXQYBiABKAkSDgoGcGlubmVkGAcgASgIEg4KBmFjdGl2ZRgIIAEoCBIOCgZ1bnJlYWQYCSABKAhCDQoLX3Byb2plY3RfaWQibgoKUnVuT3B0aW9ucxINCgVtb2RlbBgBIAEoCRISCgpwZXJtaXNzaW9uGAIgASgJEhAKCHRoaW5raW5nGAMgASgJEhMKC21jcF9zZXJ2ZXJzGAQgAygJEhAKCGFycm93X2pzGAYgASgISgQIBRAGIkgKD1NhbmRib3hTZXR0aW5ncxIRCglhdmFpbGFibGUYASADKAkSFQoIc2VsZWN0ZWQYAiABKAlIAIgBAUILCglfc2VsZWN0ZWQi7QMKBFR1cm4SCgoCaWQYASABKAkSEAoIc2VxdWVuY2UYAiABKAUSDgoGcHJvbXB0GAMgASgJEg4KBnN0YXR1cxgEIAEoCRITCgZwb2xpY3kYBSABKAlIAIgBARIOCgZvdXRwdXQYBiABKAkSEgoKY3JlYXRlZF9hdBgHIAEoCRIXCgpzdGFydGVkX2F0GAggASgJSAGIAQESEgoKdXBkYXRlZF9hdBgJIAEoCRINCgVtb2RlbBgKIAEoCRITCgthdHRhY2htZW50cxgLIAMoCRI2CghzdGVlcmluZxgMIAMoCzIkLnNoaW5vbmEuc2Vzc2lvbnMudjEuU3RlZXJpbmdNZXNzYWdlEiwKBXBhcnRzGA0gAygLMh0uc2hpbm9uYS5zZXNzaW9ucy52MS5UdXJuUGFydBIWCg5jb250ZXh0X3Rva2VucxgOIAEoBRIWCg5jb250ZXh0X3dpbmRvdxgPIAEoBRI3CgxsaXZlX2NvbnRleHQYECABKAsyIS5zaGlub25hLnNlc3Npb25zLnYxLkNvbnRleHRVc2FnZRI0Cgt0b2tlbl91c2FnZRgRIAEoCzIfLnNoaW5vbmEuc2Vzc2lvbnMudjEuVG9rZW5Vc2FnZUIJCgdfcG9saWN5Qg0KC19zdGFydGVkX2F0IjsKClRva2VuVXNhZ2USDQoFaW5wdXQYASABKAUSDgoGY2FjaGVkGAIgASgFEg4KBm91dHB1dBgDIAEoBSJBCgxDb250ZXh0VXNhZ2USDgoGdG9rZW5zGAEgASgFEg4KBndpbmRvdxgCIAEoBRIRCgllc3RpbWF0ZWQYAyABKAgiPgoPU3RlZXJpbmdNZXNzYWdlEgwKBHRleHQYASABKAkSEQoJZGVsaXZlcmVkGAIgASgIEgoKAmlkGAMgASgJIn0KCFR1cm5QYXJ0EgwKBGtpbmQYASABKAkSDAoEdGV4dBgCIAEoCRIMCgR0b29sGAMgASgJEg0KBWlucHV0GAQgASgJEg4KBm91dHB1dBgFIAEoCRIOCgZzdGF0dXMYBiABKAkSGAoQZXN0aW1hdGVkX3Rva2VucxgHIAEoBSKXAgoOVHJhbnNjcmlwdFBhZ2USNAoHc2Vzc2lvbhgBIAEoCzIjLnNoaW5vbmEuc2Vzc2lvbnMudjEuU2Vzc2lvblN1bW1hcnkSPgoQc2FuZGJveF9zZXR0aW5ncxgCIAEoCzIkLnNoaW5vbmEuc2Vzc2lvbnMudjEuU2FuZGJveFNldHRpbmdzEjUKDGxhc3Rfb3B0aW9ucxgDIAEoCzIfLnNoaW5vbmEuc2Vzc2lvbnMudjEuUnVuT3B0aW9ucxIcChRuZXh0X2JlZm9yZV9zZXF1ZW5jZRgEIAEoBRIoCgV0dXJucxgFIAMoCzIZLnNoaW5vbmEuc2Vzc2lvbnMudjEuVHVybhIQCghjb21wbGV0ZRgGIAEoCCLCAQoVVHJhbnNjcmlwdEV4cG9ydEZyYW1lEj0KBmhlYWRlchgBIAEoCzIrLnNoaW5vbmEuc2Vzc2lvbnMudjEuVHJhbnNjcmlwdEV4cG9ydEhlYWRlckgAEikKBHR1cm4YAiABKAsyGS5zaGlub25hLnNlc3Npb25zLnYxLlR1cm5IABI3CgNlbmQYAyABKAsyKC5zaGlub25hLnNlc3Npb25zLnYxLlRyYW5zY3JpcHRFeHBvcnRFbmRIAEIGCgRpdGVtItkBChZUcmFuc2NyaXB0RXhwb3J0SGVhZGVyEjQKB3Nlc3Npb24YASABKAsyIy5zaGlub25hLnNlc3Npb25zLnYxLlNlc3Npb25TdW1tYXJ5Ej4KEHNhbmRib3hfc2V0dGluZ3MYAiABKAsyJC5zaGlub25hLnNlc3Npb25zLnYxLlNhbmRib3hTZXR0aW5ncxI1CgxsYXN0X29wdGlvbnMYAyABKAsyHy5zaGlub25hLnNlc3Npb25zLnYxLlJ1bk9wdGlvbnMSEgoKdHVybl9jb3VudBgEIAEoBSKTAQoTVHJhbnNjcmlwdEV4cG9ydEVuZBJBCgdmYWlsdXJlGAEgASgOMjAuc2hpbm9uYS5zZXNzaW9ucy52MS5UcmFuc2NyaXB0RXhwb3J0RW5kLkZhaWx1cmUiOQoHRmFpbHVyZRIICgROT05FEAASCQoFTElNSVQQARILCgdUSU1FT1VUEAISDAoISU5URVJOQUwQAyJ2CgtMaXZlUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEjUKC2tub3duX3R1cm5zGAIgAygLMiAuc2hpbm9uYS5zZXNzaW9ucy52MS5UdXJuVmVyc2lvbhISCgVwYWdlZBgDIAEoCEgAiAEBQggKBl9wYWdlZCI9CgtUdXJuVmVyc2lvbhIKCgJpZBgBIAEoCRISCgp1cGRhdGVkX2F0GAIgASgJEg4KBnN0YXR1cxgDIAEoCSKiAQoLTGl2ZU1lc3NhZ2USEAoIc2VxdWVuY2UYASABKA0SLQoEc3luYxgCIAEoCzIdLnNoaW5vbmEuc2Vzc2lvbnMudjEuTGl2ZVN5bmNIABI1Cghwcm9ncmVzcxgDIAEoCzIhLnNoaW5vbmEuc2Vzc2lvbnMudjEuTGl2ZVByb2dyZXNzSAASEwoJaGVhcnRiZWF0GAQgASgISABCBgoEaXRlbSKZAgoITGl2ZVN5bmMSNAoHc2Vzc2lvbhgBIAEoCzIjLnNoaW5vbmEuc2Vzc2lvbnMudjEuU2Vzc2lvblN1bW1hcnkSPgoQc2FuZGJveF9zZXR0aW5ncxgCIAEoCzIkLnNoaW5vbmEuc2Vzc2lvbnMudjEuU2FuZGJveFNldHRpbmdzEhAKCHR1cm5faWRzGAMgAygJEjAKDWNoYW5nZWRfdHVybnMYBCADKAsyGS5zaGlub25hLnNlc3Npb25zLnYxLlR1cm4SNQoMbGFzdF9vcHRpb25zGAUgASgLMh8uc2hpbm9uYS5zZXNzaW9ucy52MS5SdW5PcHRpb25zEhwKFG5leHRfYmVmb3JlX3NlcXVlbmNlGAYgASgFItABCgxMaXZlUHJvZ3Jlc3MSDwoHdHVybl9pZBgBIAEoCRISCgpwYXJ0X2NvdW50GAIgASgNEjIKBXBhcnRzGAMgAygLMiMuc2hpbm9uYS5zZXNzaW9ucy52MS5MaXZlUGFydENoYW5nZRIzCghzdGVlcmluZxgEIAEoCzIhLnNoaW5vbmEuc2Vzc2lvbnMudjEuTGl2ZVN0ZWVyaW5nEjIKB2NvbnRleHQYBSABKAsyIS5zaGlub25hLnNlc3Npb25zLnYxLkNvbnRleHRVc2FnZSJGCgxMaXZlU3RlZXJpbmcSNgoIbWVzc2FnZXMYASADKAsyJC5zaGlub25hLnNlc3Npb25zLnYxLlN0ZWVyaW5nTWVzc2FnZSKQAQoOTGl2ZVBhcnRDaGFuZ2USDQoFaW5kZXgYASABKA0SMAoHcmVwbGFjZRgCIAEoCzIdLnNoaW5vbmEuc2Vzc2lvbnMudjEuVHVyblBhcnRIABI1CgZhcHBlbmQYAyABKAsyIy5zaGlub25hLnNlc3Npb25zLnYxLkxpdmVQYXJ0QXBwZW5kSABCBgoEaXRlbSJICg5MaXZlUGFydEFwcGVuZBIMCgR0ZXh0GAEgASgJEg4KBm91dHB1dBgCIAEoCRIYChBlc3RpbWF0ZWRfdG9rZW5zGAMgASgFQkRaQmdpdGh1Yi5jb20vT1hldS9zaGlub25hL2ludGVybmFsL2FkYXB0ZXIvc2Vzc2lvbnRyYW5zZmVyL3Nlc3Npb25wYmIGcHJvdG8z");
 
 /**
  * @generated from message shinona.sessions.v1.SessionSummary
@@ -385,7 +385,7 @@ export type TranscriptPage = Message<"shinona.sessions.v1.TranscriptPage"> & {
   turns: Turn[];
 
   /**
-   * Written after the last turn so a truncated stream can be detected.
+   * True for a complete page.
    *
    * @generated from field: bool complete = 6;
    */
@@ -398,6 +398,125 @@ export type TranscriptPage = Message<"shinona.sessions.v1.TranscriptPage"> & {
  */
 export const TranscriptPageSchema: GenMessage<TranscriptPage> = /*@__PURE__*/
   messageDesc(file_session_transfer, 8);
+
+/**
+ * Full exports send unsigned varint-length-prefixed frames. The header comes
+ * first, followed by turns and exactly one end frame. EOF without an end
+ * frame means the transport was interrupted.
+ *
+ * @generated from message shinona.sessions.v1.TranscriptExportFrame
+ */
+export type TranscriptExportFrame = Message<"shinona.sessions.v1.TranscriptExportFrame"> & {
+  /**
+   * @generated from oneof shinona.sessions.v1.TranscriptExportFrame.item
+   */
+  item: {
+    /**
+     * @generated from field: shinona.sessions.v1.TranscriptExportHeader header = 1;
+     */
+    value: TranscriptExportHeader;
+    case: "header";
+  } | {
+    /**
+     * @generated from field: shinona.sessions.v1.Turn turn = 2;
+     */
+    value: Turn;
+    case: "turn";
+  } | {
+    /**
+     * @generated from field: shinona.sessions.v1.TranscriptExportEnd end = 3;
+     */
+    value: TranscriptExportEnd;
+    case: "end";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message shinona.sessions.v1.TranscriptExportFrame.
+ * Use `create(TranscriptExportFrameSchema)` to create a new message.
+ */
+export const TranscriptExportFrameSchema: GenMessage<TranscriptExportFrame> = /*@__PURE__*/
+  messageDesc(file_session_transfer, 9);
+
+/**
+ * @generated from message shinona.sessions.v1.TranscriptExportHeader
+ */
+export type TranscriptExportHeader = Message<"shinona.sessions.v1.TranscriptExportHeader"> & {
+  /**
+   * @generated from field: shinona.sessions.v1.SessionSummary session = 1;
+   */
+  session?: SessionSummary | undefined;
+
+  /**
+   * @generated from field: shinona.sessions.v1.SandboxSettings sandbox_settings = 2;
+   */
+  sandboxSettings?: SandboxSettings | undefined;
+
+  /**
+   * @generated from field: shinona.sessions.v1.RunOptions last_options = 3;
+   */
+  lastOptions?: RunOptions | undefined;
+
+  /**
+   * @generated from field: int32 turn_count = 4;
+   */
+  turnCount: number;
+};
+
+/**
+ * Describes the message shinona.sessions.v1.TranscriptExportHeader.
+ * Use `create(TranscriptExportHeaderSchema)` to create a new message.
+ */
+export const TranscriptExportHeaderSchema: GenMessage<TranscriptExportHeader> = /*@__PURE__*/
+  messageDesc(file_session_transfer, 10);
+
+/**
+ * @generated from message shinona.sessions.v1.TranscriptExportEnd
+ */
+export type TranscriptExportEnd = Message<"shinona.sessions.v1.TranscriptExportEnd"> & {
+  /**
+   * @generated from field: shinona.sessions.v1.TranscriptExportEnd.Failure failure = 1;
+   */
+  failure: TranscriptExportEnd_Failure;
+};
+
+/**
+ * Describes the message shinona.sessions.v1.TranscriptExportEnd.
+ * Use `create(TranscriptExportEndSchema)` to create a new message.
+ */
+export const TranscriptExportEndSchema: GenMessage<TranscriptExportEnd> = /*@__PURE__*/
+  messageDesc(file_session_transfer, 11);
+
+/**
+ * @generated from enum shinona.sessions.v1.TranscriptExportEnd.Failure
+ */
+export enum TranscriptExportEnd_Failure {
+  /**
+   * @generated from enum value: NONE = 0;
+   */
+  NONE = 0,
+
+  /**
+   * @generated from enum value: LIMIT = 1;
+   */
+  LIMIT = 1,
+
+  /**
+   * @generated from enum value: TIMEOUT = 2;
+   */
+  TIMEOUT = 2,
+
+  /**
+   * @generated from enum value: INTERNAL = 3;
+   */
+  INTERNAL = 3,
+}
+
+/**
+ * Describes the enum shinona.sessions.v1.TranscriptExportEnd.Failure.
+ */
+export const TranscriptExportEnd_FailureSchema: GenEnum<TranscriptExportEnd_Failure> = /*@__PURE__*/
+  enumDesc(file_session_transfer, 11, 0);
 
 /**
  * @generated from message shinona.sessions.v1.LiveRequest
@@ -424,7 +543,7 @@ export type LiveRequest = Message<"shinona.sessions.v1.LiveRequest"> & {
  * Use `create(LiveRequestSchema)` to create a new message.
  */
 export const LiveRequestSchema: GenMessage<LiveRequest> = /*@__PURE__*/
-  messageDesc(file_session_transfer, 9);
+  messageDesc(file_session_transfer, 12);
 
 /**
  * @generated from message shinona.sessions.v1.TurnVersion
@@ -451,7 +570,7 @@ export type TurnVersion = Message<"shinona.sessions.v1.TurnVersion"> & {
  * Use `create(TurnVersionSchema)` to create a new message.
  */
 export const TurnVersionSchema: GenMessage<TurnVersion> = /*@__PURE__*/
-  messageDesc(file_session_transfer, 10);
+  messageDesc(file_session_transfer, 13);
 
 /**
  * @generated from message shinona.sessions.v1.LiveMessage
@@ -491,7 +610,7 @@ export type LiveMessage = Message<"shinona.sessions.v1.LiveMessage"> & {
  * Use `create(LiveMessageSchema)` to create a new message.
  */
 export const LiveMessageSchema: GenMessage<LiveMessage> = /*@__PURE__*/
-  messageDesc(file_session_transfer, 11);
+  messageDesc(file_session_transfer, 14);
 
 /**
  * @generated from message shinona.sessions.v1.LiveSync
@@ -535,7 +654,7 @@ export type LiveSync = Message<"shinona.sessions.v1.LiveSync"> & {
  * Use `create(LiveSyncSchema)` to create a new message.
  */
 export const LiveSyncSchema: GenMessage<LiveSync> = /*@__PURE__*/
-  messageDesc(file_session_transfer, 12);
+  messageDesc(file_session_transfer, 15);
 
 /**
  * @generated from message shinona.sessions.v1.LiveProgress
@@ -572,7 +691,7 @@ export type LiveProgress = Message<"shinona.sessions.v1.LiveProgress"> & {
  * Use `create(LiveProgressSchema)` to create a new message.
  */
 export const LiveProgressSchema: GenMessage<LiveProgress> = /*@__PURE__*/
-  messageDesc(file_session_transfer, 13);
+  messageDesc(file_session_transfer, 16);
 
 /**
  * @generated from message shinona.sessions.v1.LiveSteering
@@ -589,7 +708,7 @@ export type LiveSteering = Message<"shinona.sessions.v1.LiveSteering"> & {
  * Use `create(LiveSteeringSchema)` to create a new message.
  */
 export const LiveSteeringSchema: GenMessage<LiveSteering> = /*@__PURE__*/
-  messageDesc(file_session_transfer, 14);
+  messageDesc(file_session_transfer, 17);
 
 /**
  * @generated from message shinona.sessions.v1.LivePartChange
@@ -623,7 +742,7 @@ export type LivePartChange = Message<"shinona.sessions.v1.LivePartChange"> & {
  * Use `create(LivePartChangeSchema)` to create a new message.
  */
 export const LivePartChangeSchema: GenMessage<LivePartChange> = /*@__PURE__*/
-  messageDesc(file_session_transfer, 15);
+  messageDesc(file_session_transfer, 18);
 
 /**
  * @generated from message shinona.sessions.v1.LivePartAppend
@@ -650,4 +769,4 @@ export type LivePartAppend = Message<"shinona.sessions.v1.LivePartAppend"> & {
  * Use `create(LivePartAppendSchema)` to create a new message.
  */
 export const LivePartAppendSchema: GenMessage<LivePartAppend> = /*@__PURE__*/
-  messageDesc(file_session_transfer, 16);
+  messageDesc(file_session_transfer, 19);

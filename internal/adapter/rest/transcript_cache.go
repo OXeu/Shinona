@@ -9,7 +9,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
-	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/timing"
@@ -80,6 +79,5 @@ func (c *encodedTranscriptTurns) encode(ctx context.Context, turn run.Run) ([]by
 }
 
 func marshalTranscriptTurn(turn run.Run) ([]byte, error) {
-	// Concatenating these partial messages appends to the page's repeated turns.
-	return proto.Marshal(&sessionpb.TranscriptPage{Turns: []*sessionpb.Turn{sessiontransfer.Turn(turn)}})
+	return proto.Marshal(sessiontransfer.Turn(turn))
 }

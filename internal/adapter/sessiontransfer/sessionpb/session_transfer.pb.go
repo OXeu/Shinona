@@ -21,6 +21,58 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type TranscriptExportEnd_Failure int32
+
+const (
+	TranscriptExportEnd_NONE     TranscriptExportEnd_Failure = 0
+	TranscriptExportEnd_LIMIT    TranscriptExportEnd_Failure = 1
+	TranscriptExportEnd_TIMEOUT  TranscriptExportEnd_Failure = 2
+	TranscriptExportEnd_INTERNAL TranscriptExportEnd_Failure = 3
+)
+
+// Enum value maps for TranscriptExportEnd_Failure.
+var (
+	TranscriptExportEnd_Failure_name = map[int32]string{
+		0: "NONE",
+		1: "LIMIT",
+		2: "TIMEOUT",
+		3: "INTERNAL",
+	}
+	TranscriptExportEnd_Failure_value = map[string]int32{
+		"NONE":     0,
+		"LIMIT":    1,
+		"TIMEOUT":  2,
+		"INTERNAL": 3,
+	}
+)
+
+func (x TranscriptExportEnd_Failure) Enum() *TranscriptExportEnd_Failure {
+	p := new(TranscriptExportEnd_Failure)
+	*p = x
+	return p
+}
+
+func (x TranscriptExportEnd_Failure) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TranscriptExportEnd_Failure) Descriptor() protoreflect.EnumDescriptor {
+	return file_session_transfer_proto_enumTypes[0].Descriptor()
+}
+
+func (TranscriptExportEnd_Failure) Type() protoreflect.EnumType {
+	return &file_session_transfer_proto_enumTypes[0]
+}
+
+func (x TranscriptExportEnd_Failure) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TranscriptExportEnd_Failure.Descriptor instead.
+func (TranscriptExportEnd_Failure) EnumDescriptor() ([]byte, []int) {
+	return file_session_transfer_proto_rawDescGZIP(), []int{11, 0}
+}
+
 type SessionSummary struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -709,7 +761,7 @@ type TranscriptPage struct {
 	LastOptions        *RunOptions      `protobuf:"bytes,3,opt,name=last_options,json=lastOptions,proto3" json:"last_options,omitempty"`
 	NextBeforeSequence int32            `protobuf:"varint,4,opt,name=next_before_sequence,json=nextBeforeSequence,proto3" json:"next_before_sequence,omitempty"`
 	Turns              []*Turn          `protobuf:"bytes,5,rep,name=turns,proto3" json:"turns,omitempty"`
-	// Written after the last turn so a truncated stream can be detected.
+	// True for a complete page.
 	Complete      bool `protobuf:"varint,6,opt,name=complete,proto3" json:"complete,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -787,6 +839,219 @@ func (x *TranscriptPage) GetComplete() bool {
 	return false
 }
 
+// Full exports send unsigned varint-length-prefixed frames. The header comes
+// first, followed by turns and exactly one end frame. EOF without an end
+// frame means the transport was interrupted.
+type TranscriptExportFrame struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Item:
+	//
+	//	*TranscriptExportFrame_Header
+	//	*TranscriptExportFrame_Turn
+	//	*TranscriptExportFrame_End
+	Item          isTranscriptExportFrame_Item `protobuf_oneof:"item"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TranscriptExportFrame) Reset() {
+	*x = TranscriptExportFrame{}
+	mi := &file_session_transfer_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranscriptExportFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranscriptExportFrame) ProtoMessage() {}
+
+func (x *TranscriptExportFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_session_transfer_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranscriptExportFrame.ProtoReflect.Descriptor instead.
+func (*TranscriptExportFrame) Descriptor() ([]byte, []int) {
+	return file_session_transfer_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *TranscriptExportFrame) GetItem() isTranscriptExportFrame_Item {
+	if x != nil {
+		return x.Item
+	}
+	return nil
+}
+
+func (x *TranscriptExportFrame) GetHeader() *TranscriptExportHeader {
+	if x != nil {
+		if x, ok := x.Item.(*TranscriptExportFrame_Header); ok {
+			return x.Header
+		}
+	}
+	return nil
+}
+
+func (x *TranscriptExportFrame) GetTurn() *Turn {
+	if x != nil {
+		if x, ok := x.Item.(*TranscriptExportFrame_Turn); ok {
+			return x.Turn
+		}
+	}
+	return nil
+}
+
+func (x *TranscriptExportFrame) GetEnd() *TranscriptExportEnd {
+	if x != nil {
+		if x, ok := x.Item.(*TranscriptExportFrame_End); ok {
+			return x.End
+		}
+	}
+	return nil
+}
+
+type isTranscriptExportFrame_Item interface {
+	isTranscriptExportFrame_Item()
+}
+
+type TranscriptExportFrame_Header struct {
+	Header *TranscriptExportHeader `protobuf:"bytes,1,opt,name=header,proto3,oneof"`
+}
+
+type TranscriptExportFrame_Turn struct {
+	Turn *Turn `protobuf:"bytes,2,opt,name=turn,proto3,oneof"`
+}
+
+type TranscriptExportFrame_End struct {
+	End *TranscriptExportEnd `protobuf:"bytes,3,opt,name=end,proto3,oneof"`
+}
+
+func (*TranscriptExportFrame_Header) isTranscriptExportFrame_Item() {}
+
+func (*TranscriptExportFrame_Turn) isTranscriptExportFrame_Item() {}
+
+func (*TranscriptExportFrame_End) isTranscriptExportFrame_Item() {}
+
+type TranscriptExportHeader struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Session         *SessionSummary        `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	SandboxSettings *SandboxSettings       `protobuf:"bytes,2,opt,name=sandbox_settings,json=sandboxSettings,proto3" json:"sandbox_settings,omitempty"`
+	LastOptions     *RunOptions            `protobuf:"bytes,3,opt,name=last_options,json=lastOptions,proto3" json:"last_options,omitempty"`
+	TurnCount       int32                  `protobuf:"varint,4,opt,name=turn_count,json=turnCount,proto3" json:"turn_count,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *TranscriptExportHeader) Reset() {
+	*x = TranscriptExportHeader{}
+	mi := &file_session_transfer_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranscriptExportHeader) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranscriptExportHeader) ProtoMessage() {}
+
+func (x *TranscriptExportHeader) ProtoReflect() protoreflect.Message {
+	mi := &file_session_transfer_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranscriptExportHeader.ProtoReflect.Descriptor instead.
+func (*TranscriptExportHeader) Descriptor() ([]byte, []int) {
+	return file_session_transfer_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *TranscriptExportHeader) GetSession() *SessionSummary {
+	if x != nil {
+		return x.Session
+	}
+	return nil
+}
+
+func (x *TranscriptExportHeader) GetSandboxSettings() *SandboxSettings {
+	if x != nil {
+		return x.SandboxSettings
+	}
+	return nil
+}
+
+func (x *TranscriptExportHeader) GetLastOptions() *RunOptions {
+	if x != nil {
+		return x.LastOptions
+	}
+	return nil
+}
+
+func (x *TranscriptExportHeader) GetTurnCount() int32 {
+	if x != nil {
+		return x.TurnCount
+	}
+	return 0
+}
+
+type TranscriptExportEnd struct {
+	state         protoimpl.MessageState      `protogen:"open.v1"`
+	Failure       TranscriptExportEnd_Failure `protobuf:"varint,1,opt,name=failure,proto3,enum=shinona.sessions.v1.TranscriptExportEnd_Failure" json:"failure,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TranscriptExportEnd) Reset() {
+	*x = TranscriptExportEnd{}
+	mi := &file_session_transfer_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranscriptExportEnd) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranscriptExportEnd) ProtoMessage() {}
+
+func (x *TranscriptExportEnd) ProtoReflect() protoreflect.Message {
+	mi := &file_session_transfer_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranscriptExportEnd.ProtoReflect.Descriptor instead.
+func (*TranscriptExportEnd) Descriptor() ([]byte, []int) {
+	return file_session_transfer_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *TranscriptExportEnd) GetFailure() TranscriptExportEnd_Failure {
+	if x != nil {
+		return x.Failure
+	}
+	return TranscriptExportEnd_NONE
+}
+
 type LiveRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -798,7 +1063,7 @@ type LiveRequest struct {
 
 func (x *LiveRequest) Reset() {
 	*x = LiveRequest{}
-	mi := &file_session_transfer_proto_msgTypes[9]
+	mi := &file_session_transfer_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -810,7 +1075,7 @@ func (x *LiveRequest) String() string {
 func (*LiveRequest) ProtoMessage() {}
 
 func (x *LiveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_session_transfer_proto_msgTypes[9]
+	mi := &file_session_transfer_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -823,7 +1088,7 @@ func (x *LiveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LiveRequest.ProtoReflect.Descriptor instead.
 func (*LiveRequest) Descriptor() ([]byte, []int) {
-	return file_session_transfer_proto_rawDescGZIP(), []int{9}
+	return file_session_transfer_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *LiveRequest) GetSessionId() string {
@@ -858,7 +1123,7 @@ type TurnVersion struct {
 
 func (x *TurnVersion) Reset() {
 	*x = TurnVersion{}
-	mi := &file_session_transfer_proto_msgTypes[10]
+	mi := &file_session_transfer_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -870,7 +1135,7 @@ func (x *TurnVersion) String() string {
 func (*TurnVersion) ProtoMessage() {}
 
 func (x *TurnVersion) ProtoReflect() protoreflect.Message {
-	mi := &file_session_transfer_proto_msgTypes[10]
+	mi := &file_session_transfer_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -883,7 +1148,7 @@ func (x *TurnVersion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TurnVersion.ProtoReflect.Descriptor instead.
 func (*TurnVersion) Descriptor() ([]byte, []int) {
-	return file_session_transfer_proto_rawDescGZIP(), []int{10}
+	return file_session_transfer_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *TurnVersion) GetId() string {
@@ -922,7 +1187,7 @@ type LiveMessage struct {
 
 func (x *LiveMessage) Reset() {
 	*x = LiveMessage{}
-	mi := &file_session_transfer_proto_msgTypes[11]
+	mi := &file_session_transfer_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -934,7 +1199,7 @@ func (x *LiveMessage) String() string {
 func (*LiveMessage) ProtoMessage() {}
 
 func (x *LiveMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_session_transfer_proto_msgTypes[11]
+	mi := &file_session_transfer_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -947,7 +1212,7 @@ func (x *LiveMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LiveMessage.ProtoReflect.Descriptor instead.
 func (*LiveMessage) Descriptor() ([]byte, []int) {
-	return file_session_transfer_proto_rawDescGZIP(), []int{11}
+	return file_session_transfer_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *LiveMessage) GetSequence() uint32 {
@@ -1028,7 +1293,7 @@ type LiveSync struct {
 
 func (x *LiveSync) Reset() {
 	*x = LiveSync{}
-	mi := &file_session_transfer_proto_msgTypes[12]
+	mi := &file_session_transfer_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1040,7 +1305,7 @@ func (x *LiveSync) String() string {
 func (*LiveSync) ProtoMessage() {}
 
 func (x *LiveSync) ProtoReflect() protoreflect.Message {
-	mi := &file_session_transfer_proto_msgTypes[12]
+	mi := &file_session_transfer_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1053,7 +1318,7 @@ func (x *LiveSync) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LiveSync.ProtoReflect.Descriptor instead.
 func (*LiveSync) Descriptor() ([]byte, []int) {
-	return file_session_transfer_proto_rawDescGZIP(), []int{12}
+	return file_session_transfer_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *LiveSync) GetSession() *SessionSummary {
@@ -1111,7 +1376,7 @@ type LiveProgress struct {
 
 func (x *LiveProgress) Reset() {
 	*x = LiveProgress{}
-	mi := &file_session_transfer_proto_msgTypes[13]
+	mi := &file_session_transfer_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1123,7 +1388,7 @@ func (x *LiveProgress) String() string {
 func (*LiveProgress) ProtoMessage() {}
 
 func (x *LiveProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_session_transfer_proto_msgTypes[13]
+	mi := &file_session_transfer_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1136,7 +1401,7 @@ func (x *LiveProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LiveProgress.ProtoReflect.Descriptor instead.
 func (*LiveProgress) Descriptor() ([]byte, []int) {
-	return file_session_transfer_proto_rawDescGZIP(), []int{13}
+	return file_session_transfer_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *LiveProgress) GetTurnId() string {
@@ -1183,7 +1448,7 @@ type LiveSteering struct {
 
 func (x *LiveSteering) Reset() {
 	*x = LiveSteering{}
-	mi := &file_session_transfer_proto_msgTypes[14]
+	mi := &file_session_transfer_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1195,7 +1460,7 @@ func (x *LiveSteering) String() string {
 func (*LiveSteering) ProtoMessage() {}
 
 func (x *LiveSteering) ProtoReflect() protoreflect.Message {
-	mi := &file_session_transfer_proto_msgTypes[14]
+	mi := &file_session_transfer_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1208,7 +1473,7 @@ func (x *LiveSteering) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LiveSteering.ProtoReflect.Descriptor instead.
 func (*LiveSteering) Descriptor() ([]byte, []int) {
-	return file_session_transfer_proto_rawDescGZIP(), []int{14}
+	return file_session_transfer_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *LiveSteering) GetMessages() []*SteeringMessage {
@@ -1232,7 +1497,7 @@ type LivePartChange struct {
 
 func (x *LivePartChange) Reset() {
 	*x = LivePartChange{}
-	mi := &file_session_transfer_proto_msgTypes[15]
+	mi := &file_session_transfer_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1244,7 +1509,7 @@ func (x *LivePartChange) String() string {
 func (*LivePartChange) ProtoMessage() {}
 
 func (x *LivePartChange) ProtoReflect() protoreflect.Message {
-	mi := &file_session_transfer_proto_msgTypes[15]
+	mi := &file_session_transfer_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1257,7 +1522,7 @@ func (x *LivePartChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LivePartChange.ProtoReflect.Descriptor instead.
 func (*LivePartChange) Descriptor() ([]byte, []int) {
-	return file_session_transfer_proto_rawDescGZIP(), []int{15}
+	return file_session_transfer_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *LivePartChange) GetIndex() uint32 {
@@ -1319,7 +1584,7 @@ type LivePartAppend struct {
 
 func (x *LivePartAppend) Reset() {
 	*x = LivePartAppend{}
-	mi := &file_session_transfer_proto_msgTypes[16]
+	mi := &file_session_transfer_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1331,7 +1596,7 @@ func (x *LivePartAppend) String() string {
 func (*LivePartAppend) ProtoMessage() {}
 
 func (x *LivePartAppend) ProtoReflect() protoreflect.Message {
-	mi := &file_session_transfer_proto_msgTypes[16]
+	mi := &file_session_transfer_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1344,7 +1609,7 @@ func (x *LivePartAppend) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LivePartAppend.ProtoReflect.Descriptor instead.
 func (*LivePartAppend) Descriptor() ([]byte, []int) {
-	return file_session_transfer_proto_rawDescGZIP(), []int{16}
+	return file_session_transfer_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *LivePartAppend) GetText() string {
@@ -1453,7 +1718,25 @@ const file_session_transfer_proto_rawDesc = "" +
 	"\flast_options\x18\x03 \x01(\v2\x1f.shinona.sessions.v1.RunOptionsR\vlastOptions\x120\n" +
 	"\x14next_before_sequence\x18\x04 \x01(\x05R\x12nextBeforeSequence\x12/\n" +
 	"\x05turns\x18\x05 \x03(\v2\x19.shinona.sessions.v1.TurnR\x05turns\x12\x1a\n" +
-	"\bcomplete\x18\x06 \x01(\bR\bcomplete\"\x94\x01\n" +
+	"\bcomplete\x18\x06 \x01(\bR\bcomplete\"\xd5\x01\n" +
+	"\x15TranscriptExportFrame\x12E\n" +
+	"\x06header\x18\x01 \x01(\v2+.shinona.sessions.v1.TranscriptExportHeaderH\x00R\x06header\x12/\n" +
+	"\x04turn\x18\x02 \x01(\v2\x19.shinona.sessions.v1.TurnH\x00R\x04turn\x12<\n" +
+	"\x03end\x18\x03 \x01(\v2(.shinona.sessions.v1.TranscriptExportEndH\x00R\x03endB\x06\n" +
+	"\x04item\"\x8b\x02\n" +
+	"\x16TranscriptExportHeader\x12=\n" +
+	"\asession\x18\x01 \x01(\v2#.shinona.sessions.v1.SessionSummaryR\asession\x12O\n" +
+	"\x10sandbox_settings\x18\x02 \x01(\v2$.shinona.sessions.v1.SandboxSettingsR\x0fsandboxSettings\x12B\n" +
+	"\flast_options\x18\x03 \x01(\v2\x1f.shinona.sessions.v1.RunOptionsR\vlastOptions\x12\x1d\n" +
+	"\n" +
+	"turn_count\x18\x04 \x01(\x05R\tturnCount\"\x9c\x01\n" +
+	"\x13TranscriptExportEnd\x12J\n" +
+	"\afailure\x18\x01 \x01(\x0e20.shinona.sessions.v1.TranscriptExportEnd.FailureR\afailure\"9\n" +
+	"\aFailure\x12\b\n" +
+	"\x04NONE\x10\x00\x12\t\n" +
+	"\x05LIMIT\x10\x01\x12\v\n" +
+	"\aTIMEOUT\x10\x02\x12\f\n" +
+	"\bINTERNAL\x10\x03\"\x94\x01\n" +
 	"\vLiveRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12A\n" +
@@ -1510,53 +1793,65 @@ func file_session_transfer_proto_rawDescGZIP() []byte {
 	return file_session_transfer_proto_rawDescData
 }
 
-var file_session_transfer_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_session_transfer_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_session_transfer_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_session_transfer_proto_goTypes = []any{
-	(*SessionSummary)(nil),  // 0: shinona.sessions.v1.SessionSummary
-	(*RunOptions)(nil),      // 1: shinona.sessions.v1.RunOptions
-	(*SandboxSettings)(nil), // 2: shinona.sessions.v1.SandboxSettings
-	(*Turn)(nil),            // 3: shinona.sessions.v1.Turn
-	(*TokenUsage)(nil),      // 4: shinona.sessions.v1.TokenUsage
-	(*ContextUsage)(nil),    // 5: shinona.sessions.v1.ContextUsage
-	(*SteeringMessage)(nil), // 6: shinona.sessions.v1.SteeringMessage
-	(*TurnPart)(nil),        // 7: shinona.sessions.v1.TurnPart
-	(*TranscriptPage)(nil),  // 8: shinona.sessions.v1.TranscriptPage
-	(*LiveRequest)(nil),     // 9: shinona.sessions.v1.LiveRequest
-	(*TurnVersion)(nil),     // 10: shinona.sessions.v1.TurnVersion
-	(*LiveMessage)(nil),     // 11: shinona.sessions.v1.LiveMessage
-	(*LiveSync)(nil),        // 12: shinona.sessions.v1.LiveSync
-	(*LiveProgress)(nil),    // 13: shinona.sessions.v1.LiveProgress
-	(*LiveSteering)(nil),    // 14: shinona.sessions.v1.LiveSteering
-	(*LivePartChange)(nil),  // 15: shinona.sessions.v1.LivePartChange
-	(*LivePartAppend)(nil),  // 16: shinona.sessions.v1.LivePartAppend
+	(TranscriptExportEnd_Failure)(0), // 0: shinona.sessions.v1.TranscriptExportEnd.Failure
+	(*SessionSummary)(nil),           // 1: shinona.sessions.v1.SessionSummary
+	(*RunOptions)(nil),               // 2: shinona.sessions.v1.RunOptions
+	(*SandboxSettings)(nil),          // 3: shinona.sessions.v1.SandboxSettings
+	(*Turn)(nil),                     // 4: shinona.sessions.v1.Turn
+	(*TokenUsage)(nil),               // 5: shinona.sessions.v1.TokenUsage
+	(*ContextUsage)(nil),             // 6: shinona.sessions.v1.ContextUsage
+	(*SteeringMessage)(nil),          // 7: shinona.sessions.v1.SteeringMessage
+	(*TurnPart)(nil),                 // 8: shinona.sessions.v1.TurnPart
+	(*TranscriptPage)(nil),           // 9: shinona.sessions.v1.TranscriptPage
+	(*TranscriptExportFrame)(nil),    // 10: shinona.sessions.v1.TranscriptExportFrame
+	(*TranscriptExportHeader)(nil),   // 11: shinona.sessions.v1.TranscriptExportHeader
+	(*TranscriptExportEnd)(nil),      // 12: shinona.sessions.v1.TranscriptExportEnd
+	(*LiveRequest)(nil),              // 13: shinona.sessions.v1.LiveRequest
+	(*TurnVersion)(nil),              // 14: shinona.sessions.v1.TurnVersion
+	(*LiveMessage)(nil),              // 15: shinona.sessions.v1.LiveMessage
+	(*LiveSync)(nil),                 // 16: shinona.sessions.v1.LiveSync
+	(*LiveProgress)(nil),             // 17: shinona.sessions.v1.LiveProgress
+	(*LiveSteering)(nil),             // 18: shinona.sessions.v1.LiveSteering
+	(*LivePartChange)(nil),           // 19: shinona.sessions.v1.LivePartChange
+	(*LivePartAppend)(nil),           // 20: shinona.sessions.v1.LivePartAppend
 }
 var file_session_transfer_proto_depIdxs = []int32{
-	6,  // 0: shinona.sessions.v1.Turn.steering:type_name -> shinona.sessions.v1.SteeringMessage
-	7,  // 1: shinona.sessions.v1.Turn.parts:type_name -> shinona.sessions.v1.TurnPart
-	5,  // 2: shinona.sessions.v1.Turn.live_context:type_name -> shinona.sessions.v1.ContextUsage
-	4,  // 3: shinona.sessions.v1.Turn.token_usage:type_name -> shinona.sessions.v1.TokenUsage
-	0,  // 4: shinona.sessions.v1.TranscriptPage.session:type_name -> shinona.sessions.v1.SessionSummary
-	2,  // 5: shinona.sessions.v1.TranscriptPage.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
-	1,  // 6: shinona.sessions.v1.TranscriptPage.last_options:type_name -> shinona.sessions.v1.RunOptions
-	3,  // 7: shinona.sessions.v1.TranscriptPage.turns:type_name -> shinona.sessions.v1.Turn
-	10, // 8: shinona.sessions.v1.LiveRequest.known_turns:type_name -> shinona.sessions.v1.TurnVersion
-	12, // 9: shinona.sessions.v1.LiveMessage.sync:type_name -> shinona.sessions.v1.LiveSync
-	13, // 10: shinona.sessions.v1.LiveMessage.progress:type_name -> shinona.sessions.v1.LiveProgress
-	0,  // 11: shinona.sessions.v1.LiveSync.session:type_name -> shinona.sessions.v1.SessionSummary
-	2,  // 12: shinona.sessions.v1.LiveSync.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
-	3,  // 13: shinona.sessions.v1.LiveSync.changed_turns:type_name -> shinona.sessions.v1.Turn
-	1,  // 14: shinona.sessions.v1.LiveSync.last_options:type_name -> shinona.sessions.v1.RunOptions
-	15, // 15: shinona.sessions.v1.LiveProgress.parts:type_name -> shinona.sessions.v1.LivePartChange
-	14, // 16: shinona.sessions.v1.LiveProgress.steering:type_name -> shinona.sessions.v1.LiveSteering
-	5,  // 17: shinona.sessions.v1.LiveProgress.context:type_name -> shinona.sessions.v1.ContextUsage
-	6,  // 18: shinona.sessions.v1.LiveSteering.messages:type_name -> shinona.sessions.v1.SteeringMessage
-	7,  // 19: shinona.sessions.v1.LivePartChange.replace:type_name -> shinona.sessions.v1.TurnPart
-	16, // 20: shinona.sessions.v1.LivePartChange.append:type_name -> shinona.sessions.v1.LivePartAppend
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	7,  // 0: shinona.sessions.v1.Turn.steering:type_name -> shinona.sessions.v1.SteeringMessage
+	8,  // 1: shinona.sessions.v1.Turn.parts:type_name -> shinona.sessions.v1.TurnPart
+	6,  // 2: shinona.sessions.v1.Turn.live_context:type_name -> shinona.sessions.v1.ContextUsage
+	5,  // 3: shinona.sessions.v1.Turn.token_usage:type_name -> shinona.sessions.v1.TokenUsage
+	1,  // 4: shinona.sessions.v1.TranscriptPage.session:type_name -> shinona.sessions.v1.SessionSummary
+	3,  // 5: shinona.sessions.v1.TranscriptPage.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
+	2,  // 6: shinona.sessions.v1.TranscriptPage.last_options:type_name -> shinona.sessions.v1.RunOptions
+	4,  // 7: shinona.sessions.v1.TranscriptPage.turns:type_name -> shinona.sessions.v1.Turn
+	11, // 8: shinona.sessions.v1.TranscriptExportFrame.header:type_name -> shinona.sessions.v1.TranscriptExportHeader
+	4,  // 9: shinona.sessions.v1.TranscriptExportFrame.turn:type_name -> shinona.sessions.v1.Turn
+	12, // 10: shinona.sessions.v1.TranscriptExportFrame.end:type_name -> shinona.sessions.v1.TranscriptExportEnd
+	1,  // 11: shinona.sessions.v1.TranscriptExportHeader.session:type_name -> shinona.sessions.v1.SessionSummary
+	3,  // 12: shinona.sessions.v1.TranscriptExportHeader.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
+	2,  // 13: shinona.sessions.v1.TranscriptExportHeader.last_options:type_name -> shinona.sessions.v1.RunOptions
+	0,  // 14: shinona.sessions.v1.TranscriptExportEnd.failure:type_name -> shinona.sessions.v1.TranscriptExportEnd.Failure
+	14, // 15: shinona.sessions.v1.LiveRequest.known_turns:type_name -> shinona.sessions.v1.TurnVersion
+	16, // 16: shinona.sessions.v1.LiveMessage.sync:type_name -> shinona.sessions.v1.LiveSync
+	17, // 17: shinona.sessions.v1.LiveMessage.progress:type_name -> shinona.sessions.v1.LiveProgress
+	1,  // 18: shinona.sessions.v1.LiveSync.session:type_name -> shinona.sessions.v1.SessionSummary
+	3,  // 19: shinona.sessions.v1.LiveSync.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
+	4,  // 20: shinona.sessions.v1.LiveSync.changed_turns:type_name -> shinona.sessions.v1.Turn
+	2,  // 21: shinona.sessions.v1.LiveSync.last_options:type_name -> shinona.sessions.v1.RunOptions
+	19, // 22: shinona.sessions.v1.LiveProgress.parts:type_name -> shinona.sessions.v1.LivePartChange
+	18, // 23: shinona.sessions.v1.LiveProgress.steering:type_name -> shinona.sessions.v1.LiveSteering
+	6,  // 24: shinona.sessions.v1.LiveProgress.context:type_name -> shinona.sessions.v1.ContextUsage
+	7,  // 25: shinona.sessions.v1.LiveSteering.messages:type_name -> shinona.sessions.v1.SteeringMessage
+	8,  // 26: shinona.sessions.v1.LivePartChange.replace:type_name -> shinona.sessions.v1.TurnPart
+	20, // 27: shinona.sessions.v1.LivePartChange.append:type_name -> shinona.sessions.v1.LivePartAppend
+	28, // [28:28] is the sub-list for method output_type
+	28, // [28:28] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_session_transfer_proto_init() }
@@ -1567,13 +1862,18 @@ func file_session_transfer_proto_init() {
 	file_session_transfer_proto_msgTypes[0].OneofWrappers = []any{}
 	file_session_transfer_proto_msgTypes[2].OneofWrappers = []any{}
 	file_session_transfer_proto_msgTypes[3].OneofWrappers = []any{}
-	file_session_transfer_proto_msgTypes[9].OneofWrappers = []any{}
-	file_session_transfer_proto_msgTypes[11].OneofWrappers = []any{
+	file_session_transfer_proto_msgTypes[9].OneofWrappers = []any{
+		(*TranscriptExportFrame_Header)(nil),
+		(*TranscriptExportFrame_Turn)(nil),
+		(*TranscriptExportFrame_End)(nil),
+	}
+	file_session_transfer_proto_msgTypes[12].OneofWrappers = []any{}
+	file_session_transfer_proto_msgTypes[14].OneofWrappers = []any{
 		(*LiveMessage_Sync)(nil),
 		(*LiveMessage_Progress)(nil),
 		(*LiveMessage_Heartbeat)(nil),
 	}
-	file_session_transfer_proto_msgTypes[15].OneofWrappers = []any{
+	file_session_transfer_proto_msgTypes[18].OneofWrappers = []any{
 		(*LivePartChange_Replace)(nil),
 		(*LivePartChange_Append)(nil),
 	}
@@ -1582,13 +1882,14 @@ func file_session_transfer_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_session_transfer_proto_rawDesc), len(file_session_transfer_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   17,
+			NumEnums:      1,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_session_transfer_proto_goTypes,
 		DependencyIndexes: file_session_transfer_proto_depIdxs,
+		EnumInfos:         file_session_transfer_proto_enumTypes,
 		MessageInfos:      file_session_transfer_proto_msgTypes,
 	}.Build()
 	File_session_transfer_proto = out.File

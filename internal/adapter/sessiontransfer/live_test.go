@@ -95,16 +95,6 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 			known = append(known, &sessionpb.TurnVersion{Id: id, UpdatedAt: now.Format(time.RFC3339Nano), Status: string(run.Succeeded)})
 		}
 	}
-	workerDone := make(chan struct{})
-	go func() {
-		defer close(workerDone)
-		run.NewWorker(repo, resolve, logger, controls, run.DefaultWorkerConcurrency).Serve(ctx)
-	}()
-	defer func() {
-		cancel()
-		<-workerDone
-	}()
-
 	logs := make(timingLogs, 16)
 	handler := New(service, slog.New(slog.NewTextHandler(logs, nil)))
 	var revoked atomic.Bool
@@ -180,6 +170,25 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Observe the queue change before starting the worker so the initial
+	// running snapshot cannot leave an older durable notification pending.
+	waitFor(conn, &seq, func(msg *sessionpb.LiveMessage) bool {
+		for _, turn := range msg.GetSync().GetChangedTurns() {
+			if turn.Id == current.ID && turn.Status == string(run.Queued) {
+				return true
+			}
+		}
+		return false
+	})
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		run.NewWorker(repo, resolve, logger, controls, run.DefaultWorkerConcurrency).Serve(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-workerDone
+	}()
 	waitFor(conn, &seq, func(msg *sessionpb.LiveMessage) bool {
 		for _, turn := range msg.GetSync().GetChangedTurns() {
 			if turn.Id == current.ID && len(turn.Parts) > 0 {

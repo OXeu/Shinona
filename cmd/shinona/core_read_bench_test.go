@@ -21,8 +21,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
-	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/rest"
+	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/run"
 )
@@ -213,7 +213,7 @@ func (a *benchmarkAPI) fullStreamBenchmarkClient(b testing.TB, client *http.Clie
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusOK || response.Header.Get("Content-Encoding") != "zstd" ||
-			response.Header.Get("Content-Type") != httpserver.ProtobufMediaType {
+			response.Header.Get("Content-Type") != sessiontransfer.TranscriptExportMediaType {
 			return benchmarkResponse{}, fmt.Errorf("unexpected full stream: %s, %v", response.Status, response.Header)
 		}
 		wire, err := io.Copy(io.Discard, response.Body)

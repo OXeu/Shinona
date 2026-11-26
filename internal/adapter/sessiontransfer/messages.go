@@ -7,6 +7,9 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
+// TranscriptExportMediaType identifies a stream of varint-delimited Protobuf frames.
+const TranscriptExportMediaType = "application/vnd.shinona.transcript-stream+protobuf"
+
 func Summary(session run.Session) *sessionpb.SessionSummary {
 	return &sessionpb.SessionSummary{
 		Id: session.ID, ProjectId: optionalText(session.ProjectID), Title: session.Title,

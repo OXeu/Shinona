@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 	"time"
 
@@ -146,16 +147,27 @@ func (r *handler) transcript(c *gin.Context) {
 		}
 	}
 	ctx := c.Request.Context()
+	if !paged {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, fullTranscriptTimeout)
+		defer cancel()
+		c.Request = c.Request.WithContext(ctx)
+		deadline, _ := ctx.Deadline()
+		controller := http.NewResponseController(c.Writer)
+		if err := controller.SetWriteDeadline(deadline.Add(transcriptErrorWriteTime)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			r.logger.Debug("set transcript export write deadline", "error", err)
+		}
+	}
 	owner := auth.CurrentUser(ctx).ID
 	settings, err := r.service.Settings(ctx, owner)
 	if err != nil {
-		writeError(c, r.apiError(err))
+		r.writeTranscriptFailure(c, err)
 		return
 	}
 	c.Header("X-Content-Type-Options", "nosniff")
 	key, err := r.transcriptResponseKey(c, owner, args.ID, before, !paged, settings)
 	if err != nil {
-		writeError(c, r.apiError(err))
+		r.writeTranscriptFailure(c, err)
 		return
 	}
 	if r.serveCachedTranscript(c, key) {
@@ -169,6 +181,7 @@ func (r *handler) transcript(c *gin.Context) {
 	err = slots.Acquire(ctx, 1)
 	wait()
 	if err != nil {
+		r.writeTranscriptFailure(c, err)
 		return
 	}
 	defer slots.Release(1)
@@ -179,7 +192,7 @@ func (r *handler) transcript(c *gin.Context) {
 		// Exports waiting for a slot can reuse a response filled while they waited.
 		key, err = r.transcriptResponseKey(c, owner, args.ID, before, true, settings)
 		if err != nil {
-			writeError(c, r.apiError(err))
+			r.writeTranscriptFailure(c, err)
 			return
 		}
 		if r.serveCachedTranscript(c, key) {
@@ -188,15 +201,26 @@ func (r *handler) transcript(c *gin.Context) {
 		err = r.fullTranscriptResponse(c, key, settings)
 	}
 	if err != nil {
-		if !c.Writer.Written() {
-			c.Writer.Header().Del("Content-Type")
-			c.Writer.Header().Del("Content-Encoding")
-			c.Writer.Header().Del("Trailer")
-			writeError(c, r.apiError(err))
-		} else {
-			r.logger.Debug("write transcript response", "error", err)
-		}
+		r.writeTranscriptFailure(c, err)
 	}
+}
+
+func (r *handler) writeTranscriptFailure(c *gin.Context, err error) {
+	if c.Writer.Written() {
+		r.logger.Debug("write transcript response", "error", err)
+		return
+	}
+	if errors.Is(c.Request.Context().Err(), context.Canceled) {
+		return
+	}
+	for _, name := range []string{"Content-Type", "Content-Encoding", "Content-Length", "Trailer"} {
+		c.Writer.Header().Del(name)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(c.Request.Context().Err(), context.DeadlineExceeded) {
+		reject(c, http.StatusGatewayTimeout, "TRANSCRIPT_EXPORT_TIMEOUT", "The transcript request timed out.")
+		return
+	}
+	writeError(c, r.apiError(err))
 }
 
 func (r *handler) createSession(ctx context.Context, args struct {

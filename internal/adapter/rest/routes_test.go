@@ -279,9 +279,10 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 	checkCode(t, perform(t, router, "alice", "GET", path+"?paged=false&beforeSequence=2", nil, 400), "INVALID_TRANSCRIPT_CURSOR")
 
 	plain := perform(t, router, "alice", "GET", path+"?paged=false", nil, 200)
-	full := decodeTranscript(t, plain)
-	if len(full.Turns) != run.TranscriptPageSize+1 || full.Turns[0].Sequence != 1 {
-		t.Fatalf("full transcript: %+v", full)
+	full := decodeTranscriptExport(t, plain, sessionpb.TranscriptExportEnd_NONE)
+	if len(full) != run.TranscriptPageSize+3 || full[0].GetHeader().GetTurnCount() != run.TranscriptPageSize+1 ||
+		full[1].GetTurn().GetSequence() != 1 || full[len(full)-2].GetTurn().GetSequence() != run.TranscriptPageSize+1 {
+		t.Fatalf("full transcript did not return all %d turns in sequence", run.TranscriptPageSize+1)
 	}
 	for _, encoding := range []string{"br, zstd", "gzip", "zstd;q=0, *;q=1"} {
 		request := httptest.NewRequestWithContext(auth.WithUser(t.Context(), auth.User{ID: "alice"}), http.MethodGet, Prefix+path+"?paged=false", nil)
@@ -322,8 +323,8 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 		t.Fatalf("stable export did not reuse compressed response: %+v", recorder.Metrics())
 	}
 	perform(t, router, "alice", "DELETE", "/sessions/history", nil, http.StatusNoContent)
-	archived := decodeTranscript(t, perform(t, router, "alice", "GET", path+"?paged=false", nil, 200))
-	if archived.Session != nil || len(archived.Turns) != 0 {
+	archived := decodeTranscriptExport(t, perform(t, router, "alice", "GET", path+"?paged=false", nil, 200), sessionpb.TranscriptExportEnd_NONE)
+	if len(archived) != 2 || archived[0].GetHeader().GetSession() != nil {
 		t.Fatal("export cache served a transcript after archiving")
 	}
 }

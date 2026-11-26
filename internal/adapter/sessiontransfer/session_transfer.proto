@@ -85,8 +85,36 @@ message TranscriptPage {
   RunOptions last_options = 3;
   int32 next_before_sequence = 4;
   repeated Turn turns = 5;
-  // Written after the last turn so a truncated stream can be detected.
+  // True for a complete page.
   bool complete = 6;
+}
+
+// Full exports send unsigned varint-length-prefixed frames. The header comes
+// first, followed by turns and exactly one end frame. EOF without an end
+// frame means the transport was interrupted.
+message TranscriptExportFrame {
+  oneof item {
+    TranscriptExportHeader header = 1;
+    Turn turn = 2;
+    TranscriptExportEnd end = 3;
+  }
+}
+
+message TranscriptExportHeader {
+  SessionSummary session = 1;
+  SandboxSettings sandbox_settings = 2;
+  RunOptions last_options = 3;
+  int32 turn_count = 4;
+}
+
+message TranscriptExportEnd {
+  enum Failure {
+    NONE = 0;
+    LIMIT = 1;
+    TIMEOUT = 2;
+    INTERNAL = 3;
+  }
+  Failure failure = 1;
 }
 
 message LiveRequest {

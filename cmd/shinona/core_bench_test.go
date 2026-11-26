@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/klauspost/compress/zstd"
 	fastjson "github.com/segmentio/encoding/json"
+	"google.golang.org/protobuf/encoding/protodelim"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
@@ -29,6 +31,7 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/password"
 	"github.com/OXeu/shinona/internal/adapter/rest"
+	"github.com/OXeu/shinona/internal/adapter/sessiontransfer"
 	"github.com/OXeu/shinona/internal/adapter/sessiontransfer/sessionpb"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
@@ -465,6 +468,9 @@ func (a *benchmarkAPI) transcriptBenchmarkClient(b testing.TB, client *http.Clie
 		if err != nil {
 			return response, err
 		}
+		if !paged {
+			return response, verifyTranscriptExport(response, session, wantCount)
+		}
 		if response.header.Get("Content-Type") != httpserver.ProtobufMediaType {
 			return response, fmt.Errorf("unexpected transcript content type: %s", response.header.Get("Content-Type"))
 		}
@@ -478,6 +484,39 @@ func (a *benchmarkAPI) transcriptBenchmarkClient(b testing.TB, client *http.Clie
 		}
 		return response, nil
 	}
+}
+
+func verifyTranscriptExport(response benchmarkResponse, session string, turnCount int) error {
+	if response.header.Get("Content-Type") != sessiontransfer.TranscriptExportMediaType {
+		return fmt.Errorf("unexpected export content type: %s", response.header.Get("Content-Type"))
+	}
+	reader := bufio.NewReader(bytes.NewReader(response.body))
+	var frame sessionpb.TranscriptExportFrame
+	if err := protodelim.UnmarshalFrom(reader, &frame); err != nil {
+		return err
+	}
+	header := frame.GetHeader()
+	if header.GetSession().GetId() != session || header.GetSandboxSettings() == nil || header.GetTurnCount() != int32(turnCount) {
+		return fmt.Errorf("unexpected export header: %s", header)
+	}
+	for i := range turnCount {
+		if err := protodelim.UnmarshalFrom(reader, &frame); err != nil {
+			return err
+		}
+		if frame.GetTurn().GetSequence() != int32(i+1) {
+			return fmt.Errorf("unexpected export turn at %d", i+1)
+		}
+	}
+	if err := protodelim.UnmarshalFrom(reader, &frame); err != nil {
+		return err
+	}
+	if frame.GetEnd() == nil || frame.GetEnd().GetFailure() != sessionpb.TranscriptExportEnd_NONE {
+		return fmt.Errorf("missing or failed export end frame: %v", frame.GetEnd())
+	}
+	if _, err := reader.ReadByte(); err != io.EOF {
+		return fmt.Errorf("unexpected data after the export end frame")
+	}
+	return nil
 }
 
 func benchmarkSubmitRun(b *testing.B, queue bool) {

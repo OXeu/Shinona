@@ -15,14 +15,11 @@ func decodeTranscriptTurn(t *testing.T, wire []byte, err error) *sessionpb.Turn 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var page sessionpb.TranscriptPage
-	if err := proto.Unmarshal(wire, &page); err != nil {
+	var turn sessionpb.Turn
+	if err := proto.Unmarshal(wire, &turn); err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Turns) != 1 {
-		t.Fatalf("expected one turn, got %v", &page)
-	}
-	return page.Turns[0]
+	return &turn
 }
 
 func TestCompletedTranscriptTurnsReuseProtobuf(t *testing.T) {
