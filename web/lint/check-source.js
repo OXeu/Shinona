@@ -5,7 +5,7 @@ import process from 'node:process'
 import { outlineOffsetDeclarations, outlineOffsetMessage } from './style-policy.js'
 
 const repoRoot = join(import.meta.dirname, '..', '..')
-const ignoredNames = new Set(['.git', 'node_modules'])
+const ignoredNames = new Set(['.git', '.tmp', 'node_modules'])
 const generatedDirectories = new Set(['bin', 'web/dist'])
 const unsupportedExtension = /\.(?:mjs|cjs|mts|cts|jsx|tsx)$/iu
 

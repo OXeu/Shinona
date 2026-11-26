@@ -11,7 +11,7 @@ const localRules = {
   shinona: { rules: { 'toast-only': toastOnly, 'notification-gateway': notificationGateway, 'component-templates': componentTemplates, 'native-controls': nativeControls } },
 }
 
-test('template policies reject conditional directives and inline live feedback', () => {
+test('template policies allow conditional content and reject inline live feedback', () => {
   const source = `<template>
     <p v-if="failed">Failed</p>
     <p v-else-if="loading">Loading</p>
@@ -31,7 +31,6 @@ test('template policies reject conditional directives and inline live feedback',
   }], { filename: 'Example.vue' })
 
   assert.deepEqual(errors.map((error) => error.messageId), [
-    'conditional', 'conditional', 'conditional', 'conditional',
     'inline', 'inline', 'inline', 'inline',
   ])
 })

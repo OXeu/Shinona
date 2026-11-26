@@ -1,35 +1,21 @@
 <script setup lang="ts">
 import { onBeforeUnmount, useTemplateRef, watch } from 'vue'
 
+import { useDialogNotificationHost } from '../notifications'
+
 const props = defineProps<{ label: string; busy?: boolean }>()
 const open = defineModel<boolean>({ required: true })
 const dialog = useTemplateRef('dialog')
-let toaster: Element | null = null
-let previousToastHost: Element | null = null
+let releaseHost: (() => void) | undefined
 
-function restoreToaster() {
-  if (toaster?.parentElement === dialog.value) {
-    const host = previousToastHost?.isConnected && previousToastHost.matches('dialog[open]')
-      ? previousToastHost
-      : document.body
-    if (toaster) host.append(toaster)
-  }
-  toaster = null
-  previousToastHost = null
-}
-
-watch(open, (value) => {
-  const element = dialog.value
+watch([open, dialog], ([value, element]) => {
   if (!element) return
   if (value && !element.open) {
     element.showModal()
-    toaster = document.querySelector('.tst-viewport')
-    if (toaster) {
-      previousToastHost = toaster.parentElement
-      element.append(toaster)
-    }
+    releaseHost = useDialogNotificationHost(element)
   } else if (!value && element.open) {
-    restoreToaster()
+    releaseHost?.()
+    releaseHost = undefined
     element.close()
   }
 }, { flush: 'post' })
@@ -40,11 +26,12 @@ function cancel(event: Event) {
 
 function closed() {
   if (dialog.value?.open) return
-  restoreToaster()
+  releaseHost?.()
+  releaseHost = undefined
   open.value = false
 }
 
-onBeforeUnmount(restoreToaster)
+onBeforeUnmount(() => releaseHost?.())
 </script>
 
 <template>

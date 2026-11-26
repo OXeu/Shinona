@@ -1,4 +1,3 @@
-const conditionalDirectives = new Set(['if', 'else-if', 'else', 'show'])
 const feedbackRoles = new Set(['alert', 'alertdialog', 'status', 'log'])
 const dingPackage = /^@yusufceng1z\/ding(?:-|\/|$)/u
 
@@ -7,7 +6,6 @@ export const toastOnly = {
     type: 'problem',
     schema: [],
     messages: {
-      conditional: 'Conditional visibility directives are disabled. Use notify for transient feedback.',
       inline: 'Use notify for transient feedback. Live feedback belongs to the app toaster.',
     },
   },
@@ -17,11 +15,6 @@ export const toastOnly = {
         if (node.name === 'output') context.report({ node, messageId: 'inline' })
       },
       VAttribute(node) {
-        if (node.directive && conditionalDirectives.has(node.key.name.name)) {
-          context.report({ node, messageId: 'conditional' })
-          return
-        }
-
         const name = node.directive ? node.key.argument?.name : node.key.name
         const role = node.directive ? node.value?.expression?.value : node.value?.value
         if (name === 'aria-live' || (name === 'role' && typeof role === 'string' && role.split(/\s+/u).some((word) => feedbackRoles.has(word)))) {

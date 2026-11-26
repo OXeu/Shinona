@@ -8,9 +8,9 @@ Compose PascalCase components in feature and app templates. Native HTML and SVG 
 
 Use `notify.success(message)` and `notify.error(message)` from `src/shared/notifications.ts` for transient app feedback. Chat errors appear in the transcript through `ChatSystemMessage`. Keep running and queued states in the composer and activity controls. The app mounts one Ding toaster. Use `UiChoiceDropdown` for form choices and `UiDialog` for confirmations or input. Native select, option, optgroup, alert, and dialog tags are banned in Vue templates. The shared `UiDialog` alone may render the native dialog to provide modal focus and Escape behavior.
 
-ESLint rejects `v-if`, `v-else-if`, `v-else`, and `v-show`, along with common inline announcement patterns, including `aria-live`, literal feedback roles, and the `output` element. Direct Ding imports outside the facade, browser dialogs, and raw HTML bindings are errors. HTTP requests use the shared HTTP client. CI treats ESLint warnings as failures and disables inline ESLint configuration. The feedback rule checks syntax. Review new text and interpolations for transient feedback that belongs in a toast.
+Use Vue's conditional directives for optional content. ESLint reserves inline announcements such as `aria-live`, feedback roles, and `output` for the app toaster. Direct Ding imports outside the facade, browser dialogs, and raw HTML bindings are errors. HTTP requests use the shared HTTP client. CI treats ESLint warnings as failures and disables inline ESLint configuration. The feedback rule checks syntax. Review new text and interpolations for transient feedback that belongs in a toast.
 
-The style lint rejects `outline-offset` in CSS and Vue styles and checks JavaScript and TypeScript style properties such as `outlineOffset`. Vite removes these declarations from Ding’s embedded stylesheet in development and production.
+The style lint rejects `outline-offset` in CSS and Vue styles and checks JavaScript and TypeScript style properties such as `outlineOffset`. The shared toaster renders Ding's state through Vue and uses the app's styles.
 
 ## Translations
 
@@ -18,7 +18,7 @@ Use `t` from `web/src/shared/i18n` for interface text, accessibility labels, and
 
 ## Checks
 
-Use `.js` and `.ts` for JavaScript and TypeScript source files. The lint command checks filenames across the repository and skips Git metadata, installed dependencies, and generated output in `bin/` and `web/dist/`. Vue components use `.vue`.
+Use `.js` and `.ts` for JavaScript and TypeScript source files. The lint command checks filenames across the repository and skips Git metadata, installed dependencies, temporary files in `.tmp/`, and generated output in `bin/` and `web/dist/`. Vue components use `.vue`.
 
 Run from the project root.
 

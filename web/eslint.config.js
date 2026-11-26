@@ -97,4 +97,8 @@ export default [
     files: ['src/shared/notifications.ts'],
     rules: { 'shinona/notification-gateway': 'off' },
   },
+  {
+    files: ['src/shared/ui/UiToaster.vue'],
+    rules: { 'shinona/toast-only': 'off' },
+  },
 ]

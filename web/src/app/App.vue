@@ -5,8 +5,9 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../features/auth/authStore'
 import { useSessionStore } from '../features/sessions/sessionStore'
 import { t } from '../shared/i18n'
-import { notify, Toaster } from '../shared/notifications'
+import { notify } from '../shared/notifications'
 import UiSplitPanel from '../shared/ui/UiSplitPanel.vue'
+import UiToaster from '../shared/ui/UiToaster.vue'
 import { UiMain } from '../shared/ui/elements'
 import { useMediaQuery } from '../shared/ui/useMediaQuery'
 import AppNav from './AppNav.vue'
@@ -63,5 +64,5 @@ async function signOut() {
       </UiMain>
     </template>
   </UiSplitPanel>
-  <Toaster position="top-right" theme="system" />
+  <UiToaster />
 </template>

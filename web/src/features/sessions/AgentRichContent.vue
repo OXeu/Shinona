@@ -26,12 +26,11 @@ const source = computed(() => {
 <template>
   <UiBox class="agent-rich-content">
     <UiArrowView
-      v-for="(files, index) in source ? [source] : []"
-      :key="payload + index"
-      :source="files"
+      v-if="source"
+      :source="source"
       :summary="summary"
     />
-    <UiInline v-for="text in source ? [] : [summary]" :key="text">{{ text }}</UiInline>
+    <UiInline v-else>{{ summary }}</UiInline>
   </UiBox>
 </template>
 

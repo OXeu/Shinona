@@ -30,7 +30,6 @@ const props = defineProps<{
   savingDefaults: boolean
   hasOlder: boolean
   loadingOlder: boolean
-  historyError: boolean
   errors: Readonly<Partial<Record<string, string>>>
 }>()
 const emit = defineEmits<{
@@ -165,25 +164,19 @@ const messages = computed(() => {
             <UiButton class="secondary-button" :disabled="loadingOlder || reverting" @click="emit('loadOlder')">
               {{ t(loadingOlder ? 'chat.loadingOlder' : 'chat.loadOlder') }}
             </UiButton>
-            <ChatSystemMessage
-              v-for="error in historyError ? [t('chat.loadOlderFailed')] : []"
-              :key="error"
-              :text="error"
-              tone="error"
-            />
           </UiBox>
         </template>
         <template #default="{ item }">
           <UiBox class="message-row" :data-kind="item.kind">
-            <UiBox v-for="user in item.kind === 'user' ? [item] : []" :key="user.id" class="user-message">
+            <UiBox v-if="item.kind === 'user'" class="user-message">
               <UiBox class="message-body">
-                <UiPre :hidden="!user.text">{{ user.text }}</UiPre>
-                <UiBox class="user-message-images" :hidden="!user.attachments?.length">
+                <UiPre :hidden="!item.text">{{ item.text }}</UiPre>
+                <UiBox class="user-message-images" :hidden="!item.attachments?.length">
                   <UiImage
-                    v-for="(name, index) in user.attachments"
+                    v-for="(name, index) in item.attachments"
                     :key="index"
                     class="user-message-image"
-                    :src="session && user.turnId ? attachmentURL(session.id, user.turnId, index) : undefined"
+                    :src="session && item.turnId ? attachmentURL(session.id, item.turnId, index) : undefined"
                     :alt="name"
                     loading="lazy"
                     decoding="async"
@@ -195,35 +188,33 @@ const messages = computed(() => {
                   class="message-action user-message-revert"
                   icon="arrow-go-back-line"
                   :label="t('chat.revertMessage')"
-                  :hidden="!user.turnId"
+                  :hidden="!item.turnId"
                   :disabled="busy || !!session?.active"
-                  @click="user.turnId && emit('revert', user.turnId)"
+                  @click="item.turnId && emit('revert', item.turnId)"
                 />
                 <UiIconButton
                   class="message-action user-message-copy"
                   icon="file-copy-line"
                   :label="t('chat.copyMessage')"
-                  @click="copyMessage(user.text, user.attachments)"
+                  @click="copyMessage(item.text, item.attachments)"
                 />
               </UiBox>
             </UiBox>
             <AgentMessage
-              v-for="agent in item.kind === 'agent' ? [item] : []"
-              :key="agent.id"
-              :turn="agent.turn"
+              v-else-if="item.kind === 'agent'"
+              :turn="item.turn"
               :now="now"
               @error="emit('error', 'copy', $event)"
             />
             <ChatSystemMessage
-              v-for="message in item.kind === 'system' ? [item] : []"
-              :key="message.id"
-              :text="message.text"
-              :tone="message.tone"
-              :retryable="!!message.failedTurn && message.failedTurn.id === session?.turns.at(-1)?.id"
+              v-else
+              :text="item.text"
+              :tone="item.tone"
+              :retryable="!!item.failedTurn && item.failedTurn.id === session?.turns.at(-1)?.id"
               :retry-disabled="busy || !!session?.active"
-              :show-details="!!message.failedTurn"
-              @retry="message.failedTurn && retry(message.failedTurn.id)"
-              @details="message.failedTurn && showFailureDetails(message.failedTurn)"
+              :show-details="!!item.failedTurn"
+              @retry="item.failedTurn && retry(item.failedTurn.id)"
+              @details="item.failedTurn && showFailureDetails(item.failedTurn)"
             />
           </UiBox>
         </template>

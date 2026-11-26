@@ -33,7 +33,6 @@ const route = useRoute()
 const session = ref<AgentSession | null>(null)
 const history = ref({ turns: [] as Turn[], nextBeforeSequence: 0 })
 const loadingOlder = ref(false)
-const historyError = ref(false)
 const chatSession = computed(() => {
   const entry = session.value
   return entry && { ...entry, turns: [...history.value.turns, ...entry.turns] }
@@ -153,7 +152,6 @@ async function loadOlder() {
   const anchor = chatSession.value?.turns[0]?.id
   if (!scope || !before || !anchor || loadingOlder.value || reverting.value) return
   loadingOlder.value = true
-  historyError.value = false
   try {
     const result = await sessionApi.olderTurns(scope.id, before, scope.controller.signal)
     if (scope.controller.signal.aborted || chatSession.value?.turns[0]?.id !== anchor) return
@@ -167,7 +165,7 @@ async function loadOlder() {
       nextBeforeSequence: page.nextBeforeSequence ?? 0,
     }
   } catch {
-    if (!scope.controller.signal.aborted && chatSession.value?.turns[0]?.id === anchor) historyError.value = true
+    if (!scope.controller.signal.aborted && chatSession.value?.turns[0]?.id === anchor) notify.error(t('chat.loadOlderFailed'))
   } finally {
     if (!scope.controller.signal.aborted) loadingOlder.value = false
   }
@@ -476,7 +474,6 @@ watch(() => props.id, (id, _, onCleanup) => {
   chatErrors.value = {}
   history.value = { turns: [], nextBeforeSequence: 0 }
   loadingOlder.value = false
-  historyError.value = false
   session.value = null
   policy.value = null
   prompt.value = ''
@@ -623,7 +620,6 @@ onUnmounted(() => {
                   :session="chatSession"
                   :has-older="history.nextBeforeSequence > 0"
                   :loading-older="loadingOlder"
-                  :history-error="historyError"
                   :recent-sessions="matchingSessions"
                   :now="now"
                   :has-selection="!!id"
@@ -645,9 +641,9 @@ onUnmounted(() => {
               </template>
               <template #end>
                 <TerminalPanel
-                  v-for="sessionId in terminalOpen && id ? [id] : []"
-                  :key="sessionId"
-                  :session-id="sessionId"
+                  v-if="terminalOpen && id"
+                  :key="id"
+                  :session-id="id"
                   @close="setTerminalOpen(false)"
                 />
               </template>

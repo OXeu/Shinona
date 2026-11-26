@@ -7,7 +7,7 @@ import { notify } from '../../shared/notifications'
 import UiDialog from '../../shared/ui/UiDialog.vue'
 import UiFilePicker from '../../shared/ui/UiFilePicker.vue'
 import UiInput from '../../shared/ui/UiInput.vue'
-import UiTextarea from '../../shared/ui/UiTextarea.vue'
+import UiSecretPaste from '../../shared/ui/UiSecretPaste.vue'
 import UiTooltip from '../../shared/ui/UiTooltip.vue'
 import { UiBox, UiButton, UiForm, UiInline, UiList, UiListItem, UiSection, UiSubheading } from '../../shared/ui/elements'
 import { settingsApi } from './settingsApi'
@@ -24,6 +24,7 @@ const submitting = ref(false)
 const testing = ref<SSHServer>()
 const busy = computed(() => submitting.value || !!testing.value)
 const readingKey = ref(false)
+const maxKeyBytes = 64 << 10
 const hostFingerprintCommand = 'ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub'
 const canTest = computed(() => !!draft.value?.address.trim() &&
   !!draft.value.user.trim() && !!draft.value.hostFingerprint.trim() && (!!draft.value.id || !!draft.value.privateKey.trim()))
@@ -41,7 +42,7 @@ async function readKey(file: File) {
   if (!input || readingKey.value) return
   readingKey.value = true
   try {
-    if (file.size > 64 * 1024) throw new Error('key is too large')
+    if (file.size > maxKeyBytes) throw new Error('key is too large')
     const key = await file.text()
     if (draft.value === input && props.active) input.privateKey = key
   } catch {
@@ -81,6 +82,10 @@ async function testConnection(server: SSHServer, privateKey = '') {
   } finally {
     testing.value = undefined
   }
+}
+
+function testDraft() {
+  if (draft.value) return testConnection(draft.value, draft.value.privateKey)
 }
 
 async function remove() {
@@ -129,35 +134,34 @@ onUnmounted(() => request.abort())
     </UiList>
     <UiButton :hidden="!!draft" :disabled="busy" @click="edit()">{{ t('ssh.add') }}</UiButton>
     <UiForm
-      v-for="input in draft ? [draft] : []"
-      :key="input.id"
+      v-if="draft"
       @submit.prevent="save"
     >
-      <UiSubheading>{{ t(input.id ? 'ssh.edit' : 'ssh.add') }}</UiSubheading>
+      <UiSubheading>{{ t(draft.id ? 'ssh.edit' : 'ssh.add') }}</UiSubheading>
       <UiInput
         :id="`${prefix}-name`"
-        v-model="input.name"
+        v-model="draft.name"
         :label="t('ssh.name')"
         :disabled="busy"
         maxlength="160"
       />
       <UiInput
         :id="`${prefix}-host`"
-        v-model="input.address"
+        v-model="draft.address"
         :label="t('settings.sshAddress')"
         :disabled="busy"
         maxlength="255"
       />
       <UiInput
         :id="`${prefix}-user`"
-        v-model="input.user"
+        v-model="draft.user"
         :label="t('settings.sshUser')"
         :disabled="busy"
         maxlength="255"
       />
       <UiInput
         :id="`${prefix}-fingerprint`"
-        v-model="input.hostFingerprint"
+        v-model="draft.hostFingerprint"
         :label="t('settings.sshHostFingerprint')"
         placeholder="SHA256:…"
         :disabled="busy"
@@ -172,24 +176,21 @@ onUnmounted(() => request.abort())
       </UiInput>
       <UiInput
         :id="`${prefix}-image`"
-        v-model="input.template"
+        v-model="draft.template"
         :label="t('sandbox.image')"
         placeholder="buildpack-deps:bookworm-scm"
         :disabled="busy"
         maxlength="255"
       />
       <UiBox>
-        <UiTextarea
+        <UiSecretPaste
           :id="`${prefix}-key`"
-          v-model="input.privateKey"
-          class="input key"
+          v-model="draft.privateKey"
           :label="t('ssh.privateKey')"
-          :placeholder="t(input.id ? 'ssh.keepKey' : 'ssh.pasteKey')"
+          :placeholder="t(draft.id ? 'ssh.keepKey' : 'ssh.pasteKey')"
           :disabled="busy || readingKey"
-          autocomplete="off"
-          spellcheck="false"
-          maxlength="65536"
-          rows="3"
+          :max-bytes="maxKeyBytes"
+          @too-large="notify.error(t('ssh.readKeyFailed'))"
         >
           <template #help>
             <UiTooltip
@@ -197,13 +198,13 @@ onUnmounted(() => request.abort())
               :text="t('ssh.privateKeyHelp')"
             />
           </template>
-        </UiTextarea>
+        </UiSecretPaste>
         <UiFilePicker :label="t('ssh.selectKey')" :disabled="busy || readingKey" @select="readKey" />
       </UiBox>
       <UiBox class="form-actions">
         <UiButton class="secondary-button" :disabled="busy" @click="draft = undefined">{{ t('common.cancel') }}</UiButton>
-        <UiButton class="secondary-button" :disabled="busy || readingKey || !canTest" @click="testConnection(input, input.privateKey)">
-          {{ t(testing === input ? 'ssh.testing' : 'ssh.test') }}
+        <UiButton class="secondary-button" :disabled="busy || readingKey || !canTest" @click="testDraft">
+          {{ t(testing === draft ? 'ssh.testing' : 'ssh.test') }}
         </UiButton>
         <UiButton type="submit" :disabled="busy || readingKey || !canSave">{{ t(submitting ? 'settings.saving' : 'settings.save') }}</UiButton>
       </UiBox>
@@ -226,5 +227,4 @@ onUnmounted(() => request.abort())
 .server-name, .server-address { display: block; overflow-wrap: anywhere; }
 .server-name { font-weight: 600; }
 .server-address { color: var(--muted); }
-.key { width: 100%; font-family: monospace; resize: vertical; -webkit-text-security: disc; }
 </style>

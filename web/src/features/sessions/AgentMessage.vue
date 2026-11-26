@@ -98,56 +98,51 @@ async function copy() {
     >
       <template v-for="chunk in displayedChunks" :key="chunk.kind === 'process' ? chunk.index : chunk.part.index">
         <UiMarkdown
-          v-for="part in chunk.kind === 'text' ? [chunk.part] : []"
-          :key="part.index"
+          v-if="chunk.kind === 'text'"
           class="agent-answer"
-          :text="part.text ?? ''"
+          :text="chunk.part.text ?? ''"
         />
         <AgentRichContent
-          v-for="part in chunk.kind === 'ui' ? [chunk.part] : []"
-          :key="part.index"
-          :format="part.tool ?? ''"
-          :payload="part.output ?? ''"
-          :summary="part.text ?? ''"
+          v-else-if="chunk.kind === 'ui'"
+          :format="chunk.part.tool ?? ''"
+          :payload="chunk.part.output ?? ''"
+          :summary="chunk.part.text ?? ''"
         />
-        <UiBox v-for="group in chunk.kind === 'process' ? [chunk] : []" :key="group.index">
+        <UiBox v-else-if="chunk.kind === 'process'">
           <UiButton
             class="agent-process-toggle"
-            :aria-label="group.summary.text"
-            :aria-expanded="openGroups.has(group.index)"
-            :aria-controls="processId + '-' + group.index"
-            @click="toggleGroup(group.index)"
+            :aria-label="chunk.summary.text"
+            :aria-expanded="openGroups.has(chunk.index)"
+            :aria-controls="processId + '-' + chunk.index"
+            @click="toggleGroup(chunk.index)"
           >
-            <UiIcon :name="group.summary.icon" />
+            <UiIcon :name="chunk.summary.icon" />
             <AgentActivityLabel
-              v-for="activeGroup in group.animate ? [group] : []"
-              :key="activeGroup.index"
-              :text="activeGroup.summary.text"
+              v-if="chunk.animate"
+              :text="chunk.summary.text"
             />
-            <UiInline :hidden="group.animate">{{ group.summary.text }}</UiInline>
-            <UiIcon :name="openGroups.has(group.index) ? 'arrow-down-s-line' : 'arrow-right-s-line'" />
+            <UiInline v-else>{{ chunk.summary.text }}</UiInline>
+            <UiIcon :name="openGroups.has(chunk.index) ? 'arrow-down-s-line' : 'arrow-right-s-line'" />
           </UiButton>
-          <UiBox :id="processId + '-' + group.index" class="agent-process-member" :hidden="!openGroups.has(group.index)">
-            <template v-for="part in openGroups.has(group.index) ? group.parts : []" :key="part.index">
+          <UiBox :id="processId + '-' + chunk.index" class="agent-process-member" :hidden="!openGroups.has(chunk.index)">
+            <template v-for="part in openGroups.has(chunk.index) ? chunk.parts : []" :key="part.index">
               <UiMarkdown
-                v-for="text in part.kind === 'text' ? [part] : []"
-                :key="text.index"
+                v-if="part.kind === 'text'"
                 class="agent-answer"
-                :text="text.text ?? ''"
+                :text="part.text ?? ''"
               />
-              <UiDisclosure v-for="thought in part.kind === 'thinking' ? [part] : []" :key="thought.index">
+              <UiDisclosure v-else-if="part.kind === 'thinking'">
                 <template #summary>
                   <UiBox class="agent-part-heading">
                     <UiIcon class="agent-disclosure-chevron" name="arrow-right-s-line" />
                     <UiIcon name="brain-line" /> {{ t('chat.activity.thinking') }}
                   </UiBox>
                 </template>
-                <UiMarkdown class="agent-part-detail" :text="thought.text ?? ''" />
+                <UiMarkdown class="agent-part-detail" :text="part.text ?? ''" />
               </UiDisclosure>
               <AgentToolCall
-                v-for="tool in part.kind === 'tool' ? [part] : []"
-                :key="tool.index"
-                :part="tool"
+                v-else-if="part.kind === 'tool'"
+                :part="part"
               />
             </template>
           </UiBox>
