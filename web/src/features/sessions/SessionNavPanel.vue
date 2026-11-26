@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, useId, useTemplateRef, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
+import { HttpError } from '../../shared/http'
 import { t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
+import { RetryBackoff } from '../../shared/retryBackoff'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
 import UiSearchField from '../../shared/ui/UiSearchField.vue'
 import UiSplitPanel from '../../shared/ui/UiSplitPanel.vue'
@@ -12,7 +15,7 @@ import SessionProjectPicker from './SessionProjectPicker.vue'
 import type { SessionAction } from './presentation'
 import type { SessionSummary } from './sessionApi'
 import { useSessionStore } from './sessionStore'
-import { sessionPollInterval } from './sessionListPolling'
+import { sessionPollInterval } from './sessionListWorkerMessages'
 
 const props = defineProps<{
   selectedId?: string
@@ -22,6 +25,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ select: []; close: []; action: [action: SessionAction, entry: SessionSummary] }>()
 const store = useSessionStore()
+const router = useRouter()
 const query = defineModel<string>({ required: true })
 const searchOpen = ref(false)
 const searchId = useId()
@@ -39,6 +43,8 @@ const visibleRecent = computed(() => recentOpen.value || query.value.trim() ? re
 let timer: ReturnType<typeof setTimeout> | undefined
 let listing: AbortController | undefined
 let hadError = false
+const retry = new RetryBackoff()
+const refreshPaused = ref(false)
 
 async function openSearch(event: MouseEvent) {
   searchTrigger = event.currentTarget
@@ -60,26 +66,54 @@ async function refresh() {
   if (document.hidden) return
   listing = new AbortController()
   const { signal } = listing
+  let delay: number | undefined
   try {
     await store.refresh(signal)
-    if (!signal.aborted) hadError = false
-  } catch {
     if (!signal.aborted) {
-      if (!hadError) notify.error(t('sessions.loadFailed'))
-      hadError = true
+      hadError = false
+      retry.reset()
+      delay = sessionPollInterval
     }
+  } catch (error) {
+    if (signal.aborted) return
+    if (error instanceof HttpError && error.status === 401) {
+      await router.replace({ name: 'login' })
+      return
+    }
+    if (!hadError) notify.error(t('sessions.loadFailed'))
+    hadError = true
+    delay = retry.next()
+    refreshPaused.value = delay === undefined
   } finally {
-    if (!signal.aborted && !document.hidden) timer = setTimeout(() => { void refresh() }, sessionPollInterval)
+    if (!signal.aborted && !document.hidden && delay !== undefined) {
+      timer = setTimeout(() => {
+        void refresh()
+      }, delay)
+    }
   }
 }
 
-watch(() => store.selectedProjectId, refresh)
-onMounted(() => {
-  document.addEventListener('visibilitychange', refresh)
+function restart() {
+  retry.reset()
+  refreshPaused.value = false
   void refresh()
+}
+
+function resumeOnFocus() {
+  if (refreshPaused.value) restart()
+}
+
+watch(() => store.selectedProjectId, restart)
+onMounted(() => {
+  document.addEventListener('visibilitychange', restart)
+  window.addEventListener('online', restart)
+  window.addEventListener('focus', resumeOnFocus)
+  restart()
 })
 onUnmounted(() => {
-  document.removeEventListener('visibilitychange', refresh)
+  document.removeEventListener('visibilitychange', restart)
+  window.removeEventListener('online', restart)
+  window.removeEventListener('focus', resumeOnFocus)
   listing?.abort()
   clearTimeout(timer)
 })
@@ -91,6 +125,12 @@ onUnmounted(() => {
       <UiBox class="session-nav-controls" :inert="searchOpen">
         <SessionProjectPicker compact />
         <UiBox class="session-nav-actions">
+          <UiIconButton
+            v-if="refreshPaused"
+            icon="refresh-line"
+            :label="t('sessions.refresh')"
+            @click="restart"
+          />
           <UiIconButton
             icon="close-line"
             :label="t('sessions.hide')"

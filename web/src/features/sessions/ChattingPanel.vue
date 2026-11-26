@@ -30,6 +30,7 @@ const props = defineProps<{
   savingDefaults: boolean
   hasOlder: boolean
   loadingOlder: boolean
+  refreshPaused: boolean
   errors: Readonly<Partial<Record<string, string>>>
 }>()
 const emit = defineEmits<{
@@ -40,6 +41,7 @@ const emit = defineEmits<{
   retry: [id: string, options: ComposerRunOptions]
   saveDefaults: [options: ComposerDefaults]
   loadOlder: []
+  refresh: []
   error: [source: 'copy' | 'attachment', message: string]
   action: [action: SessionAction, entry: SessionSummary]
 }>()
@@ -227,6 +229,9 @@ const messages = computed(() => {
     </template>
 
     <template #before-composer>
+      <UiButton v-if="refreshPaused" class="secondary-button" @click="emit('refresh')">
+        {{ t('common.retry') }}
+      </UiButton>
       <UiBox class="welcome-project" :hidden="hasSelection">
         <SessionProjectPicker hide-all />
       </UiBox>

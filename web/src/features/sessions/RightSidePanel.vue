@@ -5,6 +5,7 @@ import { messageFor } from '../../shared/errors'
 import { HttpError } from '../../shared/http'
 import { languageTag, t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
+import { RetryBackoff } from '../../shared/retryBackoff'
 import { formatTime } from '../../shared/time'
 import UiDialog from '../../shared/ui/UiDialog.vue'
 import UiIcon from '../../shared/ui/UiIcon.vue'
@@ -16,6 +17,7 @@ import { workspaceApi } from './workspaceApi'
 import type { GitCommit, WorkspaceChanges, WorkspaceEntry, WorkspaceList, WorkspacePreview } from './workspaceApi'
 
 const props = defineProps<{ sessionId?: string; projectId?: string | null; active: boolean; runningTurnId?: string; visible: boolean }>()
+const emit = defineEmits<{ unauthorized: [] }>()
 const tab = ref<'changes' | 'history' | 'files'>('changes')
 const tabs = computed(() => [
   { id: 'changes' as const, label: t('repository.changes'), icon: 'git-branch-line' },
@@ -41,6 +43,7 @@ const previewError = ref('')
 const previewLoading = ref(false)
 let reading: AbortController | undefined
 let retry: ReturnType<typeof setTimeout> | undefined
+const backoff = new RetryBackoff()
 let writing: AbortController | undefined
 let settingRootRequest: AbortController | undefined
 let readingPreview: AbortController | undefined
@@ -72,7 +75,7 @@ async function load() {
   loading.value = false
   loadMessage.value = ''
   const session = props.sessionId
-  if (!session || !props.visible) return
+  if (!session || !props.visible || document.hidden) return
 
   reading = new AbortController()
   const { signal } = reading
@@ -84,18 +87,33 @@ async function load() {
       }),
       loadTab(session, signal),
     ])
+    if (!signal.aborted) backoff.reset()
   } catch (error) {
     if (signal.aborted) return
+    if (error instanceof HttpError && error.status === 401) {
+      emit('unauthorized')
+      return
+    }
     if (error instanceof HttpError &&
       (error.code === 'WORKSPACE_BUSY' || (props.active && error.code === 'WORKSPACE_UNAVAILABLE'))) {
-      loadMessage.value = t('repository.starting')
-      retry = setTimeout(load, 1_000)
-    } else {
-      loadMessage.value = messageFor(error, 'repository.loadFailed')
+      const delay = backoff.next()
+      if (delay !== undefined && !document.hidden) {
+        loadMessage.value = t('repository.starting')
+        retry = setTimeout(() => {
+          void load()
+        }, delay)
+        return
+      }
     }
+    loadMessage.value = messageFor(error, 'repository.loadFailed')
   } finally {
     if (!signal.aborted) loading.value = false
   }
+}
+
+function restart() {
+  backoff.reset()
+  return load()
 }
 
 async function loadTab(session: string, signal: AbortSignal) {
@@ -158,7 +176,7 @@ async function setAsWorkspace() {
     if (signal.aborted) return
     root.value = result
     notify.success(t('repository.rootSet', { path: rootLabel.value }))
-    await load()
+    await restart()
   } catch (error) {
     if (!signal.aborted) notify.error(messageFor(error, 'repository.rootFailed'))
   } finally {
@@ -177,7 +195,7 @@ async function commit(message: string, paths: string[]) {
     if (signal.aborted) return
     changesPanel.value?.resetCommit()
     notify.success(t('repository.committed'))
-    await load()
+    await restart()
   } catch (error) {
     if (!signal.aborted) notify.error(messageFor(error, 'repository.commitFailed'))
   } finally {
@@ -199,17 +217,29 @@ watch([() => props.sessionId, () => props.projectId], () => {
   root.value = ''
   filter.value = ''
 })
-watch([() => props.sessionId, () => props.projectId, () => props.active, () => props.runningTurnId, () => props.visible, tab, folder], load, { immediate: true })
+watch([() => props.sessionId, () => props.projectId, () => props.active, () => props.runningTurnId, () => props.visible, tab, folder], restart, { immediate: true })
 watch(previewOpen, (value) => {
   if (!value) readingPreview?.abort()
 })
-function refreshOnFocus() {
-  if (props.visible && !mutating.value && !settingRoot.value) void load()
+function resumeWorkspace() {
+  if (document.hidden) {
+    clearTimeout(retry)
+    reading?.abort()
+    loading.value = false
+    return
+  }
+  if (props.visible && !loading.value && !mutating.value && !settingRoot.value) void restart()
 }
 
-onMounted(() => window.addEventListener('focus', refreshOnFocus))
+onMounted(() => {
+  document.addEventListener('visibilitychange', resumeWorkspace)
+  window.addEventListener('focus', resumeWorkspace)
+  window.addEventListener('online', resumeWorkspace)
+})
 onUnmounted(() => {
-  window.removeEventListener('focus', refreshOnFocus)
+  document.removeEventListener('visibilitychange', resumeWorkspace)
+  window.removeEventListener('focus', resumeWorkspace)
+  window.removeEventListener('online', resumeWorkspace)
   clearTimeout(retry)
   reading?.abort()
   writing?.abort()
@@ -237,7 +267,7 @@ onUnmounted(() => {
         icon="refresh-line"
         :label="t('repository.refresh')"
         :disabled="!sessionId || loading || mutating"
-        @click="load"
+        @click="restart"
       />
     </UiHeader>
 

@@ -21,10 +21,12 @@ export async function request(path: string, body?: unknown, signal?: AbortSignal
   })
 }
 
-export function requestConditional(path: string, etag: string | undefined, signal: AbortSignal): Promise<Response> {
+export function requestConditional(path: string, etag: string | undefined, signal: AbortSignal, headers: HeadersInit): Promise<Response> {
+  const requestHeaders = new Headers(headers)
+  if (etag) requestHeaders.set('If-None-Match', etag)
   return checkedFetch(path, {
     cache: 'no-store',
-    headers: etag ? { 'If-None-Match': etag } : undefined,
+    headers: requestHeaders,
     signal,
   }, true)
 }

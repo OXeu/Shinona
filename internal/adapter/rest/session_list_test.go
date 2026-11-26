@@ -54,6 +54,16 @@ func TestSessionListPolls(t *testing.T) {
 	if check.Body.Len() != 0 || check.Header().Get("ETag") != tag || check.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("conditional response = %v %q", check.Header(), check.Body)
 	}
+	staleTab := httptest.NewRequestWithContext(auth.WithUser(t.Context(), auth.User{ID: owner}), http.MethodGet, Prefix+path, nil)
+	staleTab.Header.Set("X-Shinona-Account", "bob")
+	staleTab.Header.Set("If-None-Match", tag)
+	rejected := serve(t, router, staleTab, http.StatusUnauthorized)
+	if rejected.Header().Get("X-Shinona-Error-Code") != "AUTH_REQUIRED" ||
+		rejected.Header().Get("ETag") != "" || strings.Contains(rejected.Body.String(), "Recorded conversation") {
+		t.Fatalf("account mismatch leaked session data: %v %q", rejected.Header(), rejected.Body)
+	}
+	staleTab.Header.Set("X-Shinona-Account", owner)
+	serve(t, router, staleTab, http.StatusNotModified)
 
 	const session = "/sessions/history-29"
 	perform(t, router, owner, "PATCH", session, map[string]string{"title": "Renamed"}, 200)

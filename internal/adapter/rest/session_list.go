@@ -116,6 +116,12 @@ func (r *handler) sessionList() gin.HandlerFunc {
 		}
 		ctx := c.Request.Context()
 		scope := sessionListScope{owner: auth.CurrentUser(ctx).ID}
+		// A tab can retain an old account after another tab changes the cookie.
+		// Keep the response out of that account's shared browser snapshot.
+		if expected := c.GetHeader("X-Shinona-Account"); expected != "" && expected != scope.owner {
+			reject(c, http.StatusUnauthorized, "AUTH_REQUIRED", "Sign in required.")
+			return
+		}
 		if args.ProjectID != nil {
 			scope.filtered, scope.project = true, *args.ProjectID
 		}

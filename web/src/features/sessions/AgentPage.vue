@@ -6,6 +6,7 @@ import { messageFor } from '../../shared/errors'
 import { HttpError } from '../../shared/http'
 import { languageTag, t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
+import { RetryBackoff } from '../../shared/retryBackoff'
 import UiSplitPanel from '../../shared/ui/UiSplitPanel.vue'
 import { UiBox } from '../../shared/ui/elements'
 import { useMediaQuery } from '../../shared/ui/useMediaQuery'
@@ -21,7 +22,7 @@ import { sessionApi } from './sessionApi'
 import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment, PendingAction, PendingMessage, Policy, SessionSummary, Turn } from './sessionApi'
 import { useSessionStore } from './sessionStore'
 import { rememberTerminalView, terminalView } from './terminalPreferences'
-import { watchLiveSession } from './wire/liveSession'
+import { SessionUpdates } from './sessionUpdates'
 
 const TerminalPanel = defineAsyncComponent(() => import('./TerminalPanel.vue'))
 const props = defineProps<{ id?: string }>()
@@ -44,9 +45,13 @@ const catalog = ref<ComposerOptions>({ defaultModel: '', models: [], modelsLoadi
 const catalogRequest = new AbortController()
 const savingDefaults = ref(false)
 let catalogRetry: ReturnType<typeof setTimeout> | undefined
+const catalogBackoff = new RetryBackoff()
+let catalogFetching = false
+let catalogReady = false
 let defaultsVersion = 0
 type ChatErrorSource = 'load' | 'submit' | 'stop' | 'pending' | 'revert' | 'retry' | 'create' | 'copy' | 'attachment'
 const chatErrors = ref<Partial<Record<ChatErrorSource, string>>>({})
+const sessionRefreshPaused = ref(false)
 const submitting = ref(false)
 const creating = ref(false)
 const reverting = ref(false)
@@ -91,18 +96,7 @@ const title = computed(() => {
   return entry ? sessionTitle(entry) : t('nav.agent')
 })
 
-interface RequestScope {
-  id: string
-  controller: AbortController
-  timer?: ReturnType<typeof setTimeout>
-  fetching: boolean
-  live: boolean
-  liveRetryAt: number
-  revision: number
-  reading?: number
-}
-
-let current: RequestScope | undefined
+let current: SessionUpdates | undefined
 let draftSession: SessionSummary | undefined
 let draftRequest: AbortController | undefined
 
@@ -111,19 +105,12 @@ function setChatError(source: ChatErrorSource, message: string) {
   else delete chatErrors.value[source]
 }
 
-function schedule(scope: RequestScope) {
-  clearTimeout(scope.timer)
-  if (scope.live || scope.controller.signal.aborted) return
-  const delay = session.value?.active || !session.value ? 1_000 : Math.max(1_000, scope.liveRetryAt - Date.now())
-  scope.timer = setTimeout(() => { void refresh(scope) }, delay)
-}
-
 async function missingSession() {
   await router.replace({ name: 'sessions' })
   if (route.name === 'sessions' && !props.id) setChatError('load', t('sessions.notFound'))
 }
 
-function applySession(scope: RequestScope, entry: AgentSession, selectedPolicy: Policy | null) {
+function applySession(scope: SessionUpdates, entry: AgentSession, selectedPolicy: Policy | null) {
   const wasActive = session.value?.active
   const first = entry.turns[0]
   const displayed = chatSession.value?.turns ?? []
@@ -139,6 +126,7 @@ function applySession(scope: RequestScope, entry: AgentSession, selectedPolicy: 
   session.value = entry
   policy.value = selectedPolicy
   setChatError('load', '')
+  sessionRefreshPaused.value = false
   store.upsert(entry)
   if (!entry.active) {
     if (wasActive && entry.turns.at(-1)?.status === 'SUCCEEDED') notify.success(t('chat.completed'))
@@ -171,27 +159,7 @@ async function loadOlder() {
   }
 }
 
-function startLive(scope: RequestScope, entry: AgentSession) {
-  if (Date.now() < scope.liveRetryAt) return
-  scope.live = true
-  const signal = scope.controller.signal
-  void watchLiveSession(entry, {
-    sync: (updated, settings) => applySession(scope, updated, settings.selected),
-    progress: (update) => {
-      const turns = session.value?.turns
-      const index = turns?.findIndex((turn) => turn.id === update.id) ?? -1
-      if (turns && index >= 0) turns[index] = update
-    },
-    missing: () => { void missingSession() },
-  }, signal).catch(() => {
-    if (signal.aborted) return
-    scope.live = false
-    scope.liveRetryAt = Date.now() + 5_000
-    schedule(scope)
-  })
-}
-
-async function markRead(scope: RequestScope) {
+async function markRead(scope: SessionUpdates) {
   const entry = session.value
   if (!entry?.unread || entry.id !== scope.id || document.visibilityState !== 'visible' || scope.reading !== undefined) return
   const turn = entry.turns.at(-1)
@@ -209,38 +177,7 @@ async function markRead(scope: RequestScope) {
   }
 }
 
-async function refresh(scope: RequestScope) {
-  if (scope.fetching || scope.live || scope.controller.signal.aborted) return
-  scope.fetching = true
-  const revision = scope.revision
-  try {
-    const result = await sessionApi.detail(scope.id, scope.controller.signal)
-    if (scope.controller.signal.aborted) return
-    if (revision !== scope.revision) {
-      schedule(scope)
-      return
-    }
-    if (!result.session) {
-      await missingSession()
-      return
-    }
-    applySession(scope, result.session, result.sandboxSettings.selected)
-    startLive(scope, result.session)
-    schedule(scope)
-  } catch (error) {
-    if (scope.controller.signal.aborted) return
-    if (error instanceof HttpError && error.status === 401) {
-      await router.replace({ name: 'login' })
-      return
-    }
-    setChatError('load', t('chat.loadRetry'))
-    schedule(scope)
-  } finally {
-    scope.fetching = false
-  }
-}
-
-function rememberQueued(scope: RequestScope, turn: Turn) {
+function rememberQueued(scope: SessionUpdates, turn: Turn) {
   const entry = session.value
   if (scope.controller.signal.aborted || entry?.id !== scope.id) return
   scope.revision++
@@ -288,7 +225,7 @@ async function submit(action: ComposerAction, payload: ComposerPayload) {
     }
     prompt.value = ''
     images.value = []
-    schedule(scope)
+    scope.schedule()
   } catch (error) {
     if (!scope.controller.signal.aborted) setChatError('submit', messageFor(error, 'chat.submitFailed'))
   } finally {
@@ -331,7 +268,7 @@ async function retryTurn(id: string, options: ComposerRunOptions) {
     const result = await sessionApi.retry(scope.id, id, options, scope.controller.signal)
     if (scope.controller.signal.aborted) return
     rememberQueued(scope, result)
-    schedule(scope)
+    scope.schedule()
   } catch (error) {
     if (!scope.controller.signal.aborted) setChatError('retry', messageFor(error, 'chat.retryFailed'))
   } finally {
@@ -348,7 +285,7 @@ async function stop(id: string) {
     await sessionApi.stop(scope.id, id, scope.controller.signal)
     if (scope.controller.signal.aborted) return
     notify.success(t('composer.stopRequested'))
-    schedule(scope)
+    scope.schedule()
   } catch (error) {
     if (!scope.controller.signal.aborted) setChatError('stop', messageFor(error, 'composer.stopFailed'))
   } finally {
@@ -383,8 +320,8 @@ async function changePending(message: PendingMessage, action: PendingAction, run
   } finally {
     if (!signal.aborted) {
       submitting.value = false
-      schedule(scope)
-      void refresh(scope)
+      scope.schedule()
+      void scope.refresh()
     }
   }
 }
@@ -424,8 +361,8 @@ async function revertMessage() {
       revertOpen.value = false
       reverting.value = false
       revertTarget.value = undefined
-      if (scope.fetching) schedule(scope)
-      else void refresh(scope)
+      scope.schedule()
+      void scope.refresh()
       await nextTick()
       if (!scope.controller.signal.aborted) document.getElementById('agent-prompt')?.focus()
     }
@@ -472,6 +409,7 @@ watch(() => props.id, (id, _, onCleanup) => {
   draftSession = undefined
   current = undefined
   chatErrors.value = {}
+  sessionRefreshPaused.value = false
   history.value = { turns: [], nextBeforeSequence: 0 }
   loadingOlder.value = false
   session.value = null
@@ -485,17 +423,28 @@ watch(() => props.id, (id, _, onCleanup) => {
   compactPanel.value = false
   compactSessions.value = false
   if (!id) return
-  const scope: RequestScope = { id, controller: new AbortController(), fetching: false, live: false, liveRetryAt: 0, revision: 0 }
-  current = scope
-  onCleanup(() => {
-    scope.controller.abort()
-    clearTimeout(scope.timer)
+  const scope: SessionUpdates = new SessionUpdates(id, {
+    active: () => session.value?.active ?? true,
+    sync: (entry, policy) => applySession(scope, entry, policy),
+    progress: (update) => {
+      const turns = session.value?.turns
+      const index = turns?.findIndex((turn) => turn.id === update.id) ?? -1
+      if (turns && index >= 0) turns[index] = update
+    },
+    missing: missingSession,
+    unauthorized: returnToLogin,
+    failed: (retrying) => {
+      sessionRefreshPaused.value = !retrying
+      setChatError('load', t(retrying ? 'chat.loadRetry' : 'chat.loadFailed'))
+    },
   })
-  void refresh(scope)
+  current = scope
+  onCleanup(() => scope.close())
+  void scope.refresh()
 }, { immediate: true })
 
 watch(() => store.recent.find((item) => item.id === props.id)?.updatedAt, (newTime) => {
-  if (current && session.value && newTime && session.value.updatedAt !== newTime && !session.value.active) void refresh(current)
+  if (current && session.value && newTime && session.value.updatedAt !== newTime && !session.value.active) void current.refresh()
 })
 
 watch(() => store.recent.find((item) => item.id === props.id)?.projectId, (projectId) => {
@@ -503,8 +452,24 @@ watch(() => store.recent.find((item) => item.id === props.id)?.projectId, (proje
   if (entry && entry.id === props.id && projectId !== undefined) entry.projectId = projectId
 })
 
-function markVisible() {
+function returnToLogin() {
+  void router.replace({ name: 'login' })
+}
+
+function resumeSession() {
+  sessionRefreshPaused.value = false
+  current?.wake()
+}
+
+function resumeRequests() {
+  resumeSession()
+  clearTimeout(catalogRetry)
+  if (document.hidden) return
   if (current) void markRead(current)
+  if (!catalogReady) {
+    catalogBackoff.reset()
+    void loadComposerOptions()
+  }
 }
 
 async function saveComposerDefaults(input: ComposerDefaults) {
@@ -524,35 +489,56 @@ async function saveComposerDefaults(input: ComposerDefaults) {
   }
 }
 
-async function loadComposerOptions(attempt = 0) {
+function retryComposerOptions(error?: unknown) {
+  const delay = catalogBackoff.next()
+  if (delay !== undefined) {
+    if (!document.hidden) {
+      catalogRetry = setTimeout(() => {
+        void loadComposerOptions()
+      }, delay)
+    }
+  } else {
+    notify.error(messageFor(error, 'composer.optionsFailed'))
+  }
+}
+
+async function loadComposerOptions() {
   const { signal } = catalogRequest
+  if (catalogFetching || document.hidden || signal.aborted) return
+  catalogFetching = true
   const version = defaultsVersion
   try {
     const composerOptions = await sessionApi.composerOptions(signal)
     if (signal.aborted) return
     if (defaultsVersion !== version) composerOptions.defaults = catalog.value.defaults
     catalog.value = composerOptions
-    if (composerOptions.modelsLoading) catalogRetry = setTimeout(loadComposerOptions, 1_000)
+    catalogReady = !composerOptions.modelsLoading
+    if (catalogReady) catalogBackoff.reset()
+    else retryComposerOptions()
   } catch (error) {
     if (signal.aborted) return
     if (error instanceof HttpError && error.status === 401) {
-      await router.replace({ name: 'login' })
-    } else if (attempt < 2) {
-      catalogRetry = setTimeout(() => { void loadComposerOptions(attempt + 1) }, 1_000)
+      returnToLogin()
     } else {
-      notify.error(messageFor(error, 'composer.optionsFailed'))
+      retryComposerOptions(error)
     }
+  } finally {
+    catalogFetching = false
   }
 }
 
 onMounted(() => {
   clock = setInterval(() => { now.value = Date.now() }, 30_000)
-  document.addEventListener('visibilitychange', markVisible)
-  void loadComposerOptions()
+  document.addEventListener('visibilitychange', resumeRequests)
+  window.addEventListener('online', resumeRequests)
+  window.addEventListener('focus', resumeRequests)
+  resumeRequests()
 })
 onUnmounted(() => {
   clearInterval(clock)
-  document.removeEventListener('visibilitychange', markVisible)
+  document.removeEventListener('visibilitychange', resumeRequests)
+  window.removeEventListener('online', resumeRequests)
+  window.removeEventListener('focus', resumeRequests)
   catalogRequest.abort()
   clearTimeout(catalogRetry)
   draftRequest?.abort()
@@ -620,6 +606,7 @@ onUnmounted(() => {
                   :session="chatSession"
                   :has-older="history.nextBeforeSequence > 0"
                   :loading-older="loadingOlder"
+                  :refresh-paused="sessionRefreshPaused"
                   :recent-sessions="matchingSessions"
                   :now="now"
                   :has-selection="!!id"
@@ -629,6 +616,7 @@ onUnmounted(() => {
                   :saving-defaults="savingDefaults"
                   :errors="chatErrors"
                   @load-older="loadOlder"
+                  @refresh="resumeSession"
                   @submit="submit"
                   @stop="stop"
                   @pending="changePending"
@@ -651,11 +639,12 @@ onUnmounted(() => {
           </template>
           <template #end>
             <RightSidePanel
-              :session-id="id"
+              :session-id="session?.id"
               :project-id="session?.projectId"
               :active="!!session?.active"
               :running-turn-id="runningTurnId"
               :visible="showPanel"
+              @unauthorized="returnToLogin"
             />
           </template>
         </UiSplitPanel>

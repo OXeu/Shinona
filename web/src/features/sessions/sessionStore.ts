@@ -100,11 +100,13 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   async function refresh(signal: AbortSignal) {
+    const owner = account
+    if (!owner) return
     const request = ++refreshID
     const requestedAt = version
     const requestedProjectVersion = projectVersion
     const projectId = selectedProjectId.value
-    const poller = polling ??= new SessionListPolling(account, projectId)
+    const poller = polling ??= new SessionListPolling(owner, projectId)
     const response = await poller.refresh(serverSnapshot, signal)
     if (signal.aborted || request !== refreshID) return
     serverSnapshot = response
@@ -117,10 +119,14 @@ export const useSessionStore = defineStore('sessions', () => {
 
   function upsert(session: SessionSummary) {
     if (selectedProjectId.value !== null && (session.projectId ?? '') !== selectedProjectId.value) return
+    const { id, projectId, title, defaultTitle, turnCount, updatedAt, pinned, active, unread } = session
+    const summary: SessionSummary = { id, projectId, title, defaultTitle, turnCount, updatedAt, pinned, active, unread }
+    const previous = recent.value.find((entry) => entry.id === id)
+    const keys = Object.keys(summary) as (keyof SessionSummary)[]
+    if (previous && keys.every((key) => previous[key] === summary[key])) return
     version++
     polling?.changed()
-    const { id, projectId, title, defaultTitle, turnCount, updatedAt, pinned, active, unread } = session
-    recent.value = [{ id, projectId, title, defaultTitle, turnCount, updatedAt, pinned, active, unread }, ...recent.value.filter((entry) => entry.id !== id)]
+    recent.value = [summary, ...recent.value.filter((entry) => entry.id !== id)]
   }
 
   function remove(id: string) {
