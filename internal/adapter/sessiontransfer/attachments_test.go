@@ -36,9 +36,11 @@ func TestAttachmentServesOnlyTheOwnersVisibleTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	attachment := run.Image{Name: "fixture.png", MediaType: "image/png", Data: base64.StdEncoding.EncodeToString(pngFile.Bytes())}
+	mismatched := attachment
+	mismatched.MediaType = "image/jpeg"
 	_, err = repo.Conversations.Enqueue(ctx, run.Run{
 		ID: "turn", OwnerID: "owner", SessionID: "session", Status: run.Queued, CreatedAt: now, UpdatedAt: now,
-		Payload: run.Payload{Images: []run.Image{attachment}},
+		Payload: run.Payload{Images: []run.Image{attachment, mismatched}},
 	}, "Fixture", false)
 	if err != nil {
 		t.Fatal(err)
@@ -72,9 +74,12 @@ func TestAttachmentServesOnlyTheOwnersVisibleTurn(t *testing.T) {
 		conditional.Code != http.StatusNotModified || conditional.Body.Len() != 0 {
 		t.Fatalf("conditional attachment: %d %s", conditional.Code, conditional.Body)
 	}
+	if result := requestImage("owner", "session", "1", ""); result.Code != http.StatusNotFound || result.Header().Get("ETag") != "" {
+		t.Fatalf("mislabeled stored attachment: %d %v", result.Code, result.Header())
+	}
 	for _, request := range []struct{ owner, session, index string }{
 		{"other", "session", "0"}, {"", "session", "0"}, {"owner", "missing", "0"},
-		{"owner", "session", "1"}, {"owner", "session", "-1"},
+		{"owner", "session", "2"}, {"owner", "session", "-1"},
 	} {
 		if result := requestImage(request.owner, request.session, request.index, tag); result.Code != http.StatusNotFound {
 			t.Fatalf("forbidden attachment request %v returned %d", request, result.Code)

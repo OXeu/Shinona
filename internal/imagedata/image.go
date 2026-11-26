@@ -9,11 +9,11 @@ import (
 // Decode decodes an image from a bounded request and returns its detected type.
 func Decode(encoded string, limit int) ([]byte, string) {
 	data, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(data) > limit {
+	if err != nil {
 		return nil, ""
 	}
-	mediaType := http.DetectContentType(data)
-	if !supported(mediaType) {
+	mediaType := rasterType(data, limit)
+	if mediaType == "" {
 		return nil, ""
 	}
 	return data, mediaType
@@ -29,6 +29,22 @@ func DecodeAs(encoded, mediaType string, limit int) []byte {
 		return nil
 	}
 	return data
+}
+
+// MatchesType validates bounded image bytes against a declared raster type.
+func MatchesType(data []byte, mediaType string, limit int) bool {
+	return mediaType != "" && rasterType(data, limit) == mediaType
+}
+
+func rasterType(data []byte, limit int) string {
+	if len(data) > limit {
+		return ""
+	}
+	mediaType := http.DetectContentType(data)
+	if !supported(mediaType) {
+		return ""
+	}
+	return mediaType
 }
 
 func supported(mediaType string) bool {

@@ -21,7 +21,7 @@ import (
 const AttachmentPath = "/api/v1/sessions/{id}/turns/{turnId}/attachments/{index}"
 
 type AttachmentReader interface {
-	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*run.Image, error)
+	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*run.Attachment, error)
 	AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error)
 }
 
@@ -87,14 +87,10 @@ func loadAttachment(ctx context.Context, reader AttachmentReader, key attachment
 	if err != nil {
 		return attachmentResponse{}, err
 	}
-	defer timing.Start(ctx, "attachment_decode")()
-	if image == nil {
+	defer timing.Start(ctx, "attachment_validate")()
+	if image == nil || !imagedata.MatchesType(image.Data, image.MediaType, run.MaxImageBytes) {
 		return attachmentResponse{}, nil
 	}
-	data := imagedata.DecodeAs(image.Data, image.MediaType, run.MaxImageBytes)
-	if data == nil {
-		return attachmentResponse{}, nil
-	}
-	hash := sha256.Sum256(data)
-	return attachmentResponse{image.MediaType, `"` + hex.EncodeToString(hash[:]) + `"`, data}, nil
+	hash := sha256.Sum256(image.Data)
+	return attachmentResponse{image.MediaType, `"` + hex.EncodeToString(hash[:]) + `"`, image.Data}, nil
 }

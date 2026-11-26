@@ -1,7 +1,9 @@
 package sqlite_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -313,7 +315,11 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 		t.Fatal("the transcript must preserve attachment order and options without image data")
 	}
 	attachment, err := service.Attachment(ctx, "owner", session.ID, first.ID, 1)
-	if err != nil || attachment == nil || *attachment != images[1] {
+	wantData, decodeErr := base64.StdEncoding.DecodeString(images[1].Data)
+	if decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if err != nil || attachment == nil || attachment.MediaType != images[1].MediaType || !bytes.Equal(attachment.Data, wantData) {
 		t.Fatalf("stored attachment: %+v, %v", attachment, err)
 	}
 	close(agent.drain)

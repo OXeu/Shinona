@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -160,12 +161,13 @@ func TestMigratesInlineAttachmentsWithoutChangingHistory(t *testing.T) {
 		t.Fatalf("migration lost extension fields or kept inline bytes: %q, %v", retained, err)
 	}
 	image, err := repo.Conversations.Attachment(ctx, "owner", "session", "turn", 0)
-	if err != nil || image == nil || image.Data != encoded || image.Name != "shot.png" {
+	if err != nil || image == nil || image.MediaType != "image/png" || base64.StdEncoding.EncodeToString(image.Data) != encoded {
 		t.Fatalf("migrated attachment: %+v, %v", image, err)
 	}
 	turn := run.Run{OwnerID: "owner", SessionID: "session", Sequence: 2}
 	history, err := repo.Conversations.History(ctx, turn, 0)
-	if err != nil || len(history) != 1 || len(history[0].Images) != 1 || history[0].Images[0].Data != encoded {
+	if err != nil || len(history) != 1 || len(history[0].Images) != 1 ||
+		history[0].Images[0] != (run.Image{Name: "shot.png", MediaType: "image/png", Data: encoded}) {
 		t.Fatalf("migrated history: %+v, %v", history, err)
 	}
 	if err := repo.db.Delete(&row{}, "id = ?", "turn").Error; err != nil {

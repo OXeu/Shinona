@@ -104,7 +104,7 @@ func hydrateRunAttachments(db *gorm.DB, turns []row) error {
 	return nil
 }
 
-func (r *ConversationStore) Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*run.Image, error) {
+func (r *ConversationStore) Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*run.Attachment, error) {
 	if index < 0 || index >= run.MaxImages {
 		return nil, nil
 	}
@@ -124,12 +124,13 @@ func (r *ConversationStore) Attachment(ctx context.Context, ownerID, sessionID, 
 	if err != nil || record.Image == nil {
 		return nil, err
 	}
-	var image run.Image
-	if err := json.Unmarshal([]byte(*record.Image), &image); err != nil {
+	var metadata struct {
+		MediaType string `json:"mediaType"`
+	}
+	if err := json.Unmarshal([]byte(*record.Image), &metadata); err != nil {
 		return nil, err
 	}
-	image.Data = base64.StdEncoding.EncodeToString(record.Content)
-	return &image, nil
+	return &run.Attachment{MediaType: metadata.MediaType, Data: record.Content}, nil
 }
 
 func (r *ConversationStore) AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error) {

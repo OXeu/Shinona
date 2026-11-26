@@ -202,7 +202,7 @@ func (s *Service) addTranscriptProgress(turns []Run) {
 	}
 }
 
-func (s *Service) Attachment(ctx context.Context, owner, sessionID, turnID string, index int) (*Image, error) {
+func (s *Service) Attachment(ctx context.Context, owner, sessionID, turnID string, index int) (*Attachment, error) {
 	if owner == "" || index < 0 || index >= MaxImages {
 		return nil, nil
 	}

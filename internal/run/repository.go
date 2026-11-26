@@ -31,7 +31,7 @@ type TranscriptRepository interface {
 	TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*Transcript, error)
 	TranscriptUpdate(ctx context.Context, ownerID, sessionID string, window LiveTranscriptWindow, known map[string]TurnVersion) (*TranscriptUpdate, error)
 	StreamTranscript(ctx context.Context, ownerID, sessionID string, write func(TranscriptStream) error) error
-	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Image, error)
+	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Attachment, error)
 	AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error)
 }
 

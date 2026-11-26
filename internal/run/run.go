@@ -163,6 +163,11 @@ type TranscriptUpdate struct {
 	NextBeforeSequence int
 }
 
+type Attachment struct {
+	MediaType string
+	Data      []byte
+}
+
 // TranscriptStream reads forward from one durable snapshot. Next is valid
 // for the duration of the repository callback and returns nil at the end.
 type TranscriptStream struct {
