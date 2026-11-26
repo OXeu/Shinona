@@ -28,11 +28,12 @@ type ProjectSandboxConfig struct {
 }
 
 type ProjectSandbox struct {
-	Project   Project
-	Config    ProjectSandboxConfig
-	Effective ProjectSandboxConfig
-	Providers []ProjectSandboxConfig
-	Status    sandbox.ProjectStatus
+	Project       Project
+	Config        ProjectSandboxConfig
+	Effective     ProjectSandboxConfig
+	ProviderLabel string
+	Providers     []Target
+	Status        sandbox.ProjectStatus
 }
 
 func sessionSandbox(ctx context.Context, repo Repository, resolve ResolveTarget, owner, session, backend string, provision bool) (sandbox.Spec, Target, error) {
@@ -46,15 +47,20 @@ func sessionSandbox(ctx context.Context, repo Repository, resolve ResolveTarget,
 	}
 	spec := sandbox.Spec{OwnerID: owner, SessionID: session, ProjectID: project, Policy: sandbox.Shared}
 	if config != nil {
-		return config.spec(spec), resolve(config.Provider), nil
+		target, err := resolve(ctx, owner, config.Provider)
+		return config.spec(spec), target, err
 	}
-	target := resolve(backend)
+	target, err := resolve(ctx, owner, backend)
+	if err != nil {
+		return sandbox.Spec{}, Target{}, err
+	}
 	if _, managed := target.Provider.(sandbox.ManagedProjectProvider); managed && provision {
 		if err := repo.RememberProjectSandboxProvider(ctx, owner, project, target.Name); err != nil {
 			return sandbox.Spec{}, Target{}, err
 		}
+		target, err = resolve(ctx, owner, target.Name)
 	}
-	return spec, target, nil
+	return spec, target, err
 }
 
 func (c ProjectSandboxConfig) spec(spec sandbox.Spec) sandbox.Spec {
@@ -83,18 +89,23 @@ func (s *Service) ProjectSandbox(ctx context.Context, owner, id string) (Project
 	if err != nil {
 		return ProjectSandbox{}, err
 	}
-	target := s.resolve(config.Provider)
+	target, err := s.resolve(ctx, owner, config.Provider)
+	if err != nil {
+		return ProjectSandbox{}, err
+	}
+	providers, err := s.projectTargets(ctx, owner)
+	if err != nil {
+		return ProjectSandbox{}, err
+	}
 	result := ProjectSandbox{
 		Project: project, Config: config, Effective: config.effective(target),
-		Providers: []ProjectSandboxConfig{}, Status: sandbox.ProjectStatus{State: sandbox.ProjectUnavailable},
-	}
-	for _, name := range []string{"e2b", "ssh"} {
-		choice := s.resolve(name)
-		if _, ok := choice.Provider.(sandbox.ManagedProjectProvider); ok {
-			result.Providers = append(result.Providers, (ProjectSandboxConfig{}).effective(choice))
-		}
+		ProviderLabel: target.Label, Providers: providers, Status: sandbox.ProjectStatus{State: sandbox.ProjectUnavailable},
 	}
 	if provider, ok := target.Provider.(sandbox.ManagedProjectProvider); ok {
+		if config.Provider == "" {
+			result.Status.State = sandbox.ProjectNone
+			return result, nil
+		}
 		check, cancel := context.WithTimeout(ctx, workspaceTimeout)
 		defer cancel()
 		status, err := provider.ProjectStatus(check, sandbox.Spec{OwnerID: owner, ProjectID: id})
@@ -110,14 +121,16 @@ func (s *Service) ProjectSandbox(ctx context.Context, owner, id string) (Project
 
 func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next ProjectSandboxConfig) error {
 	next.Template = strings.TrimSpace(next.Template)
-	if next.Provider != "" && next.Provider != "e2b" && next.Provider != "ssh" ||
-		next.Template != "" && !templateName.MatchString(next.Template) ||
+	if len(next.Provider) > 64 || next.Template != "" && !templateName.MatchString(next.Template) ||
 		next.TimeoutSeconds < 0 || next.TimeoutSeconds > sandbox.MaxTimeoutSeconds ||
 		next.OnTimeout != "" && next.OnTimeout != sandbox.TimeoutPause && next.OnTimeout != sandbox.TimeoutKill {
 		return ErrProjectSandboxConfig
 	}
 	return s.changeProjectSandbox(ctx, owner, id, func(ctx context.Context, current ProjectSandboxConfig, spec sandbox.Spec) error {
-		target := s.resolve(next.Provider)
+		target, err := s.resolve(ctx, owner, next.Provider)
+		if err != nil {
+			return err
+		}
 		if _, ok := target.Provider.(sandbox.ManagedProjectProvider); !ok {
 			return ErrSandboxProvider
 		}
@@ -128,11 +141,16 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 		if current == next {
 			return nil
 		}
-		previous := s.resolve(current.Provider)
-		if current.effective(previous) != next.effective(target) {
-			provider, _ := previous.Provider.(sandbox.ManagedProjectProvider)
-			if err := s.destroyProjectSandbox(ctx, provider, spec); err != nil {
+		if current.Provider != "" {
+			previous, err := s.resolve(ctx, owner, current.Provider)
+			if err != nil {
 				return err
+			}
+			if current.effective(previous) != next.effective(target) {
+				provider, _ := previous.Provider.(sandbox.ManagedProjectProvider)
+				if err := s.destroyProjectSandbox(ctx, provider, spec); err != nil {
+					return err
+				}
 			}
 		}
 		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
@@ -143,7 +161,10 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 
 func (s *Service) ResetProjectSandbox(ctx context.Context, owner, id string, recreate bool) error {
 	return s.changeProjectSandbox(ctx, owner, id, func(ctx context.Context, config ProjectSandboxConfig, spec sandbox.Spec) error {
-		target := s.resolve(config.Provider)
+		target, err := s.resolve(ctx, owner, config.Provider)
+		if err != nil {
+			return err
+		}
 		provider, ok := target.Provider.(sandbox.ManagedProjectProvider)
 		if !ok {
 			return ErrSandboxProvider
@@ -157,7 +178,10 @@ func (s *Service) ResetProjectSandbox(ctx context.Context, owner, id string, rec
 
 func (s *Service) CreateProjectSandbox(ctx context.Context, owner, id string) error {
 	return s.changeProjectSandbox(ctx, owner, id, func(ctx context.Context, config ProjectSandboxConfig, spec sandbox.Spec) error {
-		target := s.resolve(config.Provider)
+		target, err := s.resolve(ctx, owner, config.Provider)
+		if err != nil {
+			return err
+		}
 		provider, ok := target.Provider.(sandbox.ManagedProjectProvider)
 		if !ok {
 			return ErrSandboxProvider
@@ -170,6 +194,14 @@ func (s *Service) provisionProjectSandbox(ctx context.Context, name string, prov
 	if config.Provider == "" {
 		if err := s.repo.RememberProjectSandboxProvider(ctx, spec.OwnerID, spec.ProjectID, name); err != nil {
 			return err
+		}
+		target, err := s.resolve(ctx, spec.OwnerID, name)
+		if err != nil {
+			return err
+		}
+		var ok bool
+		if provider, ok = target.Provider.(sandbox.ManagedProjectProvider); !ok {
+			return ErrSandboxProvider
 		}
 	}
 	ws, err := provider.Acquire(ctx, config.spec(spec))

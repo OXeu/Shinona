@@ -10,26 +10,29 @@ import UiLanguagePicker from '../../shared/ui/UiLanguagePicker.vue'
 import { UiBox, UiButton, UiHeading, UiNav, UiSection } from '../../shared/ui/elements'
 import { runningAction, setRunningAction } from './composerPreferences'
 import InstanceSettings from './InstanceSettings.vue'
+import SSHServerSettings from './SSHServerSettings.vue'
 import type { McpSettings } from './mcpSettingsApi'
 import { settingsApi } from './settingsApi'
-import type { SettingField } from './settingsApi'
+import type { SettingField, SSHServer } from './settingsApi'
 
-type Section = 'preferences' | 'model' | 'sandbox' | 'mcp' | 'oauth' | 'mail'
+type Section = 'preferences' | 'model' | 'sandbox' | 'ssh' | 'mcp' | 'oauth' | 'mail'
 
 const savingInstance = ref(false)
 const fields = ref<SettingField[]>([])
 const modelFields = ref<SettingField[]>([])
+const sshServers = ref<SSHServer[]>([])
 const mcp = ref<McpSettings | null>(null)
 const request = new AbortController()
 const route = useRoute()
 const router = useRouter()
-const active = ref<Section>('preferences')
+const active = ref<Section>(route.query.section === 'ssh' ? 'ssh' : 'preferences')
 const sections = computed(() => {
   const administrator = fields.value.length > 0
   const entries: { id: Section; label: string; visible: boolean }[] = [
     { id: 'preferences', label: t('settings.preferences'), visible: true },
     { id: 'model', label: t('settings.model'), visible: modelFields.value.length > 0 },
     { id: 'sandbox', label: t('workspace.sandbox'), visible: administrator },
+    { id: 'ssh', label: t('ssh.servers'), visible: true },
     { id: 'mcp', label: t('composer.mcp'), visible: mcp.value !== null },
     { id: 'oauth', label: t('auth.oauth'), visible: administrator },
     { id: 'mail', label: t('settings.mail'), visible: administrator },
@@ -45,6 +48,7 @@ async function load() {
   fields.value = response.applicationSettings
   modelFields.value = response.modelSettings
   mcp.value = response.mcpSettings
+  sshServers.value = response.sshServers
 }
 
 onMounted(async () => {
@@ -111,6 +115,7 @@ async function saveInstance(changes: { key: string; value: string | null }[]) {
         @update:model-value="setRunningAction"
       />
     </UiSection>
+    <SSHServerSettings v-model="sshServers" :active="active === 'ssh'" />
     <InstanceSettings
       :key="active === 'model' ? 'model' : 'instance'"
       v-model:mcp="mcp"

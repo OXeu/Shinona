@@ -33,13 +33,31 @@ type Config struct {
 	KeyPath         string
 	HostFingerprint string
 	Template        string
+	PrivateKey      string
+	DialContext     func(context.Context, string, string) (net.Conn, error)
 }
 
 type Provider struct {
-	address   string
-	client    *ssh.ClientConfig
-	template  string
-	provision *semaphore.Weighted
+	address  string
+	client   *ssh.ClientConfig
+	template string
+	dial     func(context.Context, string, string) (net.Conn, error)
+}
+
+var provisionGates = func() [64]*semaphore.Weighted {
+	var gates [64]*semaphore.Weighted
+	for i := range gates {
+		gates[i] = semaphore.NewWeighted(1)
+	}
+	return gates
+}()
+
+func projectHash(spec sandbox.Spec) [sha256.Size]byte {
+	return sha256.Sum256([]byte(spec.OwnerID + "\x00" + spec.ProjectID))
+}
+
+func provisionGate(spec sandbox.Spec) *semaphore.Weighted {
+	return provisionGates[int(projectHash(spec)[0])%len(provisionGates)]
 }
 
 func New(config Config) (*Provider, error) {
@@ -48,21 +66,17 @@ func New(config Config) (*Provider, error) {
 	if err != nil || portErr != nil || host == "" || number < 1 || number > 65535 {
 		return nil, errors.New("SSH address must be a host and port")
 	}
-	if config.User == "" || config.KeyPath == "" || config.Template == "" {
-		return nil, errors.New("SSH requires a user, private key path, and default Docker image")
+	if config.User == "" || config.Template == "" {
+		return nil, errors.New("SSH requires a user and default Docker image")
 	}
 	fingerprint := config.HostFingerprint
 	decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(fingerprint, "SHA256:"))
 	if err != nil || len(decoded) != sha256.Size || !strings.HasPrefix(fingerprint, "SHA256:") {
 		return nil, errors.New("SSH requires a SHA256 host key fingerprint")
 	}
-	file, err := os.Stat(config.KeyPath)
-	if err != nil || !file.Mode().IsRegular() || file.Size() > maxFileBytes {
-		return nil, errors.New("SSH private key path must point to a readable key file")
-	}
-	key, err := os.ReadFile(config.KeyPath)
+	key, err := privateKey(config)
 	if err != nil {
-		return nil, errors.New("could not read the SSH private key file")
+		return nil, err
 	}
 	signer, err := ssh.ParsePrivateKey(key)
 	if err != nil {
@@ -77,15 +91,35 @@ func New(config Config) (*Provider, error) {
 			return nil
 		},
 	}
-	return &Provider{
-		address: config.Address, client: client, template: config.Template, provision: semaphore.NewWeighted(1),
-	}, nil
+	dial := config.DialContext
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	return &Provider{address: config.Address, client: client, template: config.Template, dial: dial}, nil
+}
+
+func privateKey(config Config) ([]byte, error) {
+	if config.KeyPath == "" {
+		if config.PrivateKey == "" || len(config.PrivateKey) > maxFileBytes {
+			return nil, errors.New("SSH requires a private key of at most 64 KiB")
+		}
+		return []byte(config.PrivateKey), nil
+	}
+	file, err := os.Stat(config.KeyPath)
+	if err != nil || !file.Mode().IsRegular() || file.Size() > maxFileBytes {
+		return nil, errors.New("SSH private key path must point to a readable key file")
+	}
+	key, err := os.ReadFile(config.KeyPath)
+	if err != nil {
+		return nil, errors.New("could not read the SSH private key file")
+	}
+	return key, nil
 }
 
 func (p *Provider) connect(ctx context.Context, spec sandbox.Spec) (*workspace, error) {
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", p.address)
+	conn, err := p.dial(ctx, "tcp", p.address)
 	if err != nil {
 		return nil, fmt.Errorf("dial the sandbox SSH host: %w", err)
 	}
@@ -100,7 +134,7 @@ func (p *Provider) connect(ctx context.Context, spec sandbox.Spec) (*workspace, 
 	}
 	return &workspace{
 		client: ssh.NewClient(client, channels, requests),
-		name:   fmt.Sprintf("shinona-%x", sha256.Sum256([]byte(spec.OwnerID+"\x00"+spec.ProjectID))),
+		name:   fmt.Sprintf("shinona-%x", projectHash(spec)),
 	}, nil
 }
 
@@ -112,10 +146,11 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	}
 	ctx, cancel := context.WithTimeout(ctx, provisionTimeout)
 	defer cancel()
-	if err := p.provision.Acquire(ctx, 1); err != nil {
+	gate := provisionGate(spec)
+	if err := gate.Acquire(ctx, 1); err != nil {
 		return nil, err
 	}
-	defer p.provision.Release(1)
+	defer gate.Release(1)
 	ws, err := p.connect(ctx, spec)
 	if err != nil {
 		return nil, err
@@ -182,10 +217,11 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 }
 
 func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error {
-	if err := p.provision.Acquire(ctx, 1); err != nil {
+	gate := provisionGate(spec)
+	if err := gate.Acquire(ctx, 1); err != nil {
 		return err
 	}
-	defer p.provision.Release(1)
+	defer gate.Release(1)
 	ws, err := p.connect(ctx, spec)
 	if err != nil {
 		return err

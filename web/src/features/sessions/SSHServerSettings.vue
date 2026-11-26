@@ -1,0 +1,191 @@
+<script setup lang="ts">
+import { computed, onUnmounted, ref, useId, watch } from 'vue'
+
+import { messageFor } from '../../shared/errors'
+import { t } from '../../shared/i18n'
+import { notify } from '../../shared/notifications'
+import UiDialog from '../../shared/ui/UiDialog.vue'
+import UiFilePicker from '../../shared/ui/UiFilePicker.vue'
+import UiInput from '../../shared/ui/UiInput.vue'
+import UiTextarea from '../../shared/ui/UiTextarea.vue'
+import { UiBox, UiButton, UiForm, UiInline, UiList, UiListItem, UiSection, UiSubheading } from '../../shared/ui/elements'
+import { settingsApi } from './settingsApi'
+import type { SSHServer, SSHServerInput } from './settingsApi'
+
+const props = defineProps<{ active: boolean }>()
+const servers = defineModel<SSHServer[]>({ required: true })
+const prefix = useId()
+const request = new AbortController()
+const draft = ref<SSHServerInput>()
+const removing = ref<SSHServer>()
+const removeOpen = ref(false)
+const busy = ref(false)
+const readingKey = ref(false)
+const canSave = computed(() => !!draft.value?.name.trim() && !!draft.value.address.trim() &&
+  !!draft.value.user.trim() && !!draft.value.hostFingerprint.trim() && (!!draft.value.id || !!draft.value.privateKey.trim()))
+
+function edit(server?: SSHServer) {
+  draft.value = {
+    id: '', name: '', address: '', user: '', hostFingerprint: '', template: '',
+    ...server, privateKey: '',
+  }
+}
+
+async function readKey(file: File) {
+  const input = draft.value
+  if (!input || readingKey.value) return
+  readingKey.value = true
+  try {
+    if (file.size > 64 * 1024) throw new Error('key is too large')
+    const key = await file.text()
+    if (draft.value === input && props.active) input.privateKey = key
+  } catch {
+    if (props.active) notify.error(t('ssh.readKeyFailed'))
+  } finally {
+    readingKey.value = false
+  }
+}
+
+async function save() {
+  if (!draft.value || busy.value || !canSave.value) return
+  const { signal } = request
+  busy.value = true
+  try {
+    const { saveSshServer } = await settingsApi.saveSSHServer(draft.value, signal)
+    if (signal.aborted) return
+    servers.value = [...servers.value.filter((server) => server.id !== saveSshServer.id), saveSshServer]
+      .sort((a, b) => a.name.localeCompare(b.name))
+    draft.value = undefined
+    notify.success(t('settings.saved'))
+  } catch (error) {
+    if (!signal.aborted) notify.error(messageFor(error, 'settings.saveFailed'))
+  } finally {
+    busy.value = false
+  }
+}
+
+async function remove() {
+  if (!removing.value || busy.value) return
+  const { signal } = request
+  const id = removing.value.id
+  busy.value = true
+  try {
+    await settingsApi.removeSSHServer(id, signal)
+    if (signal.aborted) return
+    servers.value = servers.value.filter((server) => server.id !== id)
+    if (draft.value?.id === id) draft.value = undefined
+    removeOpen.value = false
+    notify.success(t('ssh.removed'))
+  } catch (error) {
+    if (!signal.aborted) notify.error(messageFor(error, 'settings.saveFailed'))
+  } finally {
+    busy.value = false
+  }
+}
+
+watch(() => props.active, (active) => {
+  if (!active) draft.value = undefined
+})
+onUnmounted(() => request.abort())
+</script>
+
+<template>
+  <UiSection :hidden="!active" :aria-label="t('ssh.servers')">
+    <UiList class="servers" :hidden="!servers.length">
+      <UiListItem v-for="server in servers" :key="server.id" class="server">
+        <UiBox>
+          <UiInline class="server-name">{{ server.name }}</UiInline>
+          <UiInline class="server-address">{{ server.user }}@{{ server.address }}</UiInline>
+        </UiBox>
+        <UiBox class="server-actions">
+          <UiButton class="secondary-button" :disabled="busy" @click="edit(server)">{{ t('ssh.edit') }}</UiButton>
+          <UiButton class="secondary-button" :disabled="busy" @click="removing = server; removeOpen = true">
+            {{ t('ssh.remove') }}
+          </UiButton>
+        </UiBox>
+      </UiListItem>
+    </UiList>
+    <UiButton :hidden="!!draft" :disabled="busy" @click="edit()">{{ t('ssh.add') }}</UiButton>
+    <UiForm
+      v-for="input in draft ? [draft] : []"
+      :key="input.id"
+      class="server-form"
+      @submit.prevent="save"
+    >
+      <UiSubheading>{{ t(input.id ? 'ssh.edit' : 'ssh.add') }}</UiSubheading>
+      <UiInput
+        :id="`${prefix}-name`"
+        v-model="input.name"
+        :label="t('ssh.name')"
+        :disabled="busy"
+        maxlength="160"
+      />
+      <UiInput
+        :id="`${prefix}-host`"
+        v-model="input.address"
+        :label="t('settings.sshAddress')"
+        :disabled="busy"
+        maxlength="255"
+      />
+      <UiInput
+        :id="`${prefix}-user`"
+        v-model="input.user"
+        :label="t('settings.sshUser')"
+        :disabled="busy"
+        maxlength="255"
+      />
+      <UiInput
+        :id="`${prefix}-fingerprint`"
+        v-model="input.hostFingerprint"
+        :label="t('settings.sshHostFingerprint')"
+        placeholder="SHA256:…"
+        :disabled="busy"
+        maxlength="64"
+      />
+      <UiInput
+        :id="`${prefix}-image`"
+        v-model="input.template"
+        :label="t('sandbox.image')"
+        placeholder="buildpack-deps:bookworm-scm"
+        :disabled="busy"
+        maxlength="255"
+      />
+      <UiTextarea
+        :id="`${prefix}-key`"
+        v-model="input.privateKey"
+        class="input key"
+        :label="t('ssh.privateKey')"
+        :placeholder="t(input.id ? 'ssh.keepKey' : 'ssh.pasteKey')"
+        :disabled="busy || readingKey"
+        autocomplete="off"
+        spellcheck="false"
+        maxlength="65536"
+        rows="3"
+      />
+      <UiFilePicker :label="t('ssh.selectKey')" :disabled="busy || readingKey" @select="readKey" />
+      <UiBox class="form-actions">
+        <UiButton class="secondary-button" :disabled="busy" @click="draft = undefined">{{ t('common.cancel') }}</UiButton>
+        <UiButton type="submit" :disabled="busy || readingKey || !canSave">{{ t(busy ? 'settings.saving' : 'settings.save') }}</UiButton>
+      </UiBox>
+    </UiForm>
+  </UiSection>
+  <UiDialog v-model="removeOpen" :busy="busy" :label="t('ssh.remove')">
+    <UiSubheading>{{ t('ssh.remove') }}</UiSubheading>
+    <UiBox class="dialog-message">{{ t('ssh.confirmRemove', { name: removing?.name ?? '' }) }}</UiBox>
+    <UiBox class="form-actions">
+      <UiButton class="secondary-button" :disabled="busy" @click="removeOpen = false">{{ t('common.cancel') }}</UiButton>
+      <UiButton :disabled="busy" @click="remove">{{ t('ssh.remove') }}</UiButton>
+    </UiBox>
+  </UiDialog>
+</template>
+
+<style scoped lang="less">
+.servers { margin: 0 0 12px; padding: 0; list-style: none; }
+.server { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.server, .server-actions { display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap; }
+.server-name, .server-address { display: block; overflow-wrap: anywhere; }
+.server-name { font-weight: 600; }
+.server-address { color: var(--muted); }
+.server-form h2 { margin-bottom: 12px; }
+.key { width: 100%; font-family: monospace; resize: vertical; -webkit-text-security: disc; }
+</style>

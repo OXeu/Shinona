@@ -102,7 +102,7 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 	if overrides, err := repository.SettingOverrides(ctx); err != nil || len(overrides) != 0 {
 		t.Fatalf("obsolete instance overrides survived startup: %v", err)
 	}
-	service := run.NewService(repository, app.Resolve, uuid.NewString, &run.Controls{})
+	service := run.NewService(repository, app.ResolveForAccount, uuid.NewString, &run.Controls{}, nil)
 	api, err := graphql.NewHandler(service, app, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)

@@ -189,12 +189,14 @@ type Agent interface {
 // name selects the instance default. A queued turn retains the selected name.
 type Target struct {
 	Name         string
+	Label        string
 	Provider     sandbox.Provider
 	ResolveAgent func(context.Context, string) (Agent, error)
 	Defaults     ProjectSandboxConfig
 }
 
-type ResolveTarget func(name string) Target
+type ResolveTarget func(ctx context.Context, owner, name string) (Target, error)
+type ListProjectTargets func(ctx context.Context, owner string) ([]Target, error)
 
 func (t Target) policies(owner string) []sandbox.Policy {
 	if t.Provider == nil || t.ResolveAgent == nil {

@@ -2,6 +2,7 @@
 package httpclient
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -103,10 +104,18 @@ func httpsAuthority(u *url.URL) string {
 func PublicTransport(timeout time.Duration, loopback bool) *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	transport.DialContext = (&net.Dialer{Timeout: timeout, Control: func(_, address string, _ syscall.RawConn) error {
-		return checkAddress(address, loopback)
-	}}).DialContext
+	transport.DialContext = publicDialer(timeout, loopback).DialContext
 	return transport
+}
+
+func DialPublic(ctx context.Context, network, address string) (net.Conn, error) {
+	return publicDialer(0, false).DialContext(ctx, network, address)
+}
+
+func publicDialer(timeout time.Duration, loopback bool) *net.Dialer {
+	return &net.Dialer{Timeout: timeout, Control: func(_, address string, _ syscall.RawConn) error {
+		return checkAddress(address, loopback)
+	}}
 }
 
 func checkAddress(address string, loopback bool) error {

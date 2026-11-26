@@ -3,11 +3,13 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/settings"
 )
 
 type projectSandboxRow struct {
@@ -41,6 +43,11 @@ func (r *Repository) RememberProjectSandboxProvider(ctx context.Context, ownerID
 
 func (r *Repository) saveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config run.ProjectSandboxConfig, conflict clause.OnConflict) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if id, personal := strings.CutPrefix(config.Provider, settings.SSHProviderPrefix); personal {
+			if _, err := findSSHServer(tx.Omit("private_key"), ownerID, id); err != nil {
+				return err
+			}
+		}
 		if projectID != "" {
 			var project projectRow
 			err := tx.Take(&project, "owner_id = ? AND id = ?", ownerID, projectID).Error

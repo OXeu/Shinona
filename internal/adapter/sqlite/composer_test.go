@@ -88,11 +88,11 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = repository.Close() })
 	agent := pigo.New(endpoint, "fixture", nil)
-	resolve := func(string) run.Target {
-		return run.Target{Name: "test", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}
+	resolve := func(context.Context, string, string) (run.Target, error) {
+		return run.Target{Name: "test", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository, resolve, uuid.NewString, controls)
+	service := run.NewService(repository, resolve, uuid.NewString, controls, nil)
 	session, err := service.CreateSession(ctx, "owner", "")
 	if err != nil {
 		t.Fatal(err)
@@ -235,11 +235,11 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 		}
 	}()
 	agent := controlledAgent{inputs: make(chan run.Input, 8), drain: make(chan struct{})}
-	resolve := func(string) run.Target {
-		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}
+	resolve := func(context.Context, string, string) (run.Target, error) {
+		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository, resolve, uuid.NewString, controls)
+	service := run.NewService(repository, resolve, uuid.NewString, controls, nil)
 	session, err := service.CreateSession(ctx, "owner", "")
 	if err != nil {
 		t.Fatal(err)
@@ -323,11 +323,11 @@ func TestWorkerStopsRunningTurnAndRetainsQueue(t *testing.T) {
 		}
 	}()
 	agent := controlledAgent{inputs: make(chan run.Input, 8), drain: make(chan struct{})}
-	resolve := func(string) run.Target {
-		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}
+	resolve := func(context.Context, string, string) (run.Target, error) {
+		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository, resolve, uuid.NewString, controls)
+	service := run.NewService(repository, resolve, uuid.NewString, controls, nil)
 	session, err := service.CreateSession(ctx, "owner", "")
 	if err != nil {
 		t.Fatal(err)

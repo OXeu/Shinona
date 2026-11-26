@@ -16,7 +16,7 @@ func TestInspectWorkspaceBorrowsOnlyTheSessionsLiveLease(t *testing.T) {
 	controls := &Controls{active: active}
 	controls.leaseMu.Lock()
 	defer controls.leaseMu.Unlock()
-	service := NewService(nil, nil, nil, controls)
+	service := NewService(nil, nil, nil, controls, nil)
 	unexpectedUse := func(context.Context, sandbox.Workspace) error {
 		t.Fatal("inspected an unavailable workspace")
 		return nil

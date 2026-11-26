@@ -68,7 +68,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		return err
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository, config.Resolve, uuid.NewString, controls)
+	service := run.NewService(repository, config.ResolveForAccount, uuid.NewString, controls, config.ProjectTargets)
 	defer service.CloseTerminals()
 	api, err := graphql.NewHandler(service, config, logger)
 	if err != nil {
@@ -107,7 +107,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		run.NewWorker(repository, config.Resolve, logger, controls).Serve(workerCtx)
+		run.NewWorker(repository, config.ResolveForAccount, logger, controls).Serve(workerCtx)
 	}()
 
 	serverDone := make(chan error, 1)

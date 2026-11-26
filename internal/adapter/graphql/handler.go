@@ -34,6 +34,9 @@ type Application interface {
 	SaveMCPServer(context.Context, settings.MCPServerInput) (settings.MCPSettings, error)
 	RemoveMCPServer(context.Context, string) (settings.MCPSettings, error)
 	ResetMCPSettings(context.Context) (settings.MCPSettings, error)
+	SSHServers(context.Context) ([]settings.SSHServer, error)
+	SaveSSHServer(context.Context, settings.SSHServer) (settings.SSHServer, error)
+	RemoveSSHServer(context.Context, string) error
 }
 
 type resolver struct {
@@ -173,6 +176,12 @@ func (r *resolver) apiError(err error) error {
 		return codedError{err, "INVALID_PROJECT_SANDBOX"}
 	case errors.Is(err, run.ErrSandboxProvider):
 		return codedError{err, "SANDBOX_PROVIDER_UNAVAILABLE"}
+	case errors.Is(err, settings.ErrSSHServer):
+		return codedError{err, "SSH_SERVER_NOT_FOUND"}
+	case errors.Is(err, settings.ErrSSHServerName):
+		return codedError{err, "SSH_SERVER_NAME_EXISTS"}
+	case errors.Is(err, settings.ErrSSHServerInUse):
+		return codedError{err, "SSH_SERVER_IN_USE"}
 	case errors.Is(err, run.ErrWorkspaceBusy):
 		return codedError{err, "WORKSPACE_BUSY"}
 	case errors.Is(err, run.ErrActiveRun):

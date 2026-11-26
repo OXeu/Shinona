@@ -39,10 +39,6 @@ const e2bFields: Record<string, MessageKey> = {
 const connectionFields: Record<string, MessageKey> = {
   e2bProxyUrl: 'settings.e2bProxy', e2bDomain: 'settings.e2bDomain',
 }
-const sshFields: Record<string, MessageKey> = {
-  sshAddress: 'settings.sshAddress', sshUser: 'settings.sshUser', sshKeyPath: 'settings.sshKeyPath',
-  sshHostFingerprint: 'settings.sshHostFingerprint', sshTemplate: 'sandbox.image',
-}
 const group = computed(() => groups[props.section])
 const drafts = reactive<Record<string, string | null>>({})
 
@@ -54,7 +50,6 @@ function labeledFields(labels: Record<string, MessageKey>) {
 }
 const displayedFields = computed(() => labeledFields(group.value?.fields ?? {}))
 const e2b = computed(() => props.section === 'sandbox' ? labeledFields(e2bFields) : [])
-const ssh = computed(() => props.section === 'sandbox' ? labeledFields(sshFields) : [])
 const connection = computed(() => props.section === 'sandbox' ? labeledFields(connectionFields) : [])
 const timeoutField = computed(() => props.fields.find((field) => field.key === 'e2bOnTimeout'))
 const timeoutOptions = computed(() => [
@@ -176,19 +171,6 @@ function save() {
             @reset="drafts[field.key] = null"
           />
         </UiDisclosure>
-      </UiSection>
-      <UiSection class="provider-fields" :hidden="!ssh.length" :aria-label="t('sandbox.ssh')">
-        <UiSubheading>{{ t('sandbox.ssh') }}</UiSubheading>
-        <InstanceSettingField
-          v-for="{ field, label } in ssh"
-          :key="field.key"
-          :field="field"
-          :label="t(label)"
-          :draft="drafts[field.key]"
-          :disabled="saving || fetching"
-          @edit="edit(field, $event)"
-          @reset="updateDraft(field.key, null)"
-        />
       </UiSection>
       <UiBox class="model-discovery" :hidden="section !== 'model'">
         <UiChoiceDropdown

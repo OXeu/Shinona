@@ -62,11 +62,11 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	const owner = "owner"
 	logger := slog.New(slog.DiscardHandler)
 	agent := stagedAgent{steps: make(chan func(run.Input), 4), done: make(chan struct{})}
-	resolve := func(string) run.Target {
-		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}
+	resolve := func(context.Context, string, string) (run.Target, error) {
+		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repo, resolve, uuid.NewString, controls)
+	service := run.NewService(repo, resolve, uuid.NewString, controls, nil)
 	entry, err := service.CreateSession(ctx, owner, "")
 	if err != nil {
 		t.Fatal(err)

@@ -43,7 +43,7 @@ func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Re
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := run.NewService(repo, app.Resolve, uuid.NewString, &run.Controls{})
+	service := run.NewService(repo, app.ResolveForAccount, uuid.NewString, &run.Controls{}, app.ProjectTargets)
 	api, err := graphql.NewHandler(service, app, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
@@ -131,11 +131,11 @@ func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 		t.Fatalf("account settings accepted an instance field: %s", result)
 	}
 
-	resolve := func(string) run.Target {
-		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: app.resolveAgent}
+	resolve := func(context.Context, string, string) (run.Target, error) {
+		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: app.resolveAgent}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repo, resolve, uuid.NewString, controls)
+	service := run.NewService(repo, resolve, uuid.NewString, controls, nil)
 	for _, owner := range []string{"alice", "bob"} {
 		session, err := service.CreateSession(t.Context(), owner, "")
 		if err != nil {

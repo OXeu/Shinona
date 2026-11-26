@@ -122,10 +122,10 @@ func TestTransferBenchmarkServer(t *testing.T) {
 		}
 	})
 	fixture.seed(t, repo)
-	target := func(string) run.Target {
-		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return demo.Agent{}, nil }}
+	target := func(context.Context, string, string) (run.Target, error) {
+		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return demo.Agent{}, nil }}, nil
 	}
-	service := run.NewService(repo, target, nil, &run.Controls{})
+	service := run.NewService(repo, target, nil, &run.Controls{}, nil)
 	logger := slog.New(slog.DiscardHandler)
 	baseline, err := graphql.NewHandler(service, nil, logger)
 	if err != nil {

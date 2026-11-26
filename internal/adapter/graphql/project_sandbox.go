@@ -26,12 +26,18 @@ func sandboxConfig(config run.ProjectSandboxConfig) projectSandboxConfig {
 }
 
 type projectSandboxResolver struct {
-	Project   projectResolver
-	Config    projectSandboxConfig
-	Effective projectSandboxConfig
-	Providers []projectSandboxConfig
-	SandboxID string
-	State     string
+	Project       projectResolver
+	Config        projectSandboxConfig
+	Effective     projectSandboxConfig
+	ProviderLabel string
+	Providers     []projectSandboxProvider
+	SandboxID     string
+	State         string
+}
+
+type projectSandboxProvider struct {
+	projectSandboxConfig
+	Label string
 }
 
 func (r *resolver) ProjectSandbox(ctx context.Context, args struct{ ProjectID gql.ID }) (projectSandboxResolver, error) {
@@ -40,14 +46,16 @@ func (r *resolver) ProjectSandbox(ctx context.Context, args struct{ ProjectID gq
 	if err != nil {
 		return projectSandboxResolver{}, r.apiError(err)
 	}
-	providers := make([]projectSandboxConfig, len(status.Providers))
+	providers := make([]projectSandboxProvider, len(status.Providers))
 	for i, item := range status.Providers {
-		providers[i] = sandboxConfig(item)
+		config := item.Defaults
+		config.Provider = item.Name
+		providers[i] = projectSandboxProvider{projectSandboxConfig: sandboxConfig(config), Label: item.Label}
 	}
 	return projectSandboxResolver{
 		Project:   projectResolver{ID: gql.ID(status.Project.ID), Name: status.Project.Name},
 		Config:    sandboxConfig(status.Config),
-		Effective: sandboxConfig(status.Effective), Providers: providers,
+		Effective: sandboxConfig(status.Effective), ProviderLabel: status.ProviderLabel, Providers: providers,
 		SandboxID: status.Status.ID, State: string(status.Status.State),
 	}, nil
 }

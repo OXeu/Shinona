@@ -46,7 +46,7 @@ func TestAttachmentServesOnlyTheOwnersVisibleTurn(t *testing.T) {
 	if err := repo.Complete(ctx, "turn", run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	service := run.NewService(repo, nil, nil, &run.Controls{})
+	service := run.NewService(repo, nil, nil, &run.Controls{}, nil)
 	mux := http.NewServeMux()
 	mux.Handle("GET "+sessiontransfer.AttachmentPath, sessiontransfer.Attachment(service, slog.New(slog.DiscardHandler)))
 	requestImage := func(owner, session, index string) *httptest.ResponseRecorder {

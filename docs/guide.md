@@ -149,7 +149,9 @@ Shinona authenticates data-plane calls with the sandbox credentials returned by 
 
 ### SSH
 
-Use a dedicated Linux SSH host with Docker and a user that can run the Docker CLI there. In **Settings → Sandbox → SSH**, enter the host and port, SSH user, private key path on the Shinona server, and the verified SHA256 fingerprint of the SSH host key. The private key must be readable by Shinona and usable without a passphrase. The corresponding startup variables are listed in [.env.example](../.env.example).
+Use a Linux SSH host with Docker and a user that can run the Docker CLI there. In **Settings → SSH servers**, add a name, host and port, SSH user, and verified SHA256 host key fingerprint. Paste a private key or select it from your device. Use a key without a passphrase. Shinona stores the key with the account and only returns the server details when you load settings. Choose a saved SSH server under the project's **Manage sandbox** menu. You can save multiple servers, and you can rotate a server's key while projects use it. To remove a server or edit its host identity, switch those projects to another provider first.
+
+User-configured SSH hosts use public network addresses by default. An operator can allow exact private addresses through `SHINONA_TRUSTED_SSH_ADDRESSES`. An operator can also supply an optional shared SSH provider with the startup values in [.env.example](../.env.example).
 
 The SSH provider creates one container per account and project and starts commands in `/workspace`. It keeps the container when a run or SSH connection ends. The default Docker image is `buildpack-deps:bookworm-scm`. Custom images need `/bin/sh`, `sleep`, `setsid`, and standard file utilities. Install Bash for terminals and Bash tools, and Git for the repository panel.
 

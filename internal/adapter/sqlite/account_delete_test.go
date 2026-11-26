@@ -37,6 +37,7 @@ func TestDeleteAccountClearsOwnedRowsAndRejectsLateWrites(t *testing.T) {
 		&mcpGrantRow{OwnerID: owner, Server: "server", Grant: data},
 		&e2bWorkspaceRow{OwnerID: owner, ProjectID: "project", Endpoint: "fixture", SandboxID: "box", Credentials: data},
 		&projectSandboxRow{OwnerID: owner, ProjectID: "project", ProjectSandboxConfig: run.ProjectSandboxConfig{Provider: "e2b"}},
+		&sshServerRow{OwnerID: owner, ID: "fixture", Name: "Server", PrivateKey: "private"},
 		&avatarRow{OwnerID: owner},
 		&emailChallengeRow{OwnerID: owner},
 		&identityRow{OwnerID: owner, Issuer: "example", Subject: "subject"},

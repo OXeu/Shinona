@@ -17,7 +17,7 @@ func (deletedAccountRow) TableName() string { return "deleted_accounts" }
 
 var ownedAccountTables = []interface{ TableName() string }{
 	&row{}, &workspaceRootRow{}, &sessionRow{}, &projectRow{}, &settingsRow{}, &composerDefaultsRow{},
-	&modelSettingsRow{}, &mcpSettingsRow{}, &mcpGrantRow{}, &e2bWorkspaceRow{}, &projectSandboxRow{},
+	&modelSettingsRow{}, &mcpSettingsRow{}, &mcpGrantRow{}, &e2bWorkspaceRow{}, &projectSandboxRow{}, &sshServerRow{},
 	&avatarRow{}, &emailChallengeRow{}, &identityRow{}, &loginRow{}, &flowRow{},
 }
 

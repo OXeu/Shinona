@@ -9,6 +9,7 @@ type Query {
   applicationSettings: [SettingField!]!
   modelSettings: [SettingField!]!
   mcpSettings: McpSettings!
+  sshServers: [SSHServer!]!
   projects: [Project!]!
   projectSandbox(projectId: ID!): ProjectSandbox!
   # Omit projectId for all projects. An empty ID selects the default project.
@@ -26,6 +27,8 @@ type Mutation {
   saveMcpServer(input: McpServerInput!): McpSettings!
   removeMcpServer(name: String!): McpSettings!
   resetMcpSettings: McpSettings!
+  saveSshServer(input: SSHServerInput!): SSHServer!
+  removeSshServer(id: ID!): Boolean!
   updateApplicationSettings(changes: [SettingChange!]!): [SettingField!]!
   updateModelSettings(changes: [SettingChange!]!): [SettingField!]!
   createProject(name: String!): Project!
@@ -119,9 +122,37 @@ type ProjectSandbox {
   project: Project!
   config: ProjectSandboxConfig!
   effective: ProjectSandboxConfig!
-  providers: [ProjectSandboxConfig!]!
+  providerLabel: String!
+  providers: [ProjectSandboxProvider!]!
   sandboxId: String!
   state: String!
+}
+
+type ProjectSandboxProvider {
+  provider: String!
+  label: String!
+  template: String!
+  timeoutSeconds: Int!
+  onTimeout: String!
+}
+
+type SSHServer {
+  id: ID!
+  name: String!
+  address: String!
+  user: String!
+  hostFingerprint: String!
+  template: String!
+}
+
+input SSHServerInput {
+  id: ID!
+  name: String!
+  address: String!
+  user: String!
+  hostFingerprint: String!
+  template: String!
+  privateKey: String!
 }
 
 type ProjectSandboxConfig {

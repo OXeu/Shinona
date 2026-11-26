@@ -9,7 +9,21 @@ export interface SettingField {
   overridden: boolean
 }
 
+export interface SSHServer {
+  id: string
+  name: string
+  address: string
+  user: string
+  hostFingerprint: string
+  template: string
+}
+
+export interface SSHServerInput extends SSHServer {
+  privateKey: string
+}
+
 const settingFields = 'key value configured overridden'
+const sshServerFields = 'id name address user hostFingerprint template'
 
 export const settingsApi = {
   fetchModels: (baseUrl: string | undefined, apiKey: string | undefined, signal: AbortSignal) =>
@@ -19,11 +33,12 @@ export const settingsApi = {
       }
     `, { baseUrl, apiKey }, signal),
   load: (signal: AbortSignal) =>
-    graphql<{ applicationSettings: SettingField[]; modelSettings: SettingField[]; mcpSettings: McpSettings }>(`
+    graphql<{ applicationSettings: SettingField[]; modelSettings: SettingField[]; mcpSettings: McpSettings; sshServers: SSHServer[] }>(`
       query Settings {
         applicationSettings { ${settingFields} }
         modelSettings { ${settingFields} }
         mcpSettings { ${mcpSettingsFields} }
+        sshServers { ${sshServerFields} }
       }
     `, {}, signal),
   save: (changes: { key: string; value: string | null }[], signal: AbortSignal) =>
@@ -38,4 +53,14 @@ export const settingsApi = {
         updateModelSettings(changes: $changes) { ${settingFields} }
       }
     `, { changes }, signal),
+  saveSSHServer: (input: SSHServerInput, signal: AbortSignal) =>
+    graphql<{ saveSshServer: SSHServer }>(`
+      mutation SaveSSHServer($input: SSHServerInput!) {
+        saveSshServer(input: $input) { ${sshServerFields} }
+      }
+    `, { input }, signal),
+  removeSSHServer: (id: string, signal: AbortSignal) =>
+    graphql<{ removeSshServer: boolean }>(`
+      mutation RemoveSSHServer($id: ID!) { removeSshServer(id: $id) }
+    `, { id }, signal),
 }

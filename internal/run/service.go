@@ -12,12 +12,13 @@ import (
 )
 
 type Service struct {
-	repo      Repository
-	resolve   ResolveTarget
-	newID     func() string
-	controls  *Controls
-	projectMu sync.Mutex
-	terminals terminalRegistry
+	repo           Repository
+	resolve        ResolveTarget
+	projectTargets ListProjectTargets
+	newID          func() string
+	controls       *Controls
+	projectMu      sync.Mutex
+	terminals      terminalRegistry
 }
 
 type Settings struct {
@@ -25,8 +26,8 @@ type Settings struct {
 	Selected  sandbox.Policy
 }
 
-func NewService(repo Repository, resolve ResolveTarget, newID func() string, controls *Controls) *Service {
-	return &Service{repo: repo, resolve: resolve, newID: newID, controls: controls}
+func NewService(repo Repository, resolve ResolveTarget, newID func() string, controls *Controls, projectTargets ListProjectTargets) *Service {
+	return &Service{repo: repo, resolve: resolve, newID: newID, controls: controls, projectTargets: projectTargets}
 }
 
 func (s *Service) CreateSession(ctx context.Context, owner, projectID string) (Session, error) {
@@ -191,7 +192,11 @@ func (s *Service) RevertTurn(ctx context.Context, owner, sessionID, turnID, expe
 }
 
 func (s *Service) Settings(ctx context.Context, owner string) (Settings, error) {
-	return s.settingsFor(ctx, owner, s.resolve(""))
+	target, err := s.resolve(ctx, owner, "")
+	if err != nil {
+		return Settings{}, err
+	}
+	return s.settingsFor(ctx, owner, target)
 }
 
 func (s *Service) ComposerDefaults(ctx context.Context, owner string) (*ComposerDefaults, error) {
@@ -222,7 +227,11 @@ func (s *Service) settingsFor(ctx context.Context, owner string, target Target) 
 }
 
 func (s *Service) SetPolicy(ctx context.Context, owner string, choice sandbox.Policy) (Settings, error) {
-	available := s.resolve("").policies(owner)
+	target, err := s.resolve(ctx, owner, "")
+	if err != nil {
+		return Settings{}, err
+	}
+	available := target.policies(owner)
 	if !slices.Contains(available, choice) {
 		return Settings{}, ErrPolicy
 	}

@@ -27,6 +27,7 @@ type runtimeRepository interface {
 	settings.Repository
 	settings.ModelRepository
 	settings.MCPRepository
+	settings.SSHRepository
 	e2b.WorkspaceStore
 	mcp.OAuthStore
 }
@@ -41,6 +42,8 @@ type runtime struct {
 	models      *modelRuntime
 	accountHTTP *http.Client
 	mcpMu       sync.Mutex
+	sshMu       sync.Mutex
+	trustedSSH  map[string]bool
 	mu          sync.Mutex
 	current     atomic.Pointer[runtimeConfig]
 }
@@ -64,11 +67,16 @@ func newRuntime(ctx context.Context, repo runtimeRepository, environment environ
 	if err != nil {
 		return nil, fmt.Errorf("SHINONA_TRUSTED_MODEL_ORIGINS: %w", err)
 	}
+	trustedSSH, err := trustedSSHAddresses(environment.value("SHINONA_TRUSTED_SSH_ADDRESSES", ""))
+	if err != nil {
+		return nil, err
+	}
 	config := &runtime{
 		repo: repo, defaults: settings.Defaults(environment.lookup), origin: origin,
 		mcpOAuth:    mcp.NewOAuth(repo, origin.String()),
 		models:      newModelRuntime(repo, modelHTTP),
 		accountHTTP: accountHTTP,
+		trustedSSH:  trustedSSH,
 		client: &http.Client{
 			Timeout:       35 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

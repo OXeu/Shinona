@@ -38,9 +38,10 @@ const timeout = ref('')
 const onTimeout = ref('')
 let request: AbortController
 
-function providerName(name: string) {
+function providerName(name: string, label = '') {
   if (name === 'e2b') return t('sandbox.e2b')
-  if (name === 'ssh') return t('sandbox.ssh')
+  if (name === 'ssh') return t('sandbox.instanceSSH')
+  if (label) return t('sandbox.sshServerLabel', { name: label })
   return t('common.unavailable')
 }
 
@@ -49,7 +50,7 @@ function timeoutActionName(value: string) {
 }
 
 const providerOptions = computed(() => {
-  return (snapshot.value?.providers ?? []).map(({ provider }) => ({ value: provider, label: providerName(provider) }))
+  return (snapshot.value?.providers ?? []).map(({ provider, label }) => ({ value: provider, label: providerName(provider, label) }))
 })
 const defaults = computed(() => snapshot.value?.providers.find((item) => item.provider === provider.value))
 const configured = computed(() => snapshot.value?.providers.some((item) => item.provider === snapshot.value?.effective.provider))
@@ -188,7 +189,7 @@ onUnmounted(() => request.abort())
       </UiBox>
       <UiBox class="status-body" :hidden="!snapshot">
         <UiInline class="state" :data-state="snapshot?.state">{{ snapshot ? t(statusKeys[snapshot.state]) : '' }}</UiInline>
-        <UiInline>{{ providerName(snapshot?.effective.provider ?? '') }}</UiInline>
+        <UiInline>{{ providerName(snapshot?.effective.provider ?? '', snapshot?.providerLabel) }}</UiInline>
         <UiInline class="sandbox-id" :hidden="!snapshot?.sandboxId">{{ snapshot?.sandboxId }}</UiInline>
       </UiBox>
       <UiBox class="sandbox-actions" :hidden="!configured">
@@ -211,12 +212,14 @@ onUnmounted(() => request.abort())
 
     <UiSection class="sandbox-section" :hidden="!snapshot" :aria-label="t('sandbox.configuration')">
       <UiSubheading>{{ t('sandbox.configuration') }}</UiSubheading>
-      <UiBox class="sandbox-hint" :hidden="!!providerOptions.length">{{ t('sandbox.noneConfigured') }}</UiBox>
+      <UiBox class="sandbox-hint" :hidden="!!providerOptions.length">
+        <RouterLink :to="{ name: 'settings', query: { section: 'ssh' } }">{{ t('ssh.add') }}</RouterLink>
+      </UiBox>
       <UiForm :hidden="!providerOptions.length" @submit.prevent="validTimeout && dirty && defaults && prepare('save')">
         <UiChoiceDropdown
           :model-value="provider"
           :label="t('sandbox.provider')"
-          :placeholder="providerName(provider)"
+          :placeholder="providerName(provider, snapshot?.providerLabel)"
           :options="providerOptions"
           :disabled="busy || loading"
           @update:model-value="chooseProvider"
@@ -224,7 +227,7 @@ onUnmounted(() => request.abort())
         <UiInput
           :id="templateId"
           v-model="template"
-          :label="t(provider === 'ssh' ? 'sandbox.image' : 'sandbox.template')"
+          :label="t(provider === 'e2b' ? 'sandbox.template' : 'sandbox.image')"
           :placeholder="defaults ? t('sandbox.inheritValue', { value: defaults.template }) : undefined"
           :disabled="busy || loading || !defaults"
           maxlength="255"

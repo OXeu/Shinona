@@ -36,11 +36,11 @@ func TestConversationLifecycleAndOwnership(t *testing.T) {
 	})
 
 	logger := slog.New(slog.DiscardHandler)
-	target := func(string) run.Target {
-		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return progressAgent{}, nil }}
+	target := func(context.Context, string, string) (run.Target, error) {
+		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return progressAgent{}, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repo, target, uuid.NewString, controls)
+	service := run.NewService(repo, target, uuid.NewString, controls, nil)
 	handler, err := graphql.NewHandler(service, application{}, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func TestComposerDefaultsAreAccountScopedAndValidated(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	service := run.NewService(repo, nil, nil, &run.Controls{})
+	service := run.NewService(repo, nil, nil, &run.Controls{}, nil)
 	handler, err := graphql.NewHandler(service, application{}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestProjectSessionsAndOwnership(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	service := run.NewService(repo, nil, uuid.NewString, &run.Controls{})
+	service := run.NewService(repo, nil, uuid.NewString, &run.Controls{}, nil)
 	handler, err := graphql.NewHandler(service, application{}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)

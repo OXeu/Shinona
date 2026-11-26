@@ -123,7 +123,11 @@ func (s *Service) openWorkspace(ctx context.Context, owner, id string) (sandbox.
 	if turn == nil || turn.Backend == "" || turn.Policy != sandbox.Shared {
 		return nil, ErrWorkspaceUnavailable
 	}
-	retained, ok := s.resolve(turn.Backend).Provider.(sandbox.RetainedProvider)
+	target, err = s.resolve(ctx, owner, turn.Backend)
+	if err != nil {
+		return nil, err
+	}
+	retained, ok := target.Provider.(sandbox.RetainedProvider)
 	if !ok {
 		return nil, ErrWorkspaceUnavailable
 	}

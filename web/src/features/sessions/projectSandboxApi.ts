@@ -12,7 +12,8 @@ export interface ProjectSandbox {
   project: Project
   config: ProjectSandboxConfig
   effective: ProjectSandboxConfig
-  providers: ProjectSandboxConfig[]
+  providerLabel: string
+  providers: (ProjectSandboxConfig & { label: string })[]
   sandboxId: string
   state: 'NONE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'MISSING' | 'UNAVAILABLE'
 }
@@ -26,8 +27,8 @@ export const projectSandboxApi = {
         project { id name }
         config { ${configFields} }
         effective { ${configFields} }
-        providers { ${configFields} }
-        sandboxId state
+        providers { ${configFields} label }
+        providerLabel sandboxId state
       }
     }
   `, { projectId }, signal),
