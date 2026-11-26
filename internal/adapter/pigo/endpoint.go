@@ -18,6 +18,8 @@ import (
 	"github.com/OXeu/shinona/internal/timing"
 )
 
+const completionProvider = "openai"
+
 type ModelInfo struct {
 	ID            string
 	ContextWindow int32
@@ -37,6 +39,7 @@ func (n *catalogTokenLimit) UnmarshalJSON(data []byte) error {
 
 type Endpoint struct {
 	base           *url.URL
+	catalogOrigin  bool
 	key            string
 	client         *http.Client
 	completionIdle time.Duration
@@ -59,7 +62,29 @@ func NewEndpoint(base, key string, client *http.Client) (*Endpoint, error) {
 		target.Fragment != "" || (target.Scheme != "https" && target.Scheme != "http") {
 		return nil, errors.New("enter an HTTP(S) OpenAI-compatible base URL without credentials, query, or fragment")
 	}
-	return &Endpoint{base: target, key: key, client: client, completionIdle: modelResponseIdle}, nil
+	catalogOrigin := slices.ContainsFunc(ai.GetModels(completionProvider), func(model *ai.Model) bool {
+		return matchesModelOrigin(target, model.BaseURL)
+	})
+	return &Endpoint{base: target, catalogOrigin: catalogOrigin, key: key, client: client, completionIdle: modelResponseIdle}, nil
+}
+
+func matchesModelOrigin(endpoint *url.URL, modelBase string) bool {
+	if endpoint.Scheme != "https" {
+		return false
+	}
+	catalog, err := url.Parse(modelBase)
+	if err != nil || catalog.Scheme != endpoint.Scheme || catalog.Hostname() == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSuffix(endpoint.Hostname(), "."), strings.TrimSuffix(catalog.Hostname(), ".")) &&
+		httpsPort(endpoint) == httpsPort(catalog)
+}
+
+func httpsPort(endpoint *url.URL) string {
+	if port := endpoint.Port(); port != "" {
+		return port
+	}
+	return "443"
 }
 
 func (e *Endpoint) Catalog(ctx context.Context, force bool) ([]ModelInfo, error) {
@@ -173,8 +198,8 @@ func (e *Endpoint) fetch(ctx context.Context) ([]ModelInfo, error) {
 
 func (e *Endpoint) Model(id string) ai.Model {
 	model := ai.Model{ID: id, Name: id, Input: []string{"text", "image"}}
-	if strings.EqualFold(e.base.Hostname(), "api.openai.com") {
-		if known := ai.GetModel("openai", id); known != nil {
+	if e.catalogOrigin {
+		if known := ai.GetModel(completionProvider, id); known != nil && matchesModelOrigin(e.base, known.BaseURL) {
 			model = *known
 		}
 	}
@@ -184,8 +209,8 @@ func (e *Endpoint) Model(id string) ai.Model {
 		model.ContextWindow = int(e.models[index].ContextWindow)
 	}
 	e.mu.Unlock()
-	model.Provider, model.Api, model.BaseURL = "openai", ai.APIOpenAICompletions, e.base.String()
-	model.Compat = completionCompatibility(model.Compat, !strings.EqualFold(e.base.Hostname(), "api.openai.com"), false)
+	model.Provider, model.Api, model.BaseURL = completionProvider, ai.APIOpenAICompletions, e.base.String()
+	model.Compat = completionCompatibility(model.Compat, !e.catalogOrigin, false)
 	return model
 }
 

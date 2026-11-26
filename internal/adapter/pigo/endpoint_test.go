@@ -14,8 +14,49 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sky-valley/pi/ai"
+
 	"github.com/OXeu/shinona/internal/run"
 )
+
+func TestEndpointUsesPiMetadataOnlyForCatalogOrigin(t *testing.T) {
+	const modelID = "gpt-4o"
+	known := ai.GetModel(completionProvider, modelID)
+	if known == nil || known.ContextWindow <= 0 {
+		t.Fatal("Pi's built-in OpenAI model metadata is missing")
+	}
+	for _, fixture := range []struct {
+		endpoint string
+		usesPi   bool
+	}{
+		{known.BaseURL, true},
+		{"https://API.OPENAI.COM:443/v1", true},
+		{"https://api.openai.com:8443/v1", false},
+		{"http://api.openai.com/v1", false},
+		{"https://api.openai.com.proxy.example/v1", false},
+	} {
+		t.Run(fixture.endpoint, func(t *testing.T) {
+			endpoint, err := NewEndpoint(fixture.endpoint, "fixture", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model := endpoint.Model(modelID)
+			if model.BaseURL != fixture.endpoint || model.Api != ai.APIOpenAICompletions {
+				t.Fatalf("the selected model changed the request routing: %+v", model)
+			}
+			if fixture.usesPi {
+				if model.ContextWindow != known.ContextWindow || model.Name != known.Name {
+					t.Fatalf("Pi model metadata was lost: %+v", model)
+				}
+			} else {
+				var compat map[string]json.RawMessage
+				if err := json.Unmarshal(model.Compat, &compat); err != nil || string(compat["supportsDeveloperRole"]) != "false" || model.ContextWindow != 0 {
+					t.Fatalf("custom endpoint inherited hosted model metadata: %+v, %v", model, err)
+				}
+			}
+		})
+	}
+}
 
 func TestCachedCatalogDoesNotWaitForModelDiscovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
