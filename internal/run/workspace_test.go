@@ -73,6 +73,36 @@ func TestProjectSandboxUsesConfiguredLifecycleTimeout(t *testing.T) {
 	})
 }
 
+func TestProjectTargetUsesTheBindingThatWonConcurrentProvisioning(t *testing.T) {
+	candidate, retained := &timedWorkspaceProvider{}, &timedWorkspaceProvider{}
+	repo := concurrentProjectBinding{saved: ProjectSandboxConfig{Provider: sandbox.ProviderE2B, Template: "retained-template"}}
+	resolve := func(_ context.Context, _ string, name string) (Target, error) {
+		switch name {
+		case sandbox.ProviderSSH:
+			return Target{Name: name, Provider: candidate}, nil
+		case sandbox.ProviderE2B:
+			return Target{Name: name, Provider: retained}, nil
+		default:
+			t.Fatalf("unexpected provider lookup %q", name)
+			return Target{}, nil
+		}
+	}
+	spec := sandbox.Spec{OwnerID: "owner", ProjectID: "project", Policy: sandbox.Shared}
+	spec, target, err := projectTarget(t.Context(), repo, resolve, spec, sandbox.ProviderSSH, true)
+	if err != nil || target.Provider != retained || spec.Template != repo.saved.Template {
+		t.Fatalf("resolved workspace %+v with target %+v: %v", spec, target, err)
+	}
+}
+
+type concurrentProjectBinding struct {
+	workspaceTestRepository
+	saved ProjectSandboxConfig
+}
+
+func (r concurrentProjectBinding) RememberProjectSandboxProvider(context.Context, string, string, string) (ProjectSandboxConfig, error) {
+	return r.saved, nil
+}
+
 type timedWorkspaceProvider struct {
 	sandbox.ManagedProjectProvider
 	open    func(context.Context) (sandbox.Workspace, error)

@@ -35,8 +35,8 @@ func TestProjectSandboxSettingsKeepLegacyE2BProvider(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if err := repo.Projects.RememberProjectSandboxProvider(ctx, project.OwnerID, project.ID, "ssh"); err != nil {
-		t.Fatal(err)
+	if saved, err := repo.Projects.RememberProjectSandboxProvider(ctx, project.OwnerID, project.ID, sandbox.ProviderSSH); err != nil || saved.Provider != sandbox.ProviderE2B {
+		t.Fatalf("remember provider for a legacy project: %+v, %v", saved, err)
 	}
 	config, err := repo.Projects.ProjectSandboxConfig(ctx, project.OwnerID, project.ID)
 	if err != nil || config == nil || *config != (run.ProjectSandboxConfig{Provider: "e2b"}) {
@@ -44,6 +44,41 @@ func TestProjectSandboxSettingsKeepLegacyE2BProvider(t *testing.T) {
 	}
 	if err := repo.Projects.SaveProjectSandboxConfig(ctx, "other-owner", project.ID, run.ProjectSandboxConfig{Provider: "ssh"}); !errors.Is(err, run.ErrProject) {
 		t.Fatalf("cross-account settings write: %v", err)
+	}
+}
+
+func TestConcurrentProjectSandboxBindingReturnsTheSameProvider(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "projects.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner")
+	project := run.Project{ID: "project", OwnerID: "owner", Name: "Project"}
+	if err := repo.Projects.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		config run.ProjectSandboxConfig
+		err    error
+	}
+	begin, results := make(chan struct{}), make(chan result, 2)
+	for _, candidate := range []string{sandbox.ProviderE2B, sandbox.ProviderSSH} {
+		go func() {
+			<-begin
+			config, err := repo.Projects.RememberProjectSandboxProvider(ctx, project.OwnerID, project.ID, candidate)
+			results <- result{config, err}
+		}()
+	}
+	close(begin)
+	first, second := <-results, <-results
+	if first.err != nil || second.err != nil || first.config.Provider == "" || first.config != second.config {
+		t.Fatalf("provider bindings disagree: %+v, %+v", first, second)
+	}
+	stored, err := repo.Projects.ProjectSandboxConfig(ctx, project.OwnerID, project.ID)
+	if err != nil || stored == nil || *stored != first.config {
+		t.Fatalf("stored binding does not match the returned bindings: %+v, %v", stored, err)
 	}
 }
 

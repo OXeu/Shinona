@@ -73,7 +73,8 @@ type WorkerRepository interface {
 
 type ProjectSandboxRepository interface {
 	ProjectSandboxConfig(ctx context.Context, ownerID, projectID string) (*ProjectSandboxConfig, error)
-	RememberProjectSandboxProvider(ctx context.Context, ownerID, projectID, provider string) error
+	// RememberProjectSandboxProvider returns the existing or newly saved binding.
+	RememberProjectSandboxProvider(ctx context.Context, ownerID, projectID, provider string) (ProjectSandboxConfig, error)
 }
 
 type sessionProjectReader interface {

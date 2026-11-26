@@ -39,25 +39,26 @@ func projectTarget(ctx context.Context, repo ProjectSandboxRepository, resolve R
 	if err != nil {
 		return sandbox.Spec{}, Target{}, err
 	}
-	if config != nil {
-		target, err := resolve(ctx, spec.OwnerID, config.Provider)
+	if config == nil {
+		target, err := resolve(ctx, spec.OwnerID, backend)
 		if err != nil {
 			return sandbox.Spec{}, Target{}, err
 		}
-		spec.Template = config.Template
-		target.Provider, err = config.configureIdleTimeout(target.Provider)
-		return spec, target, err
+		if _, managed := target.Provider.(sandbox.ManagedProjectProvider); !managed || !provision {
+			return spec, target, nil
+		}
+		saved, err := repo.RememberProjectSandboxProvider(ctx, spec.OwnerID, spec.ProjectID, target.Name)
+		if err != nil {
+			return sandbox.Spec{}, Target{}, err
+		}
+		config = &saved
 	}
-	target, err := resolve(ctx, spec.OwnerID, backend)
+	target, err := resolve(ctx, spec.OwnerID, config.Provider)
 	if err != nil {
 		return sandbox.Spec{}, Target{}, err
 	}
-	if _, managed := target.Provider.(sandbox.ManagedProjectProvider); managed && provision {
-		if err := repo.RememberProjectSandboxProvider(ctx, spec.OwnerID, spec.ProjectID, target.Name); err != nil {
-			return sandbox.Spec{}, Target{}, err
-		}
-		target, err = resolve(ctx, spec.OwnerID, target.Name)
-	}
+	spec.Template = config.Template
+	target.Provider, err = config.configureIdleTimeout(target.Provider)
 	return spec, target, err
 }
 
@@ -218,10 +219,12 @@ func (s *Service) CreateProjectSandbox(ctx context.Context, owner, id string) er
 
 func (s *Service) provisionProjectSandbox(ctx context.Context, name string, provider sandbox.ManagedProjectProvider, config ProjectSandboxConfig, spec sandbox.Spec) error {
 	if config.Provider == "" {
-		if err := s.stores.Projects.RememberProjectSandboxProvider(ctx, spec.OwnerID, spec.ProjectID, name); err != nil {
+		saved, err := s.stores.Projects.RememberProjectSandboxProvider(ctx, spec.OwnerID, spec.ProjectID, name)
+		if err != nil {
 			return err
 		}
-		target, err := s.resolve(ctx, spec.OwnerID, name)
+		config = saved
+		target, err := s.resolve(ctx, spec.OwnerID, config.Provider)
 		if err != nil {
 			return err
 		}
