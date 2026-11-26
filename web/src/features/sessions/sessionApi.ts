@@ -43,7 +43,7 @@ export interface Turn {
   updatedAt: string
   model: string
   attachments: string[]
-  steering: { text: string; delivered: boolean }[]
+  steering: { id?: string; text: string; delivered: boolean }[]
   contextTokens: number
   contextWindow: number
   tokenUsage?: TokenUsage | null
@@ -112,12 +112,28 @@ export interface ComposerPayload extends ComposerRunOptions {
 
 export type ComposerAction = 'send' | 'queue' | 'steer'
 
+export type PendingMessage = { id: string; prompt: string } & (
+  | { kind: 'steering'; runId: string }
+  | { kind: 'queue'; attachments: string[] }
+)
+
+export type PendingAction = 'move' | 'draft' | 'delete'
+
+interface PendingDraft {
+  prompt: string
+  images: ImageAttachment[]
+}
+
 function sessionPath(id: string) {
   return '/sessions/' + encodeURIComponent(id)
 }
 
 function turnPath(sessionId: string, turnId: string) {
   return sessionPath(sessionId) + '/turns/' + encodeURIComponent(turnId)
+}
+
+function steeringPath(sessionId: string, runId: string, messageId: string) {
+  return turnPath(sessionId, runId) + '/steering/' + encodeURIComponent(messageId)
 }
 
 interface TranscriptPage {
@@ -174,6 +190,13 @@ export const sessionApi = {
     apiJSON<Turn>(turnPath(sessionId, turnId) + '/retry', 'POST', signal, { options }),
   steer: (sessionId: string, runId: string, prompt: string, signal: AbortSignal) =>
     apiJSON<void>(turnPath(sessionId, runId) + '/steering', 'POST', signal, { prompt }),
+  queueSteering: (sessionId: string, runId: string, messageId: string, options: ComposerRunOptions, signal: AbortSignal) =>
+    apiJSON<void>(steeringPath(sessionId, runId, messageId) + '/queue', 'POST', signal, { options }),
+  steerQueued: (sessionId: string, turnId: string, runId: string, signal: AbortSignal) =>
+    apiJSON<void>(turnPath(sessionId, turnId) + '/steer', 'POST', signal, { runId }),
+  takePending: (sessionId: string, message: PendingMessage, signal: AbortSignal) =>
+    apiJSON<PendingDraft>(message.kind === 'steering' ? steeringPath(sessionId, message.runId, message.id) :
+      turnPath(sessionId, message.id) + '/queue', 'DELETE', signal),
   stop: (sessionId: string, runId: string, signal: AbortSignal) =>
     apiJSON<void>(turnPath(sessionId, runId) + '/stop', 'POST', signal),
 }

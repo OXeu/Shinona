@@ -553,6 +553,7 @@ type SteeringMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
 	Delivered     bool                   `protobuf:"varint,2,opt,name=delivered,proto3" json:"delivered,omitempty"`
+	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -599,6 +600,13 @@ func (x *SteeringMessage) GetDelivered() bool {
 		return x.Delivered
 	}
 	return false
+}
+
+func (x *SteeringMessage) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
 }
 
 type TurnPart struct {
@@ -1426,10 +1434,11 @@ const file_session_transfer_proto_rawDesc = "" +
 	"\fContextUsage\x12\x16\n" +
 	"\x06tokens\x18\x01 \x01(\x05R\x06tokens\x12\x16\n" +
 	"\x06window\x18\x02 \x01(\x05R\x06window\x12\x1c\n" +
-	"\testimated\x18\x03 \x01(\bR\testimated\"C\n" +
+	"\testimated\x18\x03 \x01(\bR\testimated\"S\n" +
 	"\x0fSteeringMessage\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1c\n" +
-	"\tdelivered\x18\x02 \x01(\bR\tdelivered\"\xb7\x01\n" +
+	"\tdelivered\x18\x02 \x01(\bR\tdelivered\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\"\xb7\x01\n" +
 	"\bTurnPart\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x12\n" +

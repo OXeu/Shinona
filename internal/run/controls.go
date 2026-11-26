@@ -53,17 +53,17 @@ func (c *Controls) claim(ctx context.Context, repo Repository) (*activeTurn, err
 	return c.active, nil
 }
 
-func (c *Controls) steer(owner, session, id, prompt string) error {
+func (c *Controls) updateSteering(owner, session, id string, durable bool, change func(*Steering) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	active := c.active
 	if !active.matches(owner, session, id) || active.stopping || active.ctx.Err() != nil {
 		return ErrNotRunning
 	}
-	if err := active.steering.enqueue(prompt); err != nil {
+	if err := change(&active.steering); err != nil {
 		return err
 	}
-	c.notifyLocked(sessionKey{owner: owner, id: session}, false)
+	c.notifyLocked(sessionKey{owner: owner, id: session}, durable)
 	return nil
 }
 

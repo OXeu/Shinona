@@ -191,6 +191,7 @@ type Repository interface {
 	// EnqueueRetry also verifies that the retry target is still the latest failed turn.
 	EnqueueRetry(ctx context.Context, item Run, options RetryOptions) (Run, error)
 	StopQueued(ctx context.Context, ownerID, sessionID, id string, now time.Time) error
+	TakeQueued(ctx context.Context, ownerID, sessionID, id string, textOnly bool, now time.Time) (PendingDraft, error)
 	History(ctx context.Context, turn Run, limit int) ([]Exchange, error)
 	ComposerDefaults(ctx context.Context, ownerID string) (*ComposerDefaults, error)
 	SaveComposerDefaults(ctx context.Context, ownerID string, defaults ComposerDefaults) error

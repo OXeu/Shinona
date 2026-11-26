@@ -503,10 +503,15 @@
   "composer.stopped": "Stopped",
   "composer.stopRequested": "Stop requested.",
   "composer.stopFailed": "Could not stop this turn.",
-  "composer.removeQueued": "Remove queued prompt",
   "composer.pendingMessages": "Pending messages",
-  "composer.showAllPending": "Show all {count} pending messages",
-  "composer.showFewerPending": "Show fewer",
+  "composer.steeringGroup": "Steering",
+  "composer.queueGroup": "Queue",
+  "composer.moveToQueue": "Move to queue",
+  "composer.moveToSteering": "Send as steering",
+  "composer.steerTextOnly": "Steering only accepts text messages.",
+  "composer.returnToDraft": "Return to message box",
+  "composer.deletePending": "Delete pending message",
+  "composer.pendingActionFailed": "Could not update the pending message.",
   "composer.notRunning": "This turn is no longer accepting the action.",
   "composer.queueFull": "The session queue is full."
 }

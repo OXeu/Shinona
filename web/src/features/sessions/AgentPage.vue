@@ -18,7 +18,7 @@ import SessionHeader from './SessionHeader.vue'
 import SessionNavPanel from './SessionNavPanel.vue'
 import { sessionTitle } from './presentation'
 import { sessionApi } from './sessionApi'
-import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment, Policy, SessionSummary, Turn } from './sessionApi'
+import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment, PendingAction, PendingMessage, Policy, SessionSummary, Turn } from './sessionApi'
 import { useSessionStore } from './sessionStore'
 import { rememberTerminalView, terminalView } from './terminalPreferences'
 import { watchLiveSession } from './wire/liveSession'
@@ -46,7 +46,7 @@ const catalogRequest = new AbortController()
 const savingDefaults = ref(false)
 let catalogRetry: ReturnType<typeof setTimeout> | undefined
 let defaultsVersion = 0
-type ChatErrorSource = 'load' | 'submit' | 'stop' | 'revert' | 'retry' | 'create' | 'copy' | 'attachment'
+type ChatErrorSource = 'load' | 'submit' | 'stop' | 'pending' | 'revert' | 'retry' | 'create' | 'copy' | 'attachment'
 const chatErrors = ref<Partial<Record<ChatErrorSource, string>>>({})
 const submitting = ref(false)
 const creating = ref(false)
@@ -358,6 +358,39 @@ async function stop(id: string) {
   }
 }
 
+async function changePending(message: PendingMessage, action: PendingAction, runId: string | undefined, options: ComposerRunOptions) {
+  const scope = current
+  if (!scope || submitting.value || creating.value || reverting.value) return
+  if (action === 'move' && message.kind === 'queue' && (!runId || message.attachments.length)) return
+  const signal = scope.controller.signal
+  setChatError('pending', '')
+  submitting.value = true
+  try {
+    if (action === 'move') {
+      if (message.kind === 'steering') {
+        await sessionApi.queueSteering(scope.id, message.runId, message.id, options, signal)
+      } else if (runId) {
+        await sessionApi.steerQueued(scope.id, message.id, runId, signal)
+      }
+    } else {
+      const draft = await sessionApi.takePending(scope.id, message, signal)
+      if (action === 'draft' && !signal.aborted) {
+        prompt.value = [prompt.value, draft.prompt].filter(Boolean).join('\n\n')
+        images.value = [...images.value, ...draft.images]
+      }
+    }
+    if (!signal.aborted) scope.revision++
+  } catch (error) {
+    if (!signal.aborted) setChatError('pending', messageFor(error, 'composer.pendingActionFailed'))
+  } finally {
+    if (!signal.aborted) {
+      submitting.value = false
+      schedule(scope)
+      void refresh(scope)
+    }
+  }
+}
+
 function askRevert(turnId: string) {
   const entry = session.value
   const head = entry?.turns.at(-1)
@@ -602,6 +635,7 @@ onUnmounted(() => {
                   @load-older="loadOlder"
                   @submit="submit"
                   @stop="stop"
+                  @pending="changePending"
                   @revert="askRevert"
                   @retry="retryTurn"
                   @save-defaults="saveComposerDefaults"

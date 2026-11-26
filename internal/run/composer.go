@@ -84,6 +84,7 @@ type TurnPart struct {
 }
 
 type SteeringMessage struct {
+	ID        string `json:"id,omitempty"`
 	Text      string `json:"text"`
 	Delivered bool   `json:"delivered"`
 }
@@ -98,7 +99,7 @@ type Steering struct {
 	onDelivery func()
 }
 
-func (s *Steering) enqueue(text string) error {
+func (s *Steering) enqueue(load func() (SteeringMessage, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sealed {
@@ -107,8 +108,30 @@ func (s *Steering) enqueue(text string) error {
 	if len(s.messages) >= 16 {
 		return ErrQueueFull
 	}
-	s.messages = append(s.messages, SteeringMessage{Text: text})
+	message, err := load()
+	if err != nil {
+		return err
+	}
+	s.messages = append(s.messages, message)
 	return nil
+}
+
+func (s *Steering) take(id string, use func(SteeringMessage) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealed {
+		return ErrNotRunning
+	}
+	for i := s.next; i < len(s.messages); i++ {
+		if s.messages[i].ID == id {
+			if err := use(s.messages[i]); err != nil {
+				return err
+			}
+			s.messages = slices.Delete(s.messages, i, i+1)
+			return nil
+		}
+	}
+	return ErrNotRunning
 }
 
 func (s *Steering) Drain() []string { return s.drain(false) }

@@ -1,68 +1,67 @@
 <script setup lang="ts">
-import { computed, ref, useId } from 'vue'
+import { computed } from 'vue'
 
 import { t } from '../../shared/i18n'
-import UiIcon from '../../shared/ui/UiIcon.vue'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
-import { UiBox, UiButton, UiInline, UiList, UiListItem, UiPre, UiSection } from '../../shared/ui/elements'
+import { UiBox, UiInline, UiList, UiListItem, UiPre, UiSection, UiSubheading } from '../../shared/ui/elements'
+import type { PendingAction, PendingMessage } from './sessionApi'
 
-interface PendingMessage {
-  id: string
-  prompt: string
-  attachments?: string[]
-  removable?: boolean
-}
-
-const props = defineProps<{ messages: PendingMessage[]; busy: boolean }>()
-const emit = defineEmits<{ remove: [id: string] }>()
-const listId = useId()
-const expanded = ref(false)
-const collapsible = computed(() => props.messages.length > 3)
-const visibleMessages = computed(() => collapsible.value && !expanded.value ? props.messages.slice(0, 2) : props.messages)
+const props = defineProps<{ messages: PendingMessage[]; hasActiveTurn: boolean; busy: boolean }>()
+const emit = defineEmits<{
+  action: [message: PendingMessage, action: PendingAction]
+  copy: [prompt: string, attachments?: string[]]
+}>()
+const groups = computed(() => [
+  { kind: 'steering', label: t('composer.steeringGroup'), messages: props.messages.filter(({ kind }) => kind === 'steering') },
+  { kind: 'queue', label: t('composer.queueGroup'), messages: props.messages.filter(({ kind }) => kind === 'queue') },
+].filter(({ messages }) => messages.length))
 </script>
 
 <template>
-  <UiSection class="pending-messages" :hidden="!messages.length" :aria-label="t('composer.pendingMessages')">
-    <UiList
-      :id="listId"
-      class="pending-list"
-      role="list"
-      tabindex="0"
-      :aria-label="t('composer.pendingMessages')"
-    >
-      <UiListItem
-        v-for="(message, index) in visibleMessages"
-        :key="message.id"
-        class="pending-message"
-        :aria-posinset="index + 1"
-        :aria-setsize="messages.length"
-      >
-        <UiBox class="pending-bubble">
-          <UiPre class="pending-text" :hidden="!message.prompt">{{ message.prompt }}</UiPre>
-          <UiInline class="pending-attachments" :hidden="!message.attachments?.length">
-            {{ t('composer.attached', { images: message.attachments?.join(', ') ?? '' }) }}
+  <UiSection
+    :hidden="!groups.length"
+    class="pending-messages"
+    tabindex="0"
+    :aria-label="t('composer.pendingMessages')"
+  >
+    <UiBox v-for="group in groups" :key="group.kind" class="pending-group">
+      <UiSubheading class="pending-heading">{{ group.label }}</UiSubheading>
+      <UiList class="pending-list" role="list" :aria-label="group.label">
+        <UiListItem v-for="message in group.messages" :key="message.id" class="pending-message">
+          <UiPre :hidden="!message.prompt" class="pending-text">{{ message.prompt }}</UiPre>
+          <UiInline :hidden="message.kind === 'steering' || !message.attachments.length" class="pending-attachments">
+            {{ t('composer.attached', { images: message.kind === 'queue' ? message.attachments.join(', ') : '' }) }}
           </UiInline>
-        </UiBox>
-        <UiIconButton
-          class="pending-remove"
-          icon="close-line"
-          :label="t('composer.removeQueued')"
-          :hidden="!message.removable"
-          :disabled="busy"
-          @click="emit('remove', message.id)"
-        />
-      </UiListItem>
-    </UiList>
-    <UiButton
-      class="pending-toggle"
-      :hidden="!collapsible"
-      :aria-expanded="expanded"
-      :aria-controls="listId"
-      @click="expanded = !expanded"
-    >
-      {{ expanded ? t('composer.showFewerPending') : t('composer.showAllPending', { count: messages.length }) }}
-      <UiIcon :name="expanded ? 'arrow-up-s-line' : 'arrow-down-s-line'" />
-    </UiButton>
+          <UiBox class="pending-actions">
+            <UiIconButton
+              :icon="message.kind === 'steering' ? 'list-check-3' : 'flashlight-line'"
+              :label="t(message.kind === 'steering' ? 'composer.moveToQueue' : 'composer.moveToSteering')"
+              :title="t(message.kind === 'steering' ? 'composer.moveToQueue' : !hasActiveTurn ? 'composer.notRunning' :
+                message.attachments.length ? 'composer.steerTextOnly' : 'composer.moveToSteering')"
+              :disabled="busy || (message.kind === 'queue' && (!hasActiveTurn || !!message.attachments.length))"
+              @click="emit('action', message, 'move')"
+            />
+            <UiIconButton
+              icon="arrow-go-back-line"
+              :label="t('composer.returnToDraft')"
+              :disabled="busy"
+              @click="emit('action', message, 'draft')"
+            />
+            <UiIconButton
+              icon="file-copy-line"
+              :label="t('chat.copyMessage')"
+              @click="emit('copy', message.prompt, message.kind === 'queue' ? message.attachments : undefined)"
+            />
+            <UiIconButton
+              icon="delete-bin-line"
+              :label="t('composer.deletePending')"
+              :disabled="busy"
+              @click="emit('action', message, 'delete')"
+            />
+          </UiBox>
+        </UiListItem>
+      </UiList>
+    </UiBox>
   </UiSection>
 </template>
 

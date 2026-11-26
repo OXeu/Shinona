@@ -503,10 +503,15 @@
   "composer.stopped": "已停止",
   "composer.stopRequested": "已要求停止。",
   "composer.stopFailed": "未能停止本輪執行。",
-  "composer.removeQueued": "移除佇列中的提示",
   "composer.pendingMessages": "待傳送訊息",
-  "composer.showAllPending": "顯示全部 {count} 條待傳送訊息",
-  "composer.showFewerPending": "收合",
+  "composer.steeringGroup": "引導",
+  "composer.queueGroup": "佇列",
+  "composer.moveToQueue": "退回佇列",
+  "composer.moveToSteering": "引導目前的執行",
+  "composer.steerTextOnly": "引導只支援純文字訊息。",
+  "composer.returnToDraft": "退回訊息框",
+  "composer.deletePending": "刪除待傳送訊息",
+  "composer.pendingActionFailed": "無法更新待傳送訊息。",
   "composer.notRunning": "本輪執行已無法接受此操作。",
   "composer.queueFull": "對話佇列已滿。"
 }

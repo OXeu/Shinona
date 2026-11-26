@@ -77,6 +77,23 @@ func (s *Service) RetryTurn(ctx context.Context, owner, sessionID, turnID string
 }
 
 func (s *Service) enqueue(ctx context.Context, item Run, firstTitle string, queue bool, retry *RetryOptions) (Run, error) {
+	item, err := s.prepareQueued(ctx, item)
+	if err != nil {
+		return Run{}, err
+	}
+	var turn Run
+	if retry == nil {
+		turn, err = s.repo.Enqueue(ctx, item, firstTitle, queue)
+	} else {
+		turn, err = s.repo.EnqueueRetry(ctx, item, *retry)
+	}
+	if err == nil {
+		s.controls.changed(item.OwnerID, item.SessionID)
+	}
+	return turn, err
+}
+
+func (s *Service) prepareQueued(ctx context.Context, item Run) (Run, error) {
 	_, target, err := sessionSandbox(ctx, s.repo, s.resolve, item.OwnerID, item.SessionID, "", false)
 	if err != nil {
 		return Run{}, err
@@ -94,16 +111,7 @@ func (s *Service) enqueue(ctx context.Context, item Run, firstTitle string, queu
 	now := time.Now().UTC()
 	item.ID, item.Backend, item.Policy = s.newID(), target.Name, settings.Selected
 	item.Status, item.CreatedAt, item.UpdatedAt = Queued, now, now
-	var turn Run
-	if retry == nil {
-		turn, err = s.repo.Enqueue(ctx, item, firstTitle, queue)
-	} else {
-		turn, err = s.repo.EnqueueRetry(ctx, item, *retry)
-	}
-	if err == nil {
-		s.controls.changed(item.OwnerID, item.SessionID)
-	}
-	return turn, err
+	return item, nil
 }
 
 func (s *Service) Steer(owner, sessionID, id, prompt string) error {
@@ -111,7 +119,11 @@ func (s *Service) Steer(owner, sessionID, id, prompt string) error {
 	if err != nil {
 		return err
 	}
-	return s.controls.steer(owner, sessionID, id, prompt)
+	return s.controls.updateSteering(owner, sessionID, id, false, func(mailbox *Steering) error {
+		return mailbox.enqueue(func() (SteeringMessage, error) {
+			return SteeringMessage{ID: s.newID(), Text: prompt}, nil
+		})
+	})
 }
 
 func (s *Service) Stop(ctx context.Context, owner, sessionID, id string) error {

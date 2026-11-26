@@ -503,10 +503,15 @@
   "composer.stopped": "已停止",
   "composer.stopRequested": "已请求停止。",
   "composer.stopFailed": "无法停止本轮运行。",
-  "composer.removeQueued": "移除排队提示",
   "composer.pendingMessages": "待发送消息",
-  "composer.showAllPending": "显示全部 {count} 条待发送消息",
-  "composer.showFewerPending": "收起",
+  "composer.steeringGroup": "引导",
+  "composer.queueGroup": "队列",
+  "composer.moveToQueue": "退回队列",
+  "composer.moveToSteering": "引导当前运行",
+  "composer.steerTextOnly": "引导只支持纯文本消息。",
+  "composer.returnToDraft": "退回消息框",
+  "composer.deletePending": "删除待发送消息",
+  "composer.pendingActionFailed": "无法更新待发送消息。",
   "composer.notRunning": "本轮运行已无法接受此操作。",
   "composer.queueFull": "会话队列已满。"
 }

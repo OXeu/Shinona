@@ -16,7 +16,7 @@ import ChatSystemMessage from './ChatSystemMessage.vue'
 import SessionList from './SessionList.vue'
 import SessionProjectPicker from './SessionProjectPicker.vue'
 import type { SessionAction } from './presentation'
-import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment, SessionSummary, Turn } from './sessionApi'
+import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment, PendingAction, PendingMessage, SessionSummary, Turn } from './sessionApi'
 import { attachmentURL } from './sessionApi'
 
 const props = defineProps<{
@@ -36,6 +36,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   submit: [action: ComposerAction, payload: ComposerPayload]
   stop: [id: string]
+  pending: [message: PendingMessage, action: PendingAction, runId: string | undefined, options: ComposerRunOptions]
   revert: [id: string]
   retry: [id: string, options: ComposerRunOptions]
   saveDefaults: [options: ComposerDefaults]
@@ -253,6 +254,8 @@ const messages = computed(() => {
         :draft="!hasSelection"
         @send="(action, payload) => emit('submit', action, payload)"
         @stop="emit('stop', $event)"
+        @pending="(message, action, runId, options) => emit('pending', message, action, runId, options)"
+        @copy="copyMessage"
         @save-defaults="emit('saveDefaults', $event)"
         @error="emit('error', 'attachment', $event)"
       />

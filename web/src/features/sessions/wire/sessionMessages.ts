@@ -19,7 +19,7 @@ export function decodeTurn(message: TurnMessage): Turn {
     output, createdAt, startedAt: startedAt ?? null, updatedAt, model, attachments, contextTokens, contextWindow,
     ...(message.liveContext ? { liveContext: message.liveContext } : {}),
     ...(message.tokenUsage ? { tokenUsage: message.tokenUsage } : {}),
-    steering: message.steering.map(({ text, delivered }) => ({ text, delivered })),
+    steering: message.steering.map(({ id, text, delivered }) => ({ id, text, delivered })),
     parts: message.parts.map(decodeTurnPart),
   }
 }

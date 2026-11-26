@@ -14,13 +14,15 @@ import PendingMessages from './PendingMessages.vue'
 import { resolveComposerDefaults, runningAction } from './composerPreferences'
 import type { ComposerSelection } from './composerPreferences'
 import { formatCompactTokens } from './presentation'
-import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment } from './sessionApi'
+import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment, PendingAction, PendingMessage } from './sessionApi'
 import { useSessionStore } from './sessionStore'
 
 const props = defineProps<{ session: AgentSession | null; catalog: ComposerOptions; busy: boolean; draft?: boolean; draftLocked?: boolean; savingDefaults: boolean }>()
 const emit = defineEmits<{
   send: [action: ComposerAction, payload: ComposerPayload]
   stop: [id: string]
+  pending: [message: PendingMessage, action: PendingAction, runId: string | undefined, options: ComposerRunOptions]
+  copy: [prompt: string, attachments?: string[]]
   error: [message: string]
   saveDefaults: [options: ComposerDefaults]
 }>()
@@ -67,14 +69,14 @@ const runOptions = computed<ComposerRunOptions>(() => ({
 defineExpose({ runOptions })
 
 const active = computed(() => props.session?.turns.find((turn) => turn.status === 'RUNNING'))
-const queued = computed(() => props.session?.turns.filter((turn) => turn.status === 'QUEUED') ?? [])
-const pending = computed(() => {
+const queued = computed(() => (props.session?.turns.filter((turn) => turn.status === 'QUEUED') ?? [])
+  .sort((a, b) => a.sequence - b.sequence))
+const pending = computed<PendingMessage[]>(() => {
   const turn = active.value
-  const steering = turn?.steering.flatMap((message, index) => message.delivered ? [] : [{
-    id: `${turn.id}/steer-${index}`,
-    prompt: message.text,
+  const steering = turn?.steering.flatMap((message) => message.delivered || !message.id ? [] : [{
+    kind: 'steering' as const, id: message.id, runId: turn.id, prompt: message.text,
   }]) ?? []
-  return [...steering, ...queued.value.map(({ id, prompt, attachments }) => ({ id, prompt, attachments, removable: true }))]
+  return [...steering, ...queued.value.map(({ id, prompt, attachments }) => ({ kind: 'queue' as const, id, prompt, attachments }))]
 })
 const stopTarget = computed(() => active.value ?? queued.value[0])
 const hasDraft = computed(() => !!prompt.value.trim() || images.value.length > 0)
@@ -223,7 +225,13 @@ onUnmounted(() => { disposed = true })
 </script>
 
 <template>
-  <PendingMessages :messages="pending" :busy="busy" @remove="emit('stop', $event)" />
+  <PendingMessages
+    :messages="pending"
+    :has-active-turn="!!active"
+    :busy="busy"
+    @action="(message, action) => emit('pending', message, action, active?.id, runOptions)"
+    @copy="(text, attachments) => emit('copy', text, attachments)"
+  />
   <UiForm
     class="chat-composer ui-form--custom"
     @submit.prevent="submit"

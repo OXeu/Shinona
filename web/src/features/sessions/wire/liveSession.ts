@@ -62,7 +62,7 @@ class SessionState {
       }
     }
     if (parts.length !== delta.partCount) throw new Error('Live progress is incomplete.')
-    const steering = delta.steering?.messages.map(({ text, delivered }) => ({ text, delivered })) ?? previous.steering
+    const steering = delta.steering?.messages.map(({ id, text, delivered }) => ({ id, text, delivered })) ?? previous.steering
     const liveContext = delta.context ? (delta.context.tokens > 0 ? delta.context : undefined) : previous.liveContext
     const next = { ...previous, parts, steering, liveContext }
     this.turns.set(next.id, next)

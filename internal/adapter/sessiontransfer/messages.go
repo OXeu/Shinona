@@ -68,7 +68,7 @@ func SandboxSettings(settings run.Settings) *sessionpb.SandboxSettings {
 func steeringMessages(messages []run.SteeringMessage) []*sessionpb.SteeringMessage {
 	result := make([]*sessionpb.SteeringMessage, len(messages))
 	for i, message := range messages {
-		result[i] = &sessionpb.SteeringMessage{Text: message.Text, Delivered: message.Delivered}
+		result[i] = &sessionpb.SteeringMessage{Id: message.ID, Text: message.Text, Delivered: message.Delivered}
 	}
 	return result
 }

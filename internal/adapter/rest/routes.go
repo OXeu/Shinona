@@ -41,6 +41,10 @@ func Register(api *gin.RouterGroup, service *run.Service, app Application, logge
 	api.POST("/sessions/:id/turns/:turnId/retry", endpoint(http.StatusAccepted, true, h.RetryTurn))
 	api.POST("/sessions/:id/turns/:turnId/revert", endpoint(http.StatusOK, true, h.RevertTurn))
 	api.POST("/sessions/:id/turns/:turnId/steering", endpoint(http.StatusNoContent, true, h.SteerRun))
+	api.POST("/sessions/:id/turns/:turnId/steering/:steeringId/queue", endpoint(http.StatusNoContent, true, h.queueSteering))
+	api.DELETE("/sessions/:id/turns/:turnId/steering/:steeringId", endpoint(http.StatusOK, false, h.takeSteering))
+	api.POST("/sessions/:id/turns/:turnId/steer", endpoint(http.StatusNoContent, true, h.steerQueued))
+	api.DELETE("/sessions/:id/turns/:turnId/queue", endpoint(http.StatusOK, false, h.takeQueued))
 	api.POST("/sessions/:id/turns/:turnId/stop", endpoint(http.StatusNoContent, false, h.StopRun))
 
 	api.GET("/sessions/:id/workspace/root", endpoint(http.StatusOK, false, h.WorkspaceRoot))

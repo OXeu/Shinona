@@ -45,7 +45,10 @@ func (r *Repository) RevertTurn(ctx context.Context, ownerID, sessionID, turnID,
 			Where("sequence >= ?", selected.Sequence).UpdateColumn("reverted_at", now).Error; err != nil {
 			return err
 		}
-		session.TurnCount = selected.Sequence - 1
+		session.TurnCount, err = lastTurnSequence(tx, ownerID, sessionID)
+		if err != nil {
+			return err
+		}
 		session.ReadThrough = min(session.ReadThrough, session.TurnCount)
 		session.UpdatedAt = now
 		if session.TurnCount == 0 && !session.CustomTitle {

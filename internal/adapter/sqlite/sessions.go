@@ -428,6 +428,63 @@ func (r *Repository) StopQueued(ctx context.Context, owner, sessionID, id string
 	})
 }
 
+func (r *Repository) TakeQueued(ctx context.Context, owner, sessionID, id string, textOnly bool, now time.Time) (run.PendingDraft, error) {
+	var draft run.PendingDraft
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var session sessionRow
+		if err := sessionScope(tx, owner).Take(&session, "id = ?", sessionID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return run.ErrSession
+			}
+			return err
+		}
+		queued := func() *gorm.DB {
+			return conversationTurns(tx, owner, sessionID).Where("id = ? AND status = ?", id, run.Queued)
+		}
+		var item row
+		if err := queued().Select("sequence", "prompt", "payload").Take(&item).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return run.ErrNotRunning
+			}
+			return err
+		}
+		if textOnly && len(item.Payload.Images) > 0 {
+			return run.ErrImages
+		}
+		result := queued().Delete(&row{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return run.ErrNotRunning
+		}
+		updates := map[string]any{"updated_at": now}
+		if item.Sequence == session.TurnCount {
+			sequence, err := lastTurnSequence(tx, owner, sessionID)
+			if err != nil {
+				return err
+			}
+			updates["turn_count"] = sequence
+			updates["read_through"] = min(session.ReadThrough, sequence)
+			if sequence == 0 && !session.CustomTitle {
+				updates["title"] = run.DefaultSessionTitle
+			}
+		}
+		draft = run.PendingDraft{Prompt: item.Prompt, Images: item.Payload.Images}
+		return sessionScope(tx, owner).Where("id = ?", sessionID).UpdateColumns(updates).Error
+	})
+	return draft, err
+}
+
+func lastTurnSequence(db *gorm.DB, owner, sessionID string) (int, error) {
+	var last row
+	err := conversationTurns(db, owner, sessionID).Select("sequence").Order("sequence DESC").Take(&last).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		err = nil
+	}
+	return last.Sequence, err
+}
+
 func (r *Repository) History(ctx context.Context, turn run.Run, limit int) ([]run.Exchange, error) {
 	var records []row
 	db := r.read.WithContext(ctx)
