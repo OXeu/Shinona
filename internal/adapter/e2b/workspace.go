@@ -17,10 +17,11 @@ import (
 )
 
 type workspace struct {
-	box       *sdk.Sandbox
-	route     envdRoute
-	user      string
-	directory string
+	box                   *sdk.Sandbox
+	route                 envdRoute
+	user                  string
+	directory             string
+	processCleanupTimeout time.Duration
 }
 
 func (w *workspace) requestContext(ctx context.Context) context.Context {
@@ -86,7 +87,7 @@ func (w *workspace) Exec(ctx context.Context, command sandbox.Command) (sandbox.
 		exit, err = handle.Wait(ctx)
 	}
 	if exit == nil && err != nil {
-		if stopErr := w.stopProcess(ctx, tag); stopErr != nil {
+		if stopErr := w.stopProcess(context.WithoutCancel(ctx), tag); stopErr != nil {
 			err = errors.Join(err, fmt.Errorf("could not confirm that envd stopped the command: %w", stopErr))
 		}
 	}
@@ -104,7 +105,7 @@ func (w *workspace) Exec(ctx context.Context, command sandbox.Command) (sandbox.
 }
 
 func (w *workspace) stopProcess(ctx context.Context, tag string) error {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	cleanup, cancel := context.WithTimeout(ctx, w.processCleanupTimeout)
 	defer cancel()
 	_, err := w.box.Commands.KillByTag(w.requestContext(cleanup), tag, sdk.CommandRequestOptions{User: w.user})
 	return err

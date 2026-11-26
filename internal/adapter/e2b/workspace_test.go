@@ -72,6 +72,20 @@ func finishProcess(t *testing.T, w http.ResponseWriter, exit int) {
 	processFrame(t, w, 2, []byte("{}"))
 }
 
+type cleanupProbeTransport struct {
+	http.RoundTripper
+	pathSuffix string
+	deadlines  chan<- time.Time
+}
+
+func (p cleanupProbeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(r.URL.Path, p.pathSuffix) {
+		deadline, _ := r.Context().Deadline()
+		p.deadlines <- deadline
+	}
+	return p.RoundTripper.RoundTrip(r)
+}
+
 func TestWorkspaceUsesSDKForFilesCommandsAndTerminal(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v2/sandboxes", func(w http.ResponseWriter, r *http.Request) {
@@ -150,8 +164,14 @@ func TestWorkspaceUsesSDKForFilesCommandsAndTerminal(t *testing.T) {
 	t.Cleanup(server.Close)
 	store := openStore(t, ":memory:")
 	seedWorkspaceOwner(t, store, "fixture", "")
+	const cleanupTimeout = 2 * time.Second
+	cleanupDeadlines := make(chan time.Time, 4)
+	client := *server.Client()
+	client.Transport = cleanupProbeTransport{
+		RoundTripper: client.Transport, pathSuffix: "/process.Process/SendSignal", deadlines: cleanupDeadlines,
+	}
 	provider, err := New(Config{APIKey: "team-key", BaseURL: server.URL, ProxyURL: server.URL + "/envd",
-		APIVersion: "v2", WorkspaceUser: "user", WorkDirectory: "/workspace"}, server.Client(), store.E2B)
+		APIVersion: "v2", WorkspaceUser: "user", WorkDirectory: "/workspace", CleanupTimeout: cleanupTimeout}, &client, store.E2B)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +202,7 @@ func TestWorkspaceUsesSDKForFilesCommandsAndTerminal(t *testing.T) {
 		t.Fatal("command stream without an exit was accepted")
 	}
 	requireTaggedStop(t, taggedStops)
+	<-cleanupDeadlines
 
 	deadline, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
@@ -190,6 +211,9 @@ func TestWorkspaceUsesSDKForFilesCommandsAndTerminal(t *testing.T) {
 		t.Fatalf("deadline lost partial output: %+v, %v", result, err)
 	}
 	requireTaggedStop(t, taggedStops)
+	if cleanupDeadline := <-cleanupDeadlines; time.Until(cleanupDeadline) <= 0 || time.Until(cleanupDeadline) > cleanupTimeout {
+		t.Fatalf("post-cancellation signal did not have the configured cleanup deadline: %s", cleanupDeadline)
+	}
 
 	host := ws.(sandbox.TerminalWorkspace)
 	terminal, err := host.OpenTerminal(ctx, sandbox.TerminalSize{Cols: 80, Rows: 24})
@@ -216,6 +240,21 @@ func TestWorkspaceUsesSDKForFilesCommandsAndTerminal(t *testing.T) {
 	case <-taggedStops:
 		t.Fatal("terminal that exited normally was killed again")
 	default:
+	}
+
+	open, err := host.OpenTerminal(ctx, sandbox.TerminalSize{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeCtx, cancelClose := context.WithTimeout(ctx, time.Second)
+	defer cancelClose()
+	if err := open.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+	requireTaggedStop(t, taggedStops)
+	want, _ := closeCtx.Deadline()
+	if got := <-cleanupDeadlines; !got.Equal(want) {
+		t.Fatalf("terminal cleanup replaced the caller's deadline: got %s, want %s", got, want)
 	}
 }
 

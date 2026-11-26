@@ -27,16 +27,17 @@ const (
 )
 
 type Config struct {
-	APIKey        string
-	Template      string
-	BaseURL       string
-	ProxyURL      string
-	Domain        string
-	Timeout       time.Duration
-	OnTimeout     string
-	APIVersion    string
-	WorkspaceUser string
-	WorkDirectory string
+	APIKey         string
+	Template       string
+	BaseURL        string
+	ProxyURL       string
+	Domain         string
+	Timeout        time.Duration
+	OnTimeout      string
+	APIVersion     string
+	WorkspaceUser  string
+	WorkDirectory  string
+	CleanupTimeout time.Duration
 }
 
 type Provider struct {
@@ -45,9 +46,14 @@ type Provider struct {
 	dataScheme  string
 	sdkProxyURL string
 	endpoint    string
-	apiVersion  atomic.Int32
 	store       WorkspaceStore
-	provision   keylock.Locks[sandbox.ProjectKey]
+	state       *providerState
+}
+
+// Project-specific provider copies share endpoint discovery and provisioning locks.
+type providerState struct {
+	apiVersion atomic.Int32
+	provision  keylock.Locks[sandbox.ProjectKey]
 }
 
 // WorkspaceStore persists sandbox IDs and private data-plane credentials.
@@ -100,6 +106,12 @@ func New(config Config, data *http.Client, store WorkspaceStore) (*Provider, err
 	if config.OnTimeout == "" {
 		config.OnTimeout = sandbox.TimeoutPause
 	}
+	if config.CleanupTimeout < 0 {
+		return nil, errors.New("E2B cleanup timeout must be positive")
+	}
+	if config.CleanupTimeout == 0 {
+		config.CleanupTimeout = sandbox.DefaultCleanupTimeout
+	}
 	scheme := "https"
 	if config.BaseURL != "" {
 		endpoint, err := parseEndpoint(config.BaseURL)
@@ -137,7 +149,7 @@ func New(config Config, data *http.Client, store WorkspaceStore) (*Provider, err
 	}
 	return &Provider{
 		api: api, config: config, dataScheme: scheme, sdkProxyURL: sdkConfig.SandboxURL,
-		endpoint: strings.TrimRight(apiURL, "/"), store: store,
+		endpoint: strings.TrimRight(apiURL, "/"), store: store, state: &providerState{},
 	}, nil
 }
 
@@ -155,13 +167,23 @@ func parseEndpoint(value string) (*url.URL, error) {
 }
 
 func (*Provider) Policies(string) []sandbox.Policy { return []sandbox.Policy{sandbox.Shared} }
-func (*Provider) SupportsIdleTimeout() bool        { return true }
+
+func (p *Provider) WithIdleTimeout(policy sandbox.IdleTimeout) sandbox.ManagedProjectProvider {
+	configured := *p
+	if policy.After > 0 {
+		configured.config.Timeout = policy.After
+	}
+	if policy.Action != "" {
+		configured.config.OnTimeout = policy.Action
+	}
+	return &configured
+}
 
 func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
 	if spec.Policy != sandbox.Shared {
 		return nil, sandbox.ErrPolicy
 	}
-	release, err := p.provision.Acquire(ctx, spec.ProjectKey(), false)
+	release, err := p.state.provision.Acquire(ctx, spec.ProjectKey(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +192,7 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	if err != nil {
 		return nil, err
 	}
-	workspace.keepAwake(ctx, p.timeout(spec))
+	workspace.keepAwake(ctx, p.config.Timeout)
 	return workspace, nil
 }
 
@@ -186,24 +208,10 @@ func (p *Provider) acquireProject(ctx context.Context, spec sandbox.Spec) (*proj
 	if !errors.Is(err, sandbox.ErrWorkspaceMissing) {
 		return workspace, err
 	}
-	if p.onTimeout(spec) == sandbox.TimeoutKill {
+	if p.config.OnTimeout == sandbox.TimeoutKill {
 		return p.createProject(ctx, spec, previous, "")
 	}
 	return p.recoverProject(ctx, spec, previous)
-}
-
-func (p *Provider) timeout(spec sandbox.Spec) time.Duration {
-	if spec.Timeout > 0 {
-		return spec.Timeout
-	}
-	return p.config.Timeout
-}
-
-func (p *Provider) onTimeout(spec sandbox.Spec) string {
-	if spec.OnTimeout != "" {
-		return spec.OnTimeout
-	}
-	return p.config.OnTimeout
 }
 
 func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
@@ -223,6 +231,10 @@ func (p *Provider) loadProject(ctx context.Context, spec sandbox.Spec) (projectS
 	if err != nil {
 		return projectSandbox{}, err
 	}
+	return decodeProject(id, stored)
+}
+
+func decodeProject(id string, stored []byte) (projectSandbox, error) {
 	project := projectSandbox{id: id}
 	if id != "" {
 		if err := json.Unmarshal(stored, &project.tokens); err != nil {
@@ -237,7 +249,7 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 	if id == "" {
 		return nil, sandbox.ErrWorkspaceMissing
 	}
-	options := sdk.ConnectOptions{Timeout: p.timeout(spec)}
+	options := sdk.ConnectOptions{Timeout: p.config.Timeout}
 	box, err := p.requestSandbox(ctx, func(ctx context.Context, legacy bool) (*sdk.Sandbox, error) {
 		if legacy {
 			return p.api.ConnectV1(ctx, id, options)
@@ -275,9 +287,9 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previous projectSandbox, snapshot string) (*projectWorkspace, error) {
 	options := sdk.CreateOptions{
 		Template:               p.config.Template,
-		Timeout:                p.timeout(spec),
+		Timeout:                p.config.Timeout,
 		IdempotencyKey:         spec.RunID,
-		Lifecycle:              &sdk.LifecycleOptions{OnTimeout: p.onTimeout(spec)},
+		Lifecycle:              &sdk.LifecycleOptions{OnTimeout: p.config.OnTimeout},
 		AllowInternetAccess:    true,
 		AllowInternetAccessSet: true,
 		// Some self-hosted runtimes issue the traffic token only for private ingress.
@@ -309,16 +321,16 @@ func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previou
 	}
 	workspace, tokens, err := p.dataPlane(ctx, box, boxCredentials(box, tokens), snapshot != "")
 	if err != nil {
-		return nil, p.discard(ctx, box, err)
+		return p.reconcileCreatedProject(ctx, spec, box, err)
 	}
 	saved, err := p.saveProject(ctx, spec, previous.id, box.ID, tokens)
 	if err != nil {
-		return nil, p.discard(ctx, box, err)
+		return p.reconcileCreatedProject(ctx, spec, box, err)
 	}
 	if saved {
 		return workspace, nil
 	}
-	return p.useConcurrentProject(ctx, spec, box)
+	return p.reconcileCreatedProject(ctx, spec, box, nil)
 }
 
 // An explicitly selected version never probes another API. Auto starts with
@@ -332,7 +344,7 @@ func (p *Provider) requestSandbox(ctx context.Context, request func(context.Cont
 	case "v2":
 		return request(ctx, false)
 	}
-	first := p.apiVersion.Load() == 1
+	first := p.state.apiVersion.Load() == 1
 	box, err := request(ctx, first)
 	if err == nil || !routeUnavailable(err) {
 		return box, err
@@ -340,9 +352,9 @@ func (p *Provider) requestSandbox(ctx context.Context, request func(context.Cont
 	box, fallback := request(ctx, !first)
 	if fallback == nil {
 		if first {
-			p.apiVersion.Store(2)
+			p.state.apiVersion.Store(2)
 		} else {
-			p.apiVersion.Store(1)
+			p.state.apiVersion.Store(1)
 		}
 		return box, nil
 	}
@@ -356,24 +368,28 @@ func routeUnavailable(err error) bool {
 	return hasStatus(err, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented)
 }
 
-func (p *Provider) useConcurrentProject(ctx context.Context, spec sandbox.Spec, box *sdk.Sandbox) (*projectWorkspace, error) {
-	current, err := p.loadProject(ctx, spec)
+func (p *Provider) reconcileCreatedProject(ctx context.Context, spec sandbox.Spec, box *sdk.Sandbox, failure error) (*projectWorkspace, error) {
+	// A canceled request can still have created a sandbox. Resolve ownership
+	// before cleanup because an idempotent response might already be retained.
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
+	defer cancel()
+	id, stored, err := p.store.E2BSandbox(cleanup, spec.OwnerID, spec.ProjectID, p.endpoint)
+	if err != nil {
+		return nil, errors.Join(failure, fmt.Errorf("check retained project sandbox before cleanup: %w", err))
+	}
+	if id != box.ID {
+		if err := box.Kill(cleanup); err != nil && !isGone(err) {
+			return nil, errors.Join(failure, fmt.Errorf("discard unused E2B sandbox: %w", err))
+		}
+	}
+	if failure != nil || ctx.Err() != nil {
+		return nil, errors.Join(failure, ctx.Err())
+	}
+	current, err := decodeProject(id, stored)
 	if err != nil {
 		return nil, err
 	}
-	// An idempotent create can return the sandbox that the other writer saved.
-	if current.id != box.ID {
-		if err := p.discard(ctx, box, nil); err != nil {
-			return nil, err
-		}
-	}
 	return p.reconnectProject(ctx, spec, current)
-}
-
-func (p *Provider) discard(ctx context.Context, box *sdk.Sandbox, err error) error {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	return errors.Join(err, box.Kill(cleanup))
 }
 
 func (p *Provider) saveProject(ctx context.Context, spec sandbox.Spec, previousID, id string, tokens credentials) (bool, error) {
@@ -399,3 +415,4 @@ func boxCredentials(box *sdk.Sandbox, previous credentials) credentials {
 }
 
 var _ sandbox.ManagedProjectProvider = (*Provider)(nil)
+var _ sandbox.IdleTimeoutProvider = (*Provider)(nil)

@@ -1,8 +1,10 @@
 package e2b
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,12 +12,130 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
+
+func TestProviderSettlesCreatedSandboxWhenProjectBindingChanges(t *testing.T) {
+	const created, replacement = "created-box", "winning-box"
+	saveError := errors.New("lost the save result")
+	for _, tc := range []struct {
+		name, retained string
+		cancel         bool
+		saveFailure    error
+		wantDeletes    int32
+	}{
+		{name: "reconnect winner", retained: replacement, wantDeletes: 1},
+		{name: "discard unused sandbox after cancellation", retained: replacement, cancel: true, wantDeletes: 1},
+		{name: "keep concurrent idempotent create after cancellation", retained: created, cancel: true},
+		{name: "keep committed binding after ambiguous save failure", retained: created, saveFailure: saveError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var deletes, connects atomic.Int32
+			mux := http.NewServeMux()
+			reply := func(w http.ResponseWriter, id string) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = fmt.Fprintf(w, `{"sandboxID":%q,"envdVersion":"0.11.0","envdAccessToken":"token"}`, id)
+			}
+			mux.HandleFunc("POST /v2/sandboxes", func(w http.ResponseWriter, _ *http.Request) {
+				reply(w, created)
+			})
+			mux.HandleFunc("POST /v2/sandboxes/"+tc.retained+"/connect", func(w http.ResponseWriter, _ *http.Request) {
+				connects.Add(1)
+				reply(w, tc.retained)
+			})
+			mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, request *http.Request) {
+				if got := request.PathValue("id"); got != created || got == tc.retained {
+					t.Errorf("attempted to delete %s with retained sandbox %s", got, tc.retained)
+				}
+				deletes.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			store := openStore(t, ":memory:")
+			seedWorkspaceOwner(t, store, "owner", "project")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			conflict := bindingRaceStore{
+				WorkspaceStore: store.E2B, winner: tc.retained, saveFailure: tc.saveFailure,
+			}
+			if tc.cancel {
+				conflict.afterSave = cancel
+			}
+			const cleanupTimeout = 2 * time.Second
+			cleanupDeadlines := make(chan time.Time, 1)
+			client := *server.Client()
+			client.Transport = cleanupProbeTransport{
+				RoundTripper: client.Transport, pathSuffix: "/sandboxes/" + created, deadlines: cleanupDeadlines,
+			}
+			provider, err := New(Config{APIKey: "fixture", BaseURL: server.URL, ProxyURL: server.URL,
+				APIVersion: "v2", WorkDirectory: "/workspace", CleanupTimeout: cleanupTimeout}, &client, conflict)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := sandbox.Spec{RunID: "run", OwnerID: "owner", ProjectID: "project", Policy: sandbox.Shared}
+			ws, err := provider.Acquire(ctx, spec)
+			switch {
+			case tc.cancel:
+				if !errors.Is(err, context.Canceled) || ws != nil {
+					t.Fatalf("canceled acquire returned %v, %v", ws, err)
+				}
+			case tc.saveFailure != nil:
+				if !errors.Is(err, tc.saveFailure) || ws != nil {
+					t.Fatalf("failed acquire returned %v, %v", ws, err)
+				}
+			default:
+				if err != nil || ws == nil || connects.Load() != 1 {
+					t.Fatalf("concurrent acquire returned %v, %v after %d reconnects", ws, err, connects.Load())
+				}
+				if err := ws.Close(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if deletes.Load() != tc.wantDeletes || (ws == nil && connects.Load() != 0) {
+				t.Fatalf("concurrent create made %d deletes and %d reconnects", deletes.Load(), connects.Load())
+			}
+			if tc.wantDeletes != 0 {
+				select {
+				case deadline := <-cleanupDeadlines:
+					if remaining := time.Until(deadline); remaining <= 0 || remaining > cleanupTimeout {
+						t.Errorf("cleanup time remaining = %v, want a deadline within %v", remaining, cleanupTimeout)
+					}
+				default:
+					t.Error("missing deadline on the E2B cleanup request")
+				}
+			}
+			id, _, err := store.E2B.E2BSandbox(t.Context(), spec.OwnerID, spec.ProjectID, server.URL)
+			if err != nil || id != tc.retained {
+				t.Fatalf("retained sandbox = %q, %v", id, err)
+			}
+		})
+	}
+}
+
+type bindingRaceStore struct {
+	WorkspaceStore
+	winner      string
+	afterSave   func()
+	saveFailure error
+}
+
+func (r bindingRaceStore) SaveE2BSandbox(ctx context.Context, owner, project, endpoint, previous, _ string, data []byte) (bool, error) {
+	saved, err := r.WorkspaceStore.SaveE2BSandbox(ctx, owner, project, endpoint, previous, r.winner, data)
+	if err != nil || !saved {
+		return saved, err
+	}
+	if r.afterSave != nil {
+		r.afterSave()
+	}
+	return false, r.saveFailure
+}
 
 func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 	var created, connected atomic.Int32

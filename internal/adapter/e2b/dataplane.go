@@ -107,7 +107,8 @@ func (p *Provider) dataPlane(ctx context.Context, box *sdk.Sandbox, tokens crede
 		tokens.WorkDirectory = path.Clean(dir)
 	}
 	ws := &workspace{box: box, user: tokens.WorkspaceUser, directory: tokens.WorkDirectory,
-		route: envdRoute{source: expected, target: endpoint, id: box.ID, accessToken: tokens.EnvdToken, trafficToken: tokens.TrafficToken}}
+		processCleanupTimeout: p.config.CleanupTimeout,
+		route:                 envdRoute{source: expected, target: endpoint, id: box.ID, accessToken: tokens.EnvdToken, trafficToken: tokens.TrafficToken}}
 	if ws.directory == "" {
 		discovery, cancel := context.WithTimeout(ctx, apiTimeout)
 		defer cancel()

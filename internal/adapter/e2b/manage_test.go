@@ -15,6 +15,8 @@ import (
 func TestProjectLifecycleUsesProjectTemplateAndTimeout(t *testing.T) {
 	var exists atomic.Bool
 	var deletes atomic.Int32
+	var connects atomic.Int32
+	const workspaceResponse = `{"sandboxID":"project-box","envdVersion":"0.11.0","trafficAccessToken":"private","envdAccessToken":"envd"}`
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /sandboxes", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -29,7 +31,16 @@ func TestProjectLifecycleUsesProjectTemplateAndTimeout(t *testing.T) {
 		exists.Store(true)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"sandboxID":"project-box","envdVersion":"0.11.0","trafficAccessToken":"private","envdAccessToken":"envd"}`)
+		_, _ = io.WriteString(w, workspaceResponse)
+	})
+	mux.HandleFunc("POST /sandboxes/project-box/connect", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Timeout int }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Timeout != 90 {
+			t.Errorf("incorrect project timeout while opening existing sandbox: %+v, %v", body, err)
+		}
+		connects.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, workspaceResponse)
 	})
 	mux.HandleFunc("GET /sandboxes/project-box", func(w http.ResponseWriter, _ *http.Request) {
 		if !exists.Load() {
@@ -59,14 +70,25 @@ func TestProjectLifecycleUsesProjectTemplateAndTimeout(t *testing.T) {
 	ctx := t.Context()
 	spec := sandbox.Spec{
 		RunID: "create", OwnerID: "owner", ProjectID: "project", Policy: sandbox.Shared,
-		Template: "project-template", Timeout: 90 * time.Second, OnTimeout: sandbox.TimeoutKill,
+		Template: "project-template",
 	}
-	ws, err := provider.Acquire(ctx, spec)
+	providerWithPolicy := provider.WithIdleTimeout(sandbox.IdleTimeout{After: 90 * time.Second, Action: sandbox.TimeoutKill})
+	ws, err := providerWithPolicy.Acquire(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := ws.Close(ctx); err != nil {
 		t.Fatal(err)
+	}
+	ws, err = providerWithPolicy.OpenProject(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if connects.Load() != 1 {
+		t.Fatalf("opening the project made %d connect requests", connects.Load())
 	}
 	status, err := provider.ProjectStatus(ctx, spec)
 	if err != nil || status.ID != "project-box" || status.State != sandbox.ProjectPaused {

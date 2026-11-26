@@ -44,7 +44,12 @@ func projectTarget(ctx context.Context, repo ProjectSandboxRepository, resolve R
 	}
 	if config != nil {
 		target, err := resolve(ctx, spec.OwnerID, config.Provider)
-		return config.spec(spec), target, err
+		if err != nil {
+			return sandbox.Spec{}, Target{}, err
+		}
+		spec.Template = config.Template
+		target.Provider, err = config.configureIdleTimeout(target.Provider)
+		return spec, target, err
 	}
 	target, err := resolve(ctx, spec.OwnerID, backend)
 	if err != nil {
@@ -59,11 +64,15 @@ func projectTarget(ctx context.Context, repo ProjectSandboxRepository, resolve R
 	return spec, target, err
 }
 
-func (c ProjectSandboxConfig) spec(spec sandbox.Spec) sandbox.Spec {
-	spec.Template = c.Template
-	spec.Timeout = time.Duration(c.TimeoutSeconds) * time.Second
-	spec.OnTimeout = c.OnTimeout
-	return spec
+func (c ProjectSandboxConfig) configureIdleTimeout(provider sandbox.Provider) (sandbox.Provider, error) {
+	if c.TimeoutSeconds == 0 && c.OnTimeout == "" {
+		return provider, nil
+	}
+	managed, ok := provider.(sandbox.IdleTimeoutProvider)
+	if !ok {
+		return nil, ErrProjectSandboxConfig
+	}
+	return managed.WithIdleTimeout(sandbox.IdleTimeout{After: time.Duration(c.TimeoutSeconds) * time.Second, Action: c.OnTimeout}), nil
 }
 
 func (c ProjectSandboxConfig) effective(target Target) ProjectSandboxConfig {
@@ -132,8 +141,7 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 			return ErrSandboxProvider
 		}
 		if next.TimeoutSeconds != 0 || next.OnTimeout != "" {
-			policy, ok := target.Provider.(sandbox.IdleTimeoutProvider)
-			if !ok || !policy.SupportsIdleTimeout() {
+			if _, ok := provider.(sandbox.IdleTimeoutProvider); !ok {
 				return ErrProjectSandboxConfig
 			}
 		}
@@ -225,7 +233,12 @@ func (s *Service) provisionProjectSandbox(ctx context.Context, name string, prov
 			return ErrSandboxProvider
 		}
 	}
-	ws, err := provider.Acquire(ctx, config.spec(spec))
+	configured, err := config.configureIdleTimeout(provider)
+	if err != nil {
+		return err
+	}
+	spec.Template = config.Template
+	ws, err := configured.Acquire(ctx, spec)
 	if err != nil {
 		return err
 	}

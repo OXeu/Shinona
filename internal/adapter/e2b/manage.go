@@ -32,7 +32,7 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 }
 
 func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error {
-	release, err := p.provision.Acquire(ctx, spec.ProjectKey(), false)
+	release, err := p.state.provision.Acquire(ctx, spec.ProjectKey(), false)
 	if err != nil {
 		return err
 	}

@@ -48,7 +48,7 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 		if handle != nil {
 			handle.Disconnect()
 		}
-		return nil, errors.Join(err, w.stopProcess(ctx, tag))
+		return nil, errors.Join(err, w.stopProcess(context.WithoutCancel(ctx), tag))
 	}
 	go func() {
 		defer stop()

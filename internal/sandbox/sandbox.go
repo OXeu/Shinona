@@ -34,8 +34,6 @@ type Spec struct {
 	ProjectID string
 	Policy    Policy
 	Template  string
-	Timeout   time.Duration
-	OnTimeout string
 }
 
 type ProjectKey struct {
@@ -54,8 +52,18 @@ type Provider interface {
 	Acquire(ctx context.Context, spec Spec) (Workspace, error)
 }
 
-// IdleTimeoutProvider supports applying a project-level idle lease policy.
-type IdleTimeoutProvider interface{ SupportsIdleTimeout() bool }
+// IdleTimeout contains project overrides for a provider's idle lease policy.
+// A zero duration or empty action inherits that field's provider default.
+type IdleTimeout struct {
+	After  time.Duration
+	Action string
+}
+
+// IdleTimeoutProvider returns a project view of the provider with overridden
+// timeouts. Existing provider instances keep their configuration.
+type IdleTimeoutProvider interface {
+	WithIdleTimeout(IdleTimeout) ManagedProjectProvider
+}
 
 // ProjectProvider shares a workspace across an owner's sessions in a project.
 // An empty ProjectID selects the owner's default project. OpenProject must
