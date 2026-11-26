@@ -194,6 +194,89 @@ func TestScopedRootRejectsMissingAndEscapingDirectories(t *testing.T) {
 	}
 }
 
+func TestWorkspaceBrowsingRegularFilesDoesNotRequireRealpath(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "api/file.txt", "inside")
+	commands := t.TempDir()
+	for _, name := range []string{"sh", "dd"} {
+		program, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(program, filepath.Join(commands, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", commands)
+	repo := New(localWorkspace{dir})
+	if err := repo.ResolveRoot(t.Context(), "api"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := repo.Directory(t.Context(), "api")
+	if err != nil || len(list.Entries) != 1 || list.Entries[0].Path != "api/file.txt" {
+		t.Fatalf("directory with no realpath on PATH: %+v, %v", list, err)
+	}
+	file, err := repo.File(t.Context(), "api/file.txt")
+	if err != nil || file.Truncated || file.Text != "inside" {
+		t.Fatalf("regular file with no realpath on PATH: %+v, %v", file, err)
+	}
+}
+
+func TestWorkspacePreviewFollowsOnlyInternalFileLinks(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	write(t, dir, "src/plain.txt", "inside")
+	write(t, outside, "plain.txt", "outside")
+	for name, target := range map[string]string{
+		"inside":  "src/plain.txt",
+		"outside": filepath.Join(outside, "plain.txt"),
+	} {
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := New(localWorkspace{dir})
+	result, err := repo.File(t.Context(), "inside")
+	if err != nil || result.Text != "inside" {
+		t.Fatalf("preview of a link inside the workspace: %+v, %v", result, err)
+	}
+	if result, err := repo.File(t.Context(), "outside"); !errors.Is(err, ErrPath) {
+		t.Fatalf("preview of a link outside the workspace: %+v, %v", result, err)
+	}
+}
+
+func TestGitScopePreservesWhitespaceInTheSelectedDirectory(t *testing.T) {
+	dir := scaffold(t)
+	const scope = " api\n"
+	write(t, dir, scope+"/changed.txt", "update")
+	repo := New(localWorkspace{dir}).At(scope)
+	changes, err := repo.Changes(t.Context())
+	if err != nil || len(changes.Entries) != 1 || changes.Entries[0].Path != "changed.txt" {
+		t.Fatalf("changes in a directory containing whitespace: %+v, %v", changes, err)
+	}
+}
+
+func TestGitOperationsRecheckThePhysicalWorkspaceDirectory(t *testing.T) {
+	dir := scaffold(t)
+	outside := scaffold(t)
+	link := filepath.Join(dir, "selected")
+	if err := os.Symlink("api", link); err != nil {
+		t.Fatal(err)
+	}
+	repo := New(localWorkspace{dir})
+	if err := repo.ResolveRoot(t.Context(), "selected"); err != nil {
+		t.Fatalf("selecting an internal directory link: %v", err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.At("selected").Changes(t.Context()); !errors.Is(err, ErrRepository) {
+		t.Fatalf("retargeted directory link: %v", err)
+	}
+}
+
 func TestScopedRepositoryRequiresAGitRepository(t *testing.T) {
 	ctx := t.Context()
 	dir := scaffold(t)

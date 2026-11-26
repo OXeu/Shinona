@@ -101,14 +101,11 @@ func (r Repository) workTree(ctx context.Context) (string, error) {
 	if result.ExitCode != 0 {
 		return "", ErrRepository
 	}
-	lines := strings.Split(strings.TrimRight(result.Stdout, "\n"), "\n")
-	if strings.TrimSpace(lines[0]) != "true" {
+	inside, prefix, _ := strings.Cut(result.Stdout, "\n")
+	if inside != "true" {
 		return "", ErrRepository
 	}
-	if len(lines) < 2 {
-		return "", nil
-	}
-	return strings.TrimSpace(lines[1]), nil
+	return strings.TrimSuffix(prefix, "\n"), nil
 }
 
 // relative converts a work-tree path to the scoped directory. The second result
@@ -123,10 +120,14 @@ func relative(prefix, name string) (string, bool) {
 func (r Repository) git(ctx context.Context, args ...string) (sandbox.Result, error) {
 	options := []string{"--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
 		"-c", "commit.gpgSign=false", "-c", "color.ui=false"}
-	if r.root != "" {
-		options = append(options, "-C", r.root)
+	args = append(options, args...)
+	if r.root == "" {
+		return r.workspace.Exec(ctx, sandbox.Command{Program: "git", Args: args})
 	}
-	return r.workspace.Exec(ctx, sandbox.Command{Program: "git", Args: append(options, args...)})
+	return r.workspace.Exec(ctx, sandbox.Command{Program: "sh", Args: append([]string{
+		"-c", resolveDirectory + `shift
+exec git "$@"`, "shinona-git", r.root,
+	}, args...)})
 }
 
 func (r Repository) requireGit(ctx context.Context) error {
@@ -216,16 +217,27 @@ func (r Repository) History(ctx context.Context) (History, error) {
 	return result, nil
 }
 
-// resolvePath follows symbolic links only within the workspace, using a fixed
-// script so input paths are passed as arguments and never evaluated as shell.
-const resolvePath = `set -eu
+const workspaceRoot = `set -eu
 root=$(pwd -P && printf '.')
 root=${root%??}
-target=$(realpath "./$1" && printf '.') || exit 2
-target=${target%??}
-[ -e "$target" ] || exit 2
+`
+
+const requireWorkspacePath = `
 case "$target" in "$root"|"${root%/}"/*) ;; *) exit 2 ;; esac
 case "$target" in */.git|*/.git/*) exit 2 ;; esac
+`
+
+// Directory operations only need the shell's physical directory resolution.
+const resolveDirectory = workspaceRoot + `cd -P "./$1" || exit 2
+target=$(pwd -P && printf '.')
+target=${target%??}
+` + requireWorkspacePath
+
+const resolveFile = resolveDirectory + `target=./$2
+if [ -L "$target" ]; then
+  target=$(realpath "$target" && printf '.') || exit 2
+  target=${target%??}
+` + requireWorkspacePath + `fi
 `
 
 func (r Repository) Directory(ctx context.Context, folder string) (Directory, error) {
@@ -233,8 +245,7 @@ func (r Repository) Directory(ctx context.Context, folder string) (Directory, er
 		return Directory{}, ErrPath
 	}
 	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "sh", Args: []string{
-		"-c", resolvePath + `cd "$target"
-for entry in ./* ./.[!.]* ./..?*; do
+		"-c", resolveDirectory + `for entry in ./* ./.[!.]* ./..?*; do
   if [ "$entry" = "./.git" ] || [ -L "$entry" ]; then continue; fi
   if [ -d "$entry" ]; then
     kind=d
@@ -283,7 +294,7 @@ func (r Repository) ResolveRoot(ctx context.Context, root string) error {
 		return ErrPath
 	}
 	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "sh", Args: []string{
-		"-c", resolvePath + `[ -d "$target" ]`, "shinona-root", root,
+		"-c", resolveDirectory, "shinona-root", root,
 	}})
 	if err != nil {
 		return err
@@ -307,7 +318,8 @@ func (r Repository) file(ctx context.Context, name string) (Preview, error) {
 	const previewBytes = 16 << 10
 	// Read one byte past the preview boundary to distinguish an exact fit.
 	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "sh", StdoutLimit: previewBytes + 1, Args: []string{
-		"-c", resolvePath + `[ -f "$target" ] && dd if="$target" bs="$2" count=1 2>/dev/null`, "shinona-file", name, strconv.Itoa(previewBytes + 1),
+		"-c", resolveFile + `[ -f "$target" ] && dd if="$target" bs="$3" count=1 2>/dev/null`,
+		"shinona-file", path.Dir(name), path.Base(name), strconv.Itoa(previewBytes + 1),
 	}})
 	if len(result.Stdout) > previewBytes {
 		result.Stdout = result.Stdout[:previewBytes]
