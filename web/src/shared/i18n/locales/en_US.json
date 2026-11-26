@@ -1,7 +1,5 @@
 {
   "terminal.heading": "Terminal",
-  "terminal.open": "Open terminal",
-  "terminal.backToWorkspace": "Return to workspace view",
   "terminal.new": "New terminal tab",
   "terminal.loading": "Opening terminal…",
   "terminal.noTabs": "Open a terminal tab to start a shell.",
@@ -26,7 +24,7 @@
   "nav.settings": "Settings",
   "nav.brand": "Shinona",
   "nav.home": "Go to Shinona workbench",
-  "nav.workbenchControls": "Return to the workbench to use this control.",
+  "nav.back": "Go back",
   "auth.signInHeading": "Sign in to Shinona",
   "auth.email": "Email",
   "auth.password": "Password",

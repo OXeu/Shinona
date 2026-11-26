@@ -58,16 +58,6 @@ function createWorkbench(active: () => boolean, sessionId: () => string | undefi
     if (view.value === 'terminal') selectView(repositoryView.value)
   }
 
-  function toggleTerminal() {
-    if (terminalOpen.value) {
-      leaveTerminal()
-      return
-    }
-    selectView('terminal')
-    if (compact.value) compactPane.value = 'workspace'
-    else desktopWorkspace.value = true
-  }
-
   function setHeader(header: HeaderContext) {
     sessionHeader.value = header
     onScopeDispose(() => {
@@ -77,7 +67,7 @@ function createWorkbench(active: () => boolean, sessionId: () => string | undefi
 
   return {
     compact, sessionsId, workspaceId, sessionsOpen, workspaceOpen, terminalOpen, view, repositoryView, sessionHeader,
-    toggleSessions, sessionSelected, toggleWorkspace, selectView, leaveTerminal, toggleTerminal, setHeader,
+    toggleSessions, sessionSelected, toggleWorkspace, selectView, leaveTerminal, setHeader,
   }
 }
 

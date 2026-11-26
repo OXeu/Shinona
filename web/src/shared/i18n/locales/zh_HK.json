@@ -1,7 +1,5 @@
 {
   "terminal.heading": "終端機",
-  "terminal.open": "開啟終端機",
-  "terminal.backToWorkspace": "返回工作區檢視",
   "terminal.new": "新增終端機分頁",
   "terminal.loading": "正在開啟終端機…",
   "terminal.noTabs": "新增終端機分頁以啟動 Shell。",
@@ -26,7 +24,7 @@
   "nav.settings": "設定",
   "nav.brand": "Shinona",
   "nav.home": "返回 Shinona 工作台",
-  "nav.workbenchControls": "返回工作台後即可使用此控制項。",
+  "nav.back": "返回",
   "auth.signInHeading": "登入 Shinona",
   "auth.email": "電郵地址",
   "auth.password": "密碼",

@@ -1,7 +1,5 @@
 {
   "terminal.heading": "终端",
-  "terminal.open": "打开终端",
-  "terminal.backToWorkspace": "返回工作区视图",
   "terminal.new": "新建终端标签",
   "terminal.loading": "正在打开终端…",
   "terminal.noTabs": "新建终端标签页以启动 Shell。",
@@ -26,7 +24,7 @@
   "nav.settings": "设置",
   "nav.brand": "Shinona",
   "nav.home": "返回 Shinona 工作台",
-  "nav.workbenchControls": "返回工作台后可使用此控件。",
+  "nav.back": "返回",
   "auth.signInHeading": "登录 Shinona",
   "auth.email": "电子邮箱",
   "auth.password": "密码",
