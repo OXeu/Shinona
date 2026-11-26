@@ -319,6 +319,7 @@ func (r *Repository) EnqueueRetry(ctx context.Context, item run.Run, options run
 }
 
 func (r *Repository) enqueue(ctx context.Context, item run.Run, firstTitle string, queue bool, retry *run.RetryOptions) (run.Run, error) {
+	defer timing.Start(ctx, "sqlite_enqueue")()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
 		err := sessionScope(tx, item.OwnerID).First(&session, "id = ?", item.SessionID).Error

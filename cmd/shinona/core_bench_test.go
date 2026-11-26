@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -187,9 +188,9 @@ func (a *benchmarkAPI) operation(b *testing.B, query string, variables any) []by
 	}{query, variables})
 }
 
-func (a *benchmarkAPI) graphql(b *testing.B, body []byte, field string, result any) {
+func (a *benchmarkAPI) graphql(b *testing.B, body []byte, field string, result any) http.Header {
 	b.Helper()
-	data, _ := a.post(b, "/graphql", body, http.StatusOK)
+	data, headers := a.post(b, "/graphql", body, http.StatusOK)
 	var envelope struct {
 		Data   map[string]json.RawMessage
 		Errors []json.RawMessage
@@ -204,6 +205,7 @@ func (a *benchmarkAPI) graphql(b *testing.B, body []byte, field string, result a
 	if err := json.Unmarshal(value, result); err != nil {
 		b.Fatalf("decode GraphQL %s: %v", field, err)
 	}
+	return headers
 }
 
 func (a *benchmarkAPI) websocket(b testing.TB, path string) *websocket.Conn {
@@ -441,20 +443,45 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 	body := a.operation(b, benchmarkSubmit, map[string]any{
 		"sessionId": session, "prompt": benchmarkPrompt, "payload": struct{}{}, "queue": queue,
 	})
+	var latencies []time.Duration
+	var slowest time.Duration
+	var slowestServerTiming []string
 	for b.Loop() {
 		var result struct {
 			ID     string
 			Status run.Status
 		}
-		a.graphql(b, body, "submitRun", &result)
+		var elapsed time.Duration
+		var started time.Time
+		if queue {
+			started = time.Now()
+		}
+		headers := a.graphql(b, body, "submitRun", &result)
+		if queue {
+			elapsed = time.Since(started)
+		}
 		if result.ID == "" || result.Status != run.Queued {
 			b.Fatalf("unexpected submitRun response: %+v", result)
 		}
 		b.StopTimer()
+		if queue {
+			latencies = append(latencies, elapsed)
+			if elapsed > slowest {
+				slowest = elapsed
+				slowestServerTiming = headers.Values("Server-Timing")
+			}
+		}
 		if err := a.repo.StopQueued(b.Context(), a.owner, session, result.ID, time.Now()); err != nil {
 			b.Fatal(err)
 		}
 		b.StartTimer()
+	}
+	if queue && len(latencies) > 0 {
+		slices.Sort(latencies)
+		count := len(latencies)
+		b.Logf("queue latency across %d requests: p50 %s, p99 %s, max %s; slowest Server-Timing: %s",
+			count, latencies[(count+1)/2-1], latencies[(99*count+99)/100-1], slowest,
+			strings.Join(slowestServerTiming, ", "))
 	}
 }
 
