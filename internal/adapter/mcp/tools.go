@@ -3,6 +3,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,10 +14,9 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sky-valley/pi/agent"
-	"github.com/sky-valley/pi/ai"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -52,9 +52,9 @@ func (s *Servers) Lookup(name string) (settings.MCPServer, bool) {
 	return server, ok
 }
 
-func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]agent.AgentTool, func() error, error) {
+func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]run.Tool, func() error, error) {
 	type connection struct {
-		tools []agent.AgentTool
+		tools []run.Tool
 		close func() error
 	}
 	connections := make([]connection, len(names))
@@ -74,12 +74,7 @@ func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]age
 			if err := openCtx.Err(); err != nil {
 				return err
 			}
-			prefix, source := "mcp_", ""
-			if len(names) > 1 {
-				// Keep tool names stable regardless of completion order.
-				prefix, source = fmt.Sprintf("m%d_", i+1), fmt.Sprintf("MCP server %s. ", name)
-			}
-			tools, closeSession, err := s.open(openCtx, owner, name, prefix, source)
+			tools, closeSession, err := s.open(openCtx, owner, name)
 			if err != nil {
 				return fmt.Errorf("open MCP server %q: %w", name, err)
 			}
@@ -90,14 +85,14 @@ func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]age
 	if err := startup.Wait(); err != nil {
 		return nil, nil, errors.Join(err, closeTools())
 	}
-	var allTools []agent.AgentTool
+	var allTools []run.Tool
 	for _, session := range connections {
 		allTools = append(allTools, session.tools...)
 	}
 	return allTools, closeTools, nil
 }
 
-func (s *Servers) open(ctx context.Context, owner, name, prefix, source string) ([]agent.AgentTool, func() error, error) {
+func (s *Servers) open(ctx context.Context, owner, name string) ([]run.Tool, func() error, error) {
 	server, ok := s.Lookup(name)
 	if !ok {
 		return nil, nil, errors.New("the selected MCP server is unavailable")
@@ -122,7 +117,7 @@ func (s *Servers) open(ctx context.Context, owner, name, prefix, source string) 
 	if err != nil {
 		return nil, nil, err
 	}
-	tools, err := listTools(ctx, connection, prefix, source)
+	tools, err := listTools(ctx, connection, name)
 	if err != nil {
 		return nil, nil, errors.Join(err, connection.Close())
 	}
@@ -148,11 +143,23 @@ func (t tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 var toolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,60}$`)
 
-func listTools(ctx context.Context, connection *sdk.ClientSession, prefix, source string) ([]agent.AgentTool, error) {
+func qualifiedToolName(server, name string) string {
+	const maxName = 64
+	id := sha256.Sum256([]byte(server))
+	prefix := fmt.Sprintf("mcp_%x_", id[:8])
+	if len(prefix)+len(name) <= maxName {
+		return prefix + name
+	}
+	short := sha256.Sum256([]byte(name))
+	suffix := fmt.Sprintf("_%x", short[:8])
+	return prefix + name[:maxName-len(prefix)-len(suffix)] + suffix
+}
+
+func listTools(ctx context.Context, connection *sdk.ClientSession, server string) ([]run.Tool, error) {
 	defer timing.Start(ctx, "mcp_list_tools")()
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	tools := make([]agent.AgentTool, 0)
+	tools := make([]run.Tool, 0)
 	seen := make(map[string]bool)
 	for entry, err := range connection.Tools(ctx, nil) {
 		if err != nil {
@@ -167,13 +174,10 @@ func listTools(ctx context.Context, connection *sdk.ClientSession, prefix, sourc
 		if err != nil {
 			return nil, fmt.Errorf("encode MCP tool %q schema: %w", entry.Name, err)
 		}
-		var parameters ai.Schema
-		if err := json.Unmarshal(raw, &parameters); err != nil {
-			return nil, fmt.Errorf("decode MCP tool %q schema: %w", entry.Name, err)
-		}
-		tools = append(tools, agent.AgentTool{
-			Name: prefix + entry.Name, Label: prefix + entry.Name, Description: source + entry.Description,
-			Parameters: &parameters, Execute: executeTool(connection, entry.Name),
+		tools = append(tools, run.Tool{
+			Name: qualifiedToolName(server, entry.Name), Label: server + ": " + entry.Name,
+			Description: fmt.Sprintf("MCP server %s. %s", server, entry.Description),
+			Schema:      raw, Execute: executeTool(connection, entry.Name),
 		})
 		if len(tools) == 64 {
 			break
@@ -182,11 +186,11 @@ func listTools(ctx context.Context, connection *sdk.ClientSession, prefix, sourc
 	return tools, nil
 }
 
-func executeTool(session *sdk.ClientSession, name string) func(context.Context, string, map[string]any, agent.ToolUpdateFunc) (agent.AgentToolResult, error) {
-	return func(ctx context.Context, _ string, args map[string]any, _ agent.ToolUpdateFunc) (agent.AgentToolResult, error) {
+func executeTool(session *sdk.ClientSession, name string) func(context.Context, map[string]any) (run.ToolResult, error) {
+	return func(ctx context.Context, args map[string]any) (run.ToolResult, error) {
 		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
 		if err != nil {
-			return agent.AgentToolResult{}, err
+			return run.ToolResult{}, err
 		}
 		var text strings.Builder
 		for _, content := range result.Content {
@@ -197,12 +201,12 @@ func executeTool(session *sdk.ClientSession, name string) func(context.Context, 
 		if text.Len() == 0 && result.StructuredContent != nil {
 			data, err := json.Marshal(result.StructuredContent)
 			if err != nil {
-				return agent.AgentToolResult{}, err
+				return run.ToolResult{}, err
 			}
 			text.Write(data[:min(len(data), 16<<10)])
 		}
-		return agent.AgentToolResult{
-			Content: ai.ContentList{ai.TextContent{Text: strings.ToValidUTF8(text.String(), "�")}}, IsError: result.IsError,
+		return run.ToolResult{
+			Text: strings.ToValidUTF8(text.String(), "�"), IsError: result.IsError,
 		}, nil
 	}
 }

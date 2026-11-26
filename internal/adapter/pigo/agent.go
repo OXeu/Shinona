@@ -17,7 +17,7 @@ import (
 )
 
 type ToolSource interface {
-	Open(ctx context.Context, owner string, names []string) ([]agent.AgentTool, func() error, error)
+	Open(ctx context.Context, owner string, names []string) ([]run.Tool, func() error, error)
 }
 
 type Agent struct {
@@ -60,7 +60,13 @@ func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Work
 			return result, err
 		}
 		defer func() { _ = closeTools() }()
-		toolset = append(toolset, remoteTools...)
+		for _, remote := range remoteTools {
+			tool, err := remoteAgentTool(remote)
+			if err != nil {
+				return result, err
+			}
+			toolset = append(toolset, tool)
+		}
 	}
 	for index, tool := range toolset {
 		toolset[index] = withToolTimeout(tool)

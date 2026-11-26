@@ -13,7 +13,6 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
-	"github.com/sky-valley/pi/ai"
 	"golang.org/x/oauth2"
 
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
@@ -119,7 +118,7 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	if err := oauth.Finish(ctx, "other", state, "fixture-code", fixture.URL, lookup); !errors.Is(err, ErrOAuthFlow) {
 		t.Fatalf("another account redeemed the state: %v", err)
 	}
-	if err := oauth.ApplyServerChanges("other", []string{server.Name}, func() error { return nil }); err != nil {
+	if err := oauth.ApplyServerChanges(ctx, "other", func() ([]string, error) { return []string{server.Name}, nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := oauth.Finish(ctx, "owner", state, "fixture-code", fixture.URL, lookup); err != nil {
@@ -153,13 +152,13 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools) != 1 || tools[0].Name != "mcp_echo" {
+	if len(tools) != 1 || tools[0].Name != qualifiedToolName("fixture", "echo") {
 		_ = closeTools()
 		t.Fatalf("unexpected tools: %v", tools)
 	}
-	result, err := tools[0].Execute(ctx, "fixture-call", map[string]any{"text": "hello"}, nil)
+	result, err := tools[0].Execute(ctx, map[string]any{"text": "hello"})
 	_ = closeTools()
-	if err != nil || len(result.Content) != 1 || ai.ContentText(result.Content) != "hello" {
+	if err != nil || result.Text != "hello" {
 		t.Fatalf("call tool: %+v, %v", result, err)
 	}
 	grant, _, err = oauth.grant(ctx, "owner", server)
@@ -183,8 +182,21 @@ func TestClientMetadataDocumentIsUsedBeforeDynamicRegistration(t *testing.T) {
 	}
 	clientID, secret, style, err := oauthClient(t.Context(), nil, &oauthex.AuthServerMeta{
 		ClientIDMetadataDocumentSupported: true, RegistrationEndpoint: "https://auth.example.test/register",
-	}, oauth.redirect, oauth.clientMetadata, false)
+	}, nil, oauth.redirect, oauth.clientMetadata, false)
 	if err != nil || clientID != document["client_id"] || secret != "" || style != oauth2.AuthStyleInParams {
 		t.Fatalf("could not use client metadata document: %s, %v", clientID, err)
+	}
+}
+
+func TestConfiguredOAuthClientTakesPrecedence(t *testing.T) {
+	metadata := &oauthex.AuthServerMeta{
+		ClientIDMetadataDocumentSupported: true,
+		TokenEndpointAuthMethodsSupported: []string{"client_secret_post"},
+	}
+	configured := &settings.MCPOAuthConfig{ClientID: "registered", ClientSecret: "fixture"}
+	clientID, secret, style, err := oauthClient(t.Context(), nil, metadata, configured,
+		"https://shinona.example/auth/mcp/callback", "https://shinona.example/auth/mcp/client.json", false)
+	if err != nil || clientID != configured.ClientID || secret != configured.ClientSecret || style != oauth2.AuthStyleInParams {
+		t.Fatalf("configured client was not selected: %q, %v", clientID, err)
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sky-valley/pi/ai"
 
 	"github.com/OXeu/shinona/internal/settings"
 )
@@ -37,11 +36,11 @@ func TestConfiguredStreamableHTTPTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = closeTools() }()
-	if len(tools) != 1 || tools[0].Name != "mcp_echo" {
+	if len(tools) != 1 || tools[0].Name != qualifiedToolName("fixture", "echo") {
 		t.Fatalf("unexpected tools: %v", tools)
 	}
-	result, err := tools[0].Execute(t.Context(), "fixture-call", map[string]any{"text": "hello"}, nil)
-	if err != nil || len(result.Content) != 1 || ai.ContentText(result.Content) != "hello" {
+	result, err := tools[0].Execute(t.Context(), map[string]any{"text": "hello"})
+	if err != nil || result.Text != "hello" {
 		t.Fatalf("call tool: %+v, %v", result, err)
 	}
 }
@@ -95,12 +94,28 @@ func TestSelectedMCPServersExposeSameNamedToolsIndependently(t *testing.T) {
 	qualified := make([]string, len(tools))
 	for i, tool := range tools {
 		qualified[i] = tool.Name
-		result, err := tool.Execute(t.Context(), "fixture-call", map[string]any{}, nil)
-		if err != nil || len(result.Content) != 1 || ai.ContentText(result.Content) != names[i] {
+		result, err := tool.Execute(t.Context(), map[string]any{})
+		if err != nil || result.Text != names[i] {
 			t.Fatalf("call %q: %+v, %v", tool.Name, result, err)
 		}
 	}
-	if !slices.Equal(qualified, []string{"m1_echo", "m2_echo"}) {
+	if !slices.Equal(qualified, []string{qualifiedToolName("first", "echo"), qualifiedToolName("second", "echo")}) {
 		t.Fatalf("ambiguous tool names: %v", qualified)
+	}
+	reordered, closeReordered, err := servers.Open(ctx, "owner", []string{"second", "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeReordered() }()
+	if len(reordered) != 2 || reordered[0].Name != qualified[1] || reordered[1].Name != qualified[0] {
+		t.Fatalf("reordering changed tool names: %+v", reordered)
+	}
+	single, closeSingle, err := servers.Open(ctx, "owner", []string{"second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeSingle() }()
+	if len(single) != 1 || single[0].Name != qualified[1] {
+		t.Fatalf("selecting one server changed its tool name: %+v", single)
 	}
 }

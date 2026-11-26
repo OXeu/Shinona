@@ -42,7 +42,6 @@ type runtime struct {
 	mcpOAuth     *mcp.OAuth
 	models       *modelRuntime
 	accountHTTP  *http.Client
-	mcpMu        sync.Mutex
 	sshMu        sync.Mutex
 	sshProjects  sshsandbox.ProjectConnections
 	sshProviders personalSSHProviders

@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/OXeu/shinona/internal/keylock"
 	"github.com/OXeu/shinona/internal/settings"
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -24,6 +25,8 @@ const (
 	OAuthCallback     = "/auth/mcp/callback"
 	OAuthMetadata     = "/auth/mcp/client.json"
 	OAuthFlowLifetime = 10 * time.Minute
+	maxOAuthFlows     = 256
+	maxFlowsPerOwner  = 8
 )
 
 var (
@@ -45,7 +48,12 @@ type OAuth struct {
 	clientMetadata string
 	mu             sync.Mutex
 	flows          map[string]*oauthFlow
+	starting       map[string]int
+	refreshing     keylock.Locks[oauthGrantKey]
+	accountChanges keylock.Locks[string]
 }
+
+type oauthGrantKey struct{ owner, server string }
 
 type oauthFlow struct {
 	owner, name, verifier string
@@ -63,7 +71,8 @@ type oauthGrant struct {
 }
 
 func NewOAuth(store OAuthStore, origin string) *OAuth {
-	flow := &OAuth{store: store, redirect: origin + OAuthCallback, flows: make(map[string]*oauthFlow)}
+	flow := &OAuth{store: store, redirect: origin + OAuthCallback,
+		flows: make(map[string]*oauthFlow), starting: make(map[string]int)}
 	if strings.HasPrefix(origin, "https://") {
 		flow.clientMetadata = origin + OAuthMetadata
 	}
@@ -85,6 +94,17 @@ func (o *OAuth) Start(ctx context.Context, owner string, server settings.MCPServ
 	if owner == "" || server.OAuth == nil {
 		return "", "", ErrOAuthFlow
 	}
+	if !o.reserveFlow(owner, previous) {
+		return "", "", errors.New("MCP OAuth sign-in is busy")
+	}
+	defer func() {
+		o.mu.Lock()
+		o.starting[owner]--
+		if o.starting[owner] == 0 {
+			delete(o.starting, owner)
+		}
+		o.mu.Unlock()
+	}()
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	grant, err := discoverOAuth(ctx, server, o.redirect, o.clientMetadata)
@@ -96,18 +116,33 @@ func (o *OAuth) Start(ctx context.Context, owner string, server settings.MCPServ
 	now := time.Now()
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	for key, flow := range o.flows {
-		if now.After(flow.expires) || key == previous && flow.owner == owner {
-			delete(o.flows, key)
-		}
-	}
-	if len(o.flows) >= 256 {
-		return "", "", errors.New("MCP OAuth sign-in is busy")
-	}
 	o.flows[state] = &oauthFlow{owner: owner, name: server.Name, verifier: verifier,
 		expires: now.Add(OAuthFlowLifetime), grant: grant}
 	return state, grant.Config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier),
 		oauth2.SetAuthURLParam("resource", grant.Resource)), nil
+}
+
+func (o *OAuth) reserveFlow(owner, previous string) bool {
+	now := time.Now()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	owned := o.starting[owner]
+	for state, flow := range o.flows {
+		if !now.Before(flow.expires) || (state == previous && flow.owner == owner) {
+			delete(o.flows, state)
+		} else if flow.owner == owner {
+			owned++
+		}
+	}
+	total := len(o.flows)
+	for _, count := range o.starting {
+		total += count
+	}
+	if owned >= maxFlowsPerOwner || total >= maxOAuthFlows {
+		return false
+	}
+	o.starting[owner]++
+	return true
 }
 
 func (o *OAuth) takeFlow(owner, state string) *oauthFlow {
@@ -152,9 +187,15 @@ func (o *OAuth) Finish(ctx context.Context, owner, state, code, issuer string, l
 	if err != nil {
 		return err
 	}
+	release, err := o.accountChanges.Acquire(ctx, owner, false)
+	if err != nil {
+		return err
+	}
+	defer release()
 	o.mu.Lock()
-	defer o.mu.Unlock()
-	if current, ok := lookup(flow.name); o.flows[state] != flow || !ok || fingerprint(current) != grant.Fingerprint {
+	valid := o.flows[state] == flow
+	o.mu.Unlock()
+	if current, ok := lookup(flow.name); !valid || !ok || fingerprint(current) != grant.Fingerprint {
 		return ErrOAuthFlow
 	}
 	defer timing.Start(ctx, "mcp_oauth_save_grant")()
@@ -163,24 +204,25 @@ func (o *OAuth) Finish(ctx context.Context, owner, state, code, issuer string, l
 
 func (o *OAuth) Disconnect(ctx context.Context, owner, name string) error {
 	defer timing.Start(ctx, "mcp_oauth_disconnect")()
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	for state, flow := range o.flows {
-		if flow.owner == owner && flow.name == name {
-			delete(o.flows, state)
-		}
-	}
-	return o.store.DeleteMCPGrant(ctx, owner, name)
+	return o.ApplyServerChanges(ctx, owner, func() ([]string, error) {
+		return []string{name}, o.store.DeleteMCPGrant(ctx, owner, name)
+	})
 }
 
 // ApplyServerChanges coordinates settings changes with in-flight callbacks.
 // The commit saves the settings and deletes grants for the invalidated names.
-func (o *OAuth) ApplyServerChanges(owner string, names []string, commit func() error) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if err := commit(); err != nil {
+func (o *OAuth) ApplyServerChanges(ctx context.Context, owner string, commit func() ([]string, error)) error {
+	release, err := o.accountChanges.Acquire(ctx, owner, false)
+	if err != nil {
 		return err
 	}
+	defer release()
+	names, err := commit()
+	if err != nil || len(names) == 0 {
+		return err
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	for state, flow := range o.flows {
 		if flow.owner == owner && slices.Contains(names, flow.name) {
 			delete(o.flows, state)
@@ -208,6 +250,11 @@ func (o *OAuth) Connected(ctx context.Context, owner string, server settings.MCP
 }
 
 func (o *OAuth) Token(ctx context.Context, owner string, server settings.MCPServer) (*oauth2.Token, error) {
+	release, err := o.refreshing.Acquire(ctx, oauthGrantKey{owner, server.Name}, false)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	grant, previous, err := o.grant(ctx, owner, server)
 	if err != nil {
 		return nil, err

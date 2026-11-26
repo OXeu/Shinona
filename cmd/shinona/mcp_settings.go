@@ -79,17 +79,28 @@ func (r *runtime) ResetMCPSettings(ctx context.Context) (settings.MCPSettings, e
 }
 
 func (r *runtime) updateMCP(ctx context.Context, edit func(settings.MCPConfig) (settings.MCPConfig, error)) (settings.MCPSettings, error) {
-	r.mcpMu.Lock()
-	defer r.mcpMu.Unlock()
-
 	owner := auth.CurrentUser(ctx).ID
-	previous, err := r.accountMCP(ctx, owner)
+	var servers settings.MCPConfig
+	err := r.mcpOAuth.ApplyServerChanges(ctx, owner, func() ([]string, error) {
+		var invalidated []string
+		var err error
+		servers, invalidated, err = r.modifyMCP(ctx, owner, edit)
+		return invalidated, err
+	})
 	if err != nil {
 		return settings.MCPSettings{}, err
 	}
+	return r.mcpSettings(ctx, owner, servers), nil
+}
+
+func (r *runtime) modifyMCP(ctx context.Context, owner string, edit func(settings.MCPConfig) (settings.MCPConfig, error)) (settings.MCPConfig, []string, error) {
+	previous, err := r.accountMCP(ctx, owner)
+	if err != nil {
+		return nil, nil, err
+	}
 	servers, err := edit(previous)
 	if err != nil {
-		return settings.MCPSettings{}, err
+		return nil, nil, err
 	}
 
 	next := make(map[string]settings.MCPServer, len(servers))
@@ -103,10 +114,5 @@ func (r *runtime) updateMCP(ctx context.Context, edit func(settings.MCPConfig) (
 			invalidated = append(invalidated, server.Name)
 		}
 	}
-	if err := r.mcpOAuth.ApplyServerChanges(owner, invalidated, func() error {
-		return r.repo.SaveMCPConfig(ctx, owner, servers, invalidated)
-	}); err != nil {
-		return settings.MCPSettings{}, err
-	}
-	return r.mcpSettings(ctx, owner, servers), nil
+	return servers, invalidated, r.repo.SaveMCPConfig(ctx, owner, servers, invalidated)
 }

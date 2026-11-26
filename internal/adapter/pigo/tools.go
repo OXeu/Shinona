@@ -2,6 +2,7 @@ package pigo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,8 +11,25 @@ import (
 	"github.com/sky-valley/pi/agent"
 	"github.com/sky-valley/pi/ai"
 
+	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
+
+func remoteAgentTool(remote run.Tool) (agent.AgentTool, error) {
+	var parameters ai.Schema
+	if err := json.Unmarshal(remote.Schema, &parameters); err != nil {
+		return agent.AgentTool{}, fmt.Errorf("decode tool %q schema: %w", remote.Name, err)
+	}
+	return agent.AgentTool{
+		Name: remote.Name, Label: remote.Label, Description: remote.Description, Parameters: &parameters,
+		Execute: func(ctx context.Context, _ string, args map[string]any, _ agent.ToolUpdateFunc) (agent.AgentToolResult, error) {
+			output, err := remote.Execute(ctx, args)
+			result := textResult(output.Text)
+			result.IsError = output.IsError
+			return result, err
+		},
+	}, nil
+}
 
 func tools(workspace sandbox.Workspace, writable bool) []agent.AgentTool {
 	read := []agent.AgentTool{{

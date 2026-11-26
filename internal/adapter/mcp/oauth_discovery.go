@@ -51,7 +51,7 @@ func discoverOAuth(ctx context.Context, server settings.MCPServer, redirect, met
 			return oauthGrant{}, err
 		}
 	}
-	clientID, secret, style, err := oauthClient(ctx, client, metadata, redirect, metadataURL, local)
+	clientID, secret, style, err := oauthClient(ctx, client, metadata, server.OAuth, redirect, metadataURL, local)
 	if err != nil {
 		return oauthGrant{}, err
 	}
@@ -66,7 +66,20 @@ func discoverOAuth(ctx context.Context, server settings.MCPServer, redirect, met
 	}, nil
 }
 
-func oauthClient(ctx context.Context, client *http.Client, metadata *oauthex.AuthServerMeta, redirect, metadataURL string, local bool) (string, string, oauth2.AuthStyle, error) {
+func oauthClient(ctx context.Context, client *http.Client, metadata *oauthex.AuthServerMeta, configured *settings.MCPOAuthConfig, redirect, metadataURL string, local bool) (string, string, oauth2.AuthStyle, error) {
+	if configured != nil && configured.ClientID != "" {
+		methods := metadata.TokenEndpointAuthMethodsSupported
+		switch {
+		case configured.ClientSecret == "" && (len(methods) == 0 || slices.Contains(methods, "none")):
+			return configured.ClientID, "", oauth2.AuthStyleInParams, nil
+		case configured.ClientSecret != "" && (len(methods) == 0 || slices.Contains(methods, "client_secret_basic")):
+			return configured.ClientID, configured.ClientSecret, oauth2.AuthStyleInHeader, nil
+		case configured.ClientSecret != "" && slices.Contains(methods, "client_secret_post"):
+			return configured.ClientID, configured.ClientSecret, oauth2.AuthStyleInParams, nil
+		default:
+			return "", "", 0, errors.New("the configured MCP OAuth client cannot use an advertised token authentication method")
+		}
+	}
 	if metadataURL != "" && metadata.ClientIDMetadataDocumentSupported {
 		return metadataURL, "", oauth2.AuthStyleInParams, nil
 	}
