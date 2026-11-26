@@ -25,6 +25,7 @@ func TestWorkspaceRootDefaultsToTheProjectWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner")
 	newSession(t, repo, "owner", "session")
 
 	root, err := repo.WorkspaceRoot(ctx, "owner", "session")
@@ -43,6 +44,7 @@ func TestWorkspaceRootRoundTripsAndResets(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner")
 	newSession(t, repo, "owner", "session")
 
 	if err := repo.SetWorkspaceRoot(ctx, "owner", "session", "", "packages/api"); err != nil {
@@ -74,6 +76,7 @@ func TestWorkspaceRootIsSharedOnlyWithinTheOwnersProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner", "intruder")
 	newSession(t, repo, "owner", "session")
 	newSession(t, repo, "owner", "other")
 	newSession(t, repo, "intruder", "intruder-session")
@@ -81,10 +84,16 @@ func TestWorkspaceRootIsSharedOnlyWithinTheOwnersProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	for _, id := range []string{"project-session", "project-sibling"} {
+	for _, id := range []string{"project-session", "project-sibling", "archived-project-session"} {
 		if err := repo.CreateSession(ctx, run.Session{ID: id, OwnerID: "owner", ProjectID: "project", Title: id, CreatedAt: now, UpdatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := repo.ArchiveSession(ctx, "owner", "archived-project-session", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateSession(ctx, run.Session{ID: "wrong-owner", OwnerID: "intruder", ProjectID: "project"}); err == nil {
+		t.Fatal("another account's project accepted a conversation")
 	}
 
 	if err := repo.SetWorkspaceRoot(ctx, "owner", "session", "", "packages/api"); err != nil {
@@ -109,8 +118,27 @@ func TestWorkspaceRootIsSharedOnlyWithinTheOwnersProject(t *testing.T) {
 	if err := repo.SetWorkspaceRoot(ctx, "intruder", "session", "", "elsewhere"); !errors.Is(err, run.ErrSession) {
 		t.Fatalf("cross-account write: %v", err)
 	}
+	if err := repo.SaveProjectSandboxConfig(ctx, "owner", "project", run.ProjectSandboxConfig{Provider: "e2b"}); err != nil {
+		t.Fatal(err)
+	}
+	if saved, err := repo.SaveE2BSandbox(ctx, "owner", "project", "fixture", "", "box", []byte("{}")); err != nil || !saved {
+		t.Fatalf("fixture binding: %t, %v", saved, err)
+	}
 	if err := repo.RemoveProject(ctx, "owner", "project"); err != nil {
 		t.Fatal(err)
+	}
+	var archived sessionRow
+	if err := repo.db.Take(&archived, "id = ?", "archived-project-session").Error; err != nil || archived.ProjectID != "" || archived.ArchivedAt == nil {
+		t.Fatalf("archived conversation was lost or reassigned incorrectly: %+v, %v", archived, err)
+	}
+	for _, table := range []string{"project_sandbox_settings", "project_workspace_roots", "e2b_project_workspaces"} {
+		var count int64
+		if err := repo.db.Table(table).Where("owner_id = ? AND project_id = ?", "owner", "project").Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("%s has %d rows after project deletion: %v", table, count, err)
+		}
+	}
+	if _, err := repo.SaveE2BSandbox(ctx, "owner", "project", "fixture", "", "late-box", []byte("{}")); err == nil {
+		t.Fatal("late provisioning recreated the binding for a deleted project")
 	}
 	if err := repo.SetWorkspaceRoot(ctx, "owner", "project-session", "project", "removed"); !errors.Is(err, run.ErrWorkspaceBusy) {
 		t.Fatalf("write from a stale project: %v", err)
@@ -134,6 +162,7 @@ func TestWorkspaceRootRejectsUnknownSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner")
 	newSession(t, repo, "owner", "session")
 
 	if _, err := repo.WorkspaceRoot(ctx, "owner", "missing"); !errors.Is(err, run.ErrSession) {
@@ -163,7 +192,8 @@ func TestWorkspaceRootMigratesLegacyPreferencesOnce(t *testing.T) {
 		}
 		return repo
 	}
-	repo := open()
+	repo := openSchemaFixture(t, filename, 1)
+	seedAccounts(t, repo, "owner")
 	if err := repo.db.Migrator().DropTable(&workspaceRootRow{}); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +212,7 @@ func TestWorkspaceRootMigratesLegacyPreferencesOnce(t *testing.T) {
 	if err := repo.ArchiveSession(ctx, "owner", "archived", now); err != nil {
 		t.Fatal(err)
 	}
-	asLegacyDatabase(t, repo)
+	markUnversioned(t, repo)
 	if err := repo.Close(); err != nil {
 		t.Fatal(err)
 	}

@@ -17,54 +17,49 @@ func (r *Repository) SessionListRevision(ctx context.Context, owner string) (int
 }
 
 func initSessionListRevisions(db *gorm.DB) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec(`CREATE TABLE IF NOT EXISTS session_list_revisions (
-			owner_id TEXT PRIMARY KEY, revision INTEGER NOT NULL
-		) WITHOUT ROWID`).Error; err != nil {
-			return err
-		}
-		for _, table := range []struct {
-			name, columns string
+	for _, table := range []struct {
+		name, columns string
+	}{
+		{"agent_sessions", "owner_id, project_id, id, title, custom_title, turn_count, updated_at, pinned, read_through, archived_at"},
+		{"projects", "owner_id, id, name"},
+		{"runs", "owner_id, session_id, status"},
+	} {
+		for _, operation := range []struct {
+			name, event, when string
+			owners            []string
 		}{
-			{"agent_sessions", "owner_id, project_id, id, title, custom_title, turn_count, updated_at, pinned, read_through, archived_at"},
-			{"projects", "owner_id, id, name"},
-			{"runs", "owner_id, session_id, status"},
-		} {
-			for _, operation := range []struct {
-				name, event, when string
-				owners            []string
-			}{
-				{"insert", "INSERT", "NEW.status IN ('QUEUED','RUNNING')", []string{"NEW"}},
-				{"delete", "DELETE", "OLD.status IN ('QUEUED','RUNNING')", []string{"OLD"}},
-				{"update", "UPDATE OF " + table.columns,
-					`(NEW.status IN ('QUEUED','RUNNING')) != (OLD.status IN ('QUEUED','RUNNING'))
+			{"insert", "INSERT", "NEW.status IN ('QUEUED','RUNNING')", []string{"NEW"}},
+			{"delete", "DELETE", "OLD.status IN ('QUEUED','RUNNING')", []string{"OLD"}},
+			{"update", "UPDATE OF " + table.columns,
+				`(NEW.status IN ('QUEUED','RUNNING')) != (OLD.status IN ('QUEUED','RUNNING'))
 					OR ((NEW.status IN ('QUEUED','RUNNING') OR OLD.status IN ('QUEUED','RUNNING'))
-						AND (NEW.owner_id != OLD.owner_id OR NEW.session_id != OLD.session_id))`, []string{"NEW", "OLD"}},
-			} {
-				when := ""
-				if table.name == "runs" {
-					when = "WHEN " + operation.when
+					AND (NEW.owner_id IS NOT OLD.owner_id OR NEW.session_id IS NOT OLD.session_id))`, []string{"NEW", "OLD"}},
+		} {
+			when := ""
+			if table.name == "runs" {
+				when = "WHEN " + operation.when
+			}
+			var changes string
+			for _, owner := range operation.owners {
+				// A child deleted by the account cascade must not recreate
+				// a revision for an account that has just been removed.
+				predicate := fmt.Sprintf("EXISTS (SELECT 1 FROM users WHERE id = %[1]s.owner_id)", owner)
+				if operation.name == "update" && owner == "OLD" {
+					predicate += " AND NEW.owner_id IS NOT OLD.owner_id"
 				}
-				var changes string
-				for _, owner := range operation.owners {
-					predicate := fmt.Sprintf("%[1]s.owner_id <> '' AND NOT EXISTS (SELECT 1 FROM deleted_accounts WHERE id = %[1]s.owner_id)", owner)
-					if operation.name == "update" && owner == "OLD" {
-						predicate += " AND NEW.owner_id <> OLD.owner_id"
-					}
-					changes += fmt.Sprintf(`INSERT INTO session_list_revisions (owner_id, revision)
+				changes += fmt.Sprintf(`INSERT INTO session_list_revisions (owner_id, revision)
 						SELECT %[1]s.owner_id, 1 WHERE %[2]s
 						ON CONFLICT(owner_id) DO UPDATE SET revision = revision + 1; `, owner, predicate)
-				}
-				name := fmt.Sprintf("session_list_%s_%s", table.name, operation.name)
-				if err := tx.Exec("DROP TRIGGER IF EXISTS " + name).Error; err != nil {
-					return err
-				}
-				trigger := fmt.Sprintf(`CREATE TRIGGER %s AFTER %s ON %s %s BEGIN %s END`, name, operation.event, table.name, when, changes)
-				if err := tx.Exec(trigger).Error; err != nil {
-					return err
-				}
+			}
+			name := fmt.Sprintf("session_list_%s_%s", table.name, operation.name)
+			if err := db.Exec("DROP TRIGGER IF EXISTS " + name).Error; err != nil {
+				return err
+			}
+			trigger := fmt.Sprintf(`CREATE TRIGGER %s AFTER %s ON %s %s BEGIN %s END`, name, operation.event, table.name, when, changes)
+			if err := db.Exec(trigger).Error; err != nil {
+				return err
 			}
 		}
-		return nil
-	})
+	}
+	return nil
 }

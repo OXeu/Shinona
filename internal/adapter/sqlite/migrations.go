@@ -1,6 +1,9 @@
 package sqlite
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -15,29 +18,59 @@ import (
 // database may be empty or contain the pre-migration Shinona schema.
 var migrations = [...]func(*gorm.DB) error{
 	initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime, deleteRevokedMCPGrants,
+	migrateOwnership,
 }
 
 func migrate(db *gorm.DB) error {
+	return migrateTo(db, len(migrations))
+}
+
+func migrateTo(db *gorm.DB, target int) error {
 	version, err := schemaVersion(db)
-	if err != nil || version == len(migrations) {
+	if err != nil || version >= target {
 		return err
 	}
-	return db.Transaction(func(tx *gorm.DB) error {
-		// Another process may have migrated while we waited for the writer.
-		version, err := schemaVersion(tx)
-		if err != nil {
+	return db.Connection(func(conn *gorm.DB) (err error) {
+		// SQLite's table rebuild requires a single connection with enforcement
+		// disabled before the transaction. The temporary table's rename keeps
+		// existing views and triggers pointing to the original table name.
+		defer func() {
+			restore := conn.WithContext(context.WithoutCancel(conn.Statement.Context))
+			err = errors.Join(err, restore.Exec("PRAGMA foreign_keys = ON; PRAGMA legacy_alter_table = OFF").Error)
+		}()
+		if err := conn.Exec("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON").Error; err != nil {
 			return err
 		}
-		for i := version; i < len(migrations); i++ {
-			if err := migrations[i](tx); err != nil {
-				return fmt.Errorf("SQLite migration %d: %w", i+1, err)
-			}
-			if err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", i+1)).Error; err != nil {
+		return conn.Transaction(func(tx *gorm.DB) error {
+			// Another process may have migrated while we waited for the writer.
+			version, err := schemaVersion(tx)
+			if err != nil {
 				return err
 			}
-		}
-		return nil
+			for i := version; i < target; i++ {
+				if err := migrations[i](tx); err != nil {
+					return fmt.Errorf("SQLite migration %d: %w", i+1, err)
+				}
+				if err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", i+1)).Error; err != nil {
+					return err
+				}
+			}
+			return checkForeignKeys(tx)
+		})
 	})
+}
+
+func checkForeignKeys(db *gorm.DB) error {
+	var table, parent string
+	err := db.Raw(`SELECT "table", parent FROM pragma_foreign_key_check LIMIT 1`).Row().Scan(&table, &parent)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	default:
+		return fmt.Errorf("SQLite foreign key check failed: %s references a missing row in %s", table, parent)
+	}
 }
 
 func schemaVersion(db *gorm.DB) (int, error) {
@@ -56,12 +89,15 @@ func initializeSchema(db *gorm.DB) error {
 		return err
 	}
 	if err := db.AutoMigrate(
-		&userRow{}, &instanceSettingsRow{}, &deletedAccountRow{},
+		&userRow{}, &instanceSettingsRow{},
 		&row{}, &workspaceRootRow{}, &legacyWorkspaceRootRow{}, &sessionRow{}, &projectRow{},
 		&settingsRow{}, &composerDefaultsRow{}, &modelSettingsRow{}, &mcpSettingsRow{}, &mcpGrantRow{},
 		&e2bWorkspaceRow{}, &projectSandboxRow{}, &sshServerRow{},
 		&avatarRow{}, &emailChallengeRow{}, &identityRow{}, &loginRow{}, &flowRow{},
 	); err != nil {
+		return err
+	}
+	if err := db.Exec("CREATE TABLE IF NOT EXISTS deleted_accounts (id TEXT PRIMARY KEY)").Error; err != nil {
 		return err
 	}
 	if err := db.Exec("DROP INDEX IF EXISTS idx_runs_session_status").Error; err != nil {
@@ -89,7 +125,9 @@ func replaceLegacyTriggers(db *gorm.DB) error {
 	if err := db.Exec("DROP TABLE IF EXISTS session_auth_revision").Error; err != nil {
 		return err
 	}
-	if err := protectDeletedAccounts(db); err != nil {
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS session_list_revisions (
+		owner_id TEXT PRIMARY KEY, revision INTEGER NOT NULL
+	) WITHOUT ROWID`).Error; err != nil {
 		return err
 	}
 	if err := initSessionListRevisions(db); err != nil {

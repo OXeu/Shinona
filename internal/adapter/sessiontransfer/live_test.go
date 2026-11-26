@@ -58,6 +58,9 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	}
 	t.Cleanup(func() { _ = repo.Close() })
 	const owner = "owner"
+	if err := repo.CreatePasswordUser(ctx, auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+		t.Fatal(err)
+	}
 	logger := slog.New(slog.DiscardHandler)
 	agent := stagedAgent{steps: make(chan func(run.Input), 4), done: make(chan struct{})}
 	resolve := func(context.Context, string, string) (run.Target, error) {

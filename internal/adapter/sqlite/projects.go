@@ -81,6 +81,10 @@ func (r *Repository) RenameProject(ctx context.Context, ownerID, id, name string
 
 func (r *Repository) RemoveProject(ctx context.Context, ownerID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&sessionRow{}).Where("owner_id = ? AND project_id = ?", ownerID, id).
+			UpdateColumn("project_id", "").Error; err != nil {
+			return err
+		}
 		result := tx.Delete(&projectRow{}, "owner_id = ? AND id = ?", ownerID, id)
 		if result.Error != nil {
 			return result.Error
@@ -88,16 +92,6 @@ func (r *Repository) RemoveProject(ctx context.Context, ownerID, id string) erro
 		if result.RowsAffected == 0 {
 			return run.ErrProject
 		}
-		if err := tx.Delete(&projectSandboxRow{}, "owner_id = ? AND project_id = ?", ownerID, id).Error; err != nil {
-			return err
-		}
-		if err := tx.Delete(&workspaceRootRow{}, "owner_id = ? AND project_id = ?", ownerID, id).Error; err != nil {
-			return err
-		}
-		if err := tx.Delete(&e2bWorkspaceRow{}, "owner_id = ? AND project_id = ?", ownerID, id).Error; err != nil {
-			return err
-		}
-		return tx.Model(&sessionRow{}).Where("owner_id = ? AND project_id = ?", ownerID, id).
-			UpdateColumn("project_id", "").Error
+		return nil
 	})
 }

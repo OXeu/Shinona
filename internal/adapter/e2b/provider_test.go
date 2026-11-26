@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
+	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
@@ -113,6 +115,7 @@ func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := sandbox.Spec{RunID: "run-id", OwnerID: "alice", ProjectID: "web", SessionID: "first", Policy: sandbox.Shared}
+	seedWorkspaceOwner(t, repo, spec.OwnerID, spec.ProjectID)
 	workspace, err := provider.Acquire(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -164,6 +167,19 @@ func openStore(t *testing.T, database string) *sqlite.Repository {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func seedWorkspaceOwner(t *testing.T, store *sqlite.Repository, owner, project string) {
+	t.Helper()
+	ctx := t.Context()
+	if err := store.CreatePasswordUser(ctx, auth.User{ID: owner, Email: owner + "@example.test"}, []byte("test-hash")); err != nil {
+		t.Fatal(err)
+	}
+	if project != "" {
+		if err := store.CreateProject(ctx, run.Project{OwnerID: owner, ID: project, Name: project}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -224,8 +240,10 @@ func TestSelfHostedUsesReturnedTrafficToken(t *testing.T) {
 	defer proxy.Close()
 	t.Setenv("E2B_DEBUG", "")
 
+	store := openStore(t, ":memory:")
+	seedWorkspaceOwner(t, store, "alice", "")
 	provider, err := New(Config{APIKey: "self-hosted-key", BaseURL: api.URL, ProxyURL: proxy.URL,
-		WorkspaceUser: "developer", WorkDirectory: "/work"}, proxy.Client(), openStore(t, ":memory:"))
+		WorkspaceUser: "developer", WorkDirectory: "/work"}, proxy.Client(), store)
 	if err != nil {
 		t.Fatal(err)
 	}

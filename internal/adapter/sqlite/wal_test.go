@@ -18,6 +18,7 @@ func TestWALMaintenanceReusesLogWithoutWriterAutoCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner")
 
 	var threshold int
 	if err := repo.db.WithContext(ctx).Raw("PRAGMA wal_autocheckpoint").Row().Scan(&threshold); err != nil {

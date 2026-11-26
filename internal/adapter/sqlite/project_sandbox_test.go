@@ -11,10 +11,8 @@ import (
 func TestProjectSandboxSettingsKeepLegacyE2BProvider(t *testing.T) {
 	ctx := t.Context()
 	filename := filepath.Join(t.TempDir(), "projects.db")
-	repo, err := Open(ctx, filename)
-	if err != nil {
-		t.Fatal(err)
-	}
+	repo := openSchemaFixture(t, filename, 1)
+	seedAccounts(t, repo, "owner")
 	project := run.Project{ID: "project", OwnerID: "owner", Name: "Project"}
 	if err := repo.CreateProject(ctx, project); err != nil {
 		t.Fatal(err)
@@ -22,11 +20,11 @@ func TestProjectSandboxSettingsKeepLegacyE2BProvider(t *testing.T) {
 	if saved, err := repo.SaveE2BSandbox(ctx, project.OwnerID, project.ID, "fixture", "", "legacy-box", []byte("{}")); err != nil || !saved {
 		t.Fatalf("save legacy sandbox: %v, %v", saved, err)
 	}
-	asLegacyDatabase(t, repo)
+	markUnversioned(t, repo)
 	if err := repo.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repo, err = Open(ctx, filename)
+	repo, err := Open(ctx, filename)
 	if err != nil {
 		t.Fatal(err)
 	}

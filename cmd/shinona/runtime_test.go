@@ -134,6 +134,9 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 		t.Fatalf("unexpected settings mutation result: %s", saved)
 	}
 	owner := auth.WithUser(ctx, auth.User{ID: "owner"})
+	if err := repository.CreatePasswordUser(ctx, auth.User{ID: "owner", Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := app.UpdateModelSettings(owner, []settings.Change{
 		{Key: settings.ModelBaseURL, Value: new("https://api.openai.com/v1")},
 		{Key: settings.ModelID, Value: new("gpt-4o-mini")},

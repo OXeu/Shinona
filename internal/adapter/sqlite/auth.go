@@ -185,6 +185,10 @@ func (r *Repository) SaveFlow(ctx context.Context, flow auth.Flow, now time.Time
 			return err
 		}
 		record := flowRow(flow)
+		if record.OwnerID == "" {
+			// A sign-in flow has no account until the identity is verified.
+			return tx.Omit("OwnerID").Create(&record).Error
+		}
 		return tx.Create(&record).Error
 	})
 }

@@ -148,8 +148,10 @@ func TestWorkspaceUsesSDKForFilesCommandsAndTerminal(t *testing.T) {
 	}))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
+	store := openStore(t, ":memory:")
+	seedWorkspaceOwner(t, store, "fixture", "")
 	provider, err := New(Config{APIKey: "team-key", BaseURL: server.URL, ProxyURL: server.URL + "/envd",
-		APIVersion: "v2", WorkspaceUser: "user", WorkDirectory: "/workspace"}, server.Client(), openStore(t, ":memory:"))
+		APIVersion: "v2", WorkspaceUser: "user", WorkDirectory: "/workspace"}, server.Client(), store)
 	if err != nil {
 		t.Fatal(err)
 	}

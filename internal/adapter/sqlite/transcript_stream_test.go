@@ -18,6 +18,7 @@ func TestTranscriptStreamReadsOrderedBatchesFromOneSnapshot(t *testing.T) {
 	t.Cleanup(func() { _ = repo.Close() })
 	now := time.Now().UTC()
 	const owner, session = "owner", "session"
+	seedAccounts(t, repo, owner)
 	if err := repo.CreateSession(ctx, run.Session{ID: session, OwnerID: owner, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}

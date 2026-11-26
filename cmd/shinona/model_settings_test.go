@@ -40,6 +40,11 @@ func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Re
 			t.Fatal(err)
 		}
 	}
+	for _, id := range []string{"alice", "bob"} {
+		if err := repo.CreatePasswordUser(t.Context(), auth.User{ID: id, Email: id + "@example.test"}, []byte("test-hash")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	app, err := newRuntime(t.Context(), repo, nil)
 	if err != nil {
 		t.Fatal(err)

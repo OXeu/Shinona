@@ -47,6 +47,7 @@ func TestProjectLifecycleUsesProjectTemplateAndTimeout(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 	store := openStore(t, ":memory:")
+	seedWorkspaceOwner(t, store, "owner", "project")
 	provider, err := New(Config{
 		APIKey: "fixture", BaseURL: server.URL, ProxyURL: server.URL,
 		Template: "instance-template", Timeout: 480 * time.Second, OnTimeout: sandbox.TimeoutPause,

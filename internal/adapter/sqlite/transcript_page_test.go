@@ -16,6 +16,7 @@ func TestTranscriptPageSequence(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = repo.Close() })
 	const owner, session = "owner", "session"
+	seedAccounts(t, repo, owner)
 	now := time.Now().UTC()
 	if err := repo.CreateSession(ctx, run.Session{ID: session, OwnerID: owner, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)

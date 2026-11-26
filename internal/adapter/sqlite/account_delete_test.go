@@ -31,6 +31,7 @@ func TestDeleteAccountClearsOwnedRowsAndRejectsLateWrites(t *testing.T) {
 		&workspaceRootRow{OwnerID: owner, ProjectID: "project", Root: "src"},
 		&legacyWorkspaceRootRow{OwnerID: owner, SessionID: "chat", Root: "old-src"},
 		&row{ID: "running-turn", OwnerID: owner, SessionID: "chat", Status: run.Running, CreatedAt: now, UpdatedAt: now},
+		&runAttachmentRow{TurnID: "running-turn", Content: []byte("attachment")},
 		&settingsRow{OwnerID: owner},
 		&composerDefaultsRow{OwnerID: owner},
 		&modelSettingsRow{OwnerID: owner, Data: data},
@@ -60,11 +61,26 @@ func TestDeleteAccountClearsOwnedRowsAndRejectsLateWrites(t *testing.T) {
 	}
 	assertRows := func(expected int64) {
 		t.Helper()
-		for _, model := range ownedAccountTables {
+		for _, model := range []interface{ TableName() string }{
+			&row{}, &workspaceRootRow{}, &legacyWorkspaceRootRow{}, &sessionRow{}, &projectRow{},
+			&settingsRow{}, &composerDefaultsRow{}, &modelSettingsRow{}, &mcpSettingsRow{}, &mcpGrantRow{},
+			&e2bWorkspaceRow{}, &projectSandboxRow{}, &sshServerRow{}, &avatarRow{}, &emailChallengeRow{},
+			&identityRow{}, &loginRow{}, &flowRow{},
+		} {
 			var count int64
 			err := db.Model(model).Where("owner_id = ?", owner).Count(&count).Error
 			if err != nil || count != expected {
 				t.Fatalf("%s has %d rows, expected %d: %v", model.TableName(), count, expected, err)
+			}
+		}
+		for _, query := range []string{
+			"SELECT count(*) FROM users WHERE id = 'target-account'",
+			"SELECT count(*) FROM run_attachments WHERE turn_id = 'running-turn'",
+			"SELECT count(*) FROM session_list_revisions WHERE owner_id = 'target-account'",
+		} {
+			var count int64
+			if err := db.Raw(query).Row().Scan(&count); err != nil || count != expected {
+				t.Fatalf("%s returned %d, expected %d: %v", query, count, expected, err)
 			}
 		}
 	}
@@ -83,6 +99,9 @@ func TestDeleteAccountClearsOwnedRowsAndRejectsLateWrites(t *testing.T) {
 	}
 	if err := db.Create(&modelSettingsRow{OwnerID: owner, Data: data}).Error; err == nil {
 		t.Fatal("late write recreated settings for a deleted account")
+	}
+	if err := db.Model(&projectRow{}).Where("id = ?", "other-project").UpdateColumn("owner_id", owner).Error; err == nil {
+		t.Fatal("update assigned a project to a deleted account")
 	}
 	if _, err := repo.SaveE2BSandbox(ctx, owner, "project", "fixture", "", "new-box", data); err == nil {
 		t.Fatal("late workspace creation resurrected a deleted account")

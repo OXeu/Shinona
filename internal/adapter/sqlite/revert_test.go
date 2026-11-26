@@ -18,6 +18,7 @@ func TestRevertTurnRestoresDraftAndRemovesLaterTurnsFromContext(t *testing.T) {
 	t.Cleanup(func() { _ = repo.Close() })
 
 	now := time.Now().UTC()
+	seedAccounts(t, repo, "owner")
 	session := run.Session{ID: "session", OwnerID: "owner", Title: run.DefaultSessionTitle, CreatedAt: now, UpdatedAt: now}
 	if err := repo.CreateSession(ctx, session); err != nil {
 		t.Fatal(err)

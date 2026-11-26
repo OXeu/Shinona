@@ -25,6 +25,7 @@ func TestLatestTranscriptCacheTracksPersistedHeadAndSummary(t *testing.T) {
 	t.Cleanup(func() { _ = writer.Close() })
 
 	const owner, id = "owner", "session"
+	seedAccounts(t, writer, owner, "other")
 	now := time.Now().UTC()
 	if err := writer.CreateSession(ctx, run.Session{ID: id, OwnerID: owner, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)

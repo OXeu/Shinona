@@ -16,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
+	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
@@ -26,6 +27,11 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	for _, id := range []string{"owner", "other"} {
+		if err := store.CreatePasswordUser(ctx, auth.User{ID: id, Email: id + "@example.test"}, []byte("test-hash")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	remote := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
 	sdk.AddTool(remote, &sdk.Tool{Name: "echo"}, func(_ context.Context, _ *sdk.CallToolRequest, input struct {
 		Text string `json:"text"`

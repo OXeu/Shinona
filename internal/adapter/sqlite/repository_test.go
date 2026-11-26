@@ -15,6 +15,16 @@ import (
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
+func seedAccounts(t testing.TB, repo *Repository, owners ...string) {
+	t.Helper()
+	for _, owner := range owners {
+		user := auth.User{ID: owner, Email: owner + "@example.test"}
+		if err := repo.CreatePasswordUser(t.Context(), user, []byte("test-hash")); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestFileDatabaseReadsCommittedDataWhileWriting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -23,6 +33,7 @@ func TestFileDatabaseReadsCommittedDataWhileWriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner")
 	if err := repo.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", Title: "before"}); err != nil {
 		t.Fatal(err)
 	}
@@ -147,6 +158,10 @@ func TestHistoryScopesEarlierTurnsAndSkipsCancelledQueueItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner", "other")
+	newSession(t, repo, "owner", "session")
+	newSession(t, repo, "owner", "other")
+	newSession(t, repo, "other", "other-session")
 	started := time.Now().UTC()
 	rows := []row{
 		{ID: "ok", OwnerID: "owner", SessionID: "session", Sequence: 1, Status: run.Succeeded, Prompt: "initial", Output: "reply"},
@@ -155,7 +170,7 @@ func TestHistoryScopesEarlierTurnsAndSkipsCancelledQueueItems(t *testing.T) {
 		{ID: "stopped", OwnerID: "owner", SessionID: "session", Sequence: 4, Status: run.Stopped, StartedAt: &started, Prompt: "stopped while running"},
 		{ID: "current", OwnerID: "owner", SessionID: "session", Sequence: 5, Status: run.Running, Prompt: "current prompt"},
 		{ID: "other-session", OwnerID: "owner", SessionID: "other", Sequence: 4, Status: run.Failed, Prompt: "from another session"},
-		{ID: "other-owner", OwnerID: "other", SessionID: "session", Sequence: 4, Status: run.Stopped, StartedAt: &started, Prompt: "from another account"},
+		{ID: "other-owner", OwnerID: "other", SessionID: "other-session", Sequence: 4, Status: run.Stopped, StartedAt: &started, Prompt: "from another account"},
 	}
 	if err := repo.db.WithContext(ctx).Create(&rows).Error; err != nil {
 		t.Fatal(err)
@@ -180,6 +195,9 @@ func TestHistoryStartsAtLatestEligibleCompaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner", "other")
+	newSession(t, repo, "owner", "session")
+	newSession(t, repo, "other", "other-session")
 	reverted := time.Now().UTC()
 	checkpoint := []byte(`[{"role":"user","content":"Compacted history"}]`)
 	rows := []row{
@@ -188,7 +206,7 @@ func TestHistoryStartsAtLatestEligibleCompaction(t *testing.T) {
 		{ID: "failed", OwnerID: "owner", SessionID: "session", Sequence: 3, Status: run.Failed, CompactedContext: checkpoint},
 		{ID: "retry", OwnerID: "owner", SessionID: "session", Sequence: 4, RetryOf: "failed", Status: run.Succeeded, Prompt: "retry"},
 		{ID: "reverted", OwnerID: "owner", SessionID: "session", Sequence: 5, Status: run.Succeeded, RevertedAt: &reverted, CompactedContext: checkpoint},
-		{ID: "other", OwnerID: "other", SessionID: "session", Sequence: 5, Status: run.Succeeded, CompactedContext: checkpoint},
+		{ID: "other", OwnerID: "other", SessionID: "other-session", Sequence: 5, Status: run.Succeeded, CompactedContext: checkpoint},
 	}
 	if err := repo.db.WithContext(ctx).Create(&rows).Error; err != nil {
 		t.Fatal(err)
@@ -285,11 +303,8 @@ func TestLegacyRunsStayPrivateAndCanBeAdopted(t *testing.T) {
 func TestOpenMigratesSessionAndQueueIndexes(t *testing.T) {
 	ctx := t.Context()
 	filename := filepath.Join(t.TempDir(), "shinona.db")
-	old, err := Open(ctx, filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = old.Close() })
+	old := openSchemaFixture(t, filename, 1)
+	seedAccounts(t, old, "owner")
 	if err := old.db.Exec(`DROP INDEX idx_sessions_recent;
 		DROP INDEX idx_runs_session_status_sequence;
 		CREATE INDEX idx_runs_session_status ON runs(session_id, status)`).Error; err != nil {
@@ -298,7 +313,7 @@ func TestOpenMigratesSessionAndQueueIndexes(t *testing.T) {
 	if err := old.CreateSession(ctx, run.Session{ID: "stored", OwnerID: "owner", Title: "Stored session"}); err != nil {
 		t.Fatal(err)
 	}
-	asLegacyDatabase(t, old)
+	markUnversioned(t, old)
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -365,6 +380,7 @@ func TestSessionActionsAndUnreadTransitions(t *testing.T) {
 	}()
 
 	now := time.Now().UTC()
+	seedAccounts(t, repo, "alice", "bob")
 	entry := run.Session{ID: "work", OwnerID: "alice", Title: "New session", CreatedAt: now, UpdatedAt: now}
 	if err := repo.CreateSession(ctx, entry); err != nil {
 		t.Fatal(err)

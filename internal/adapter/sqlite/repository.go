@@ -106,16 +106,15 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 
 func databaseDSNs(filename string) (write, read string, err error) {
 	path, query, _ := strings.Cut(filename, "?")
-	if path == "" {
-		return filename, "", nil
-	}
 	options, err := url.ParseQuery(query)
 	if err != nil {
 		return "", "", err
 	}
 	options.Set("_busy_timeout", "5000")
+	options.Del("_fk")
 	options.Set("_foreign_keys", "1")
-	if path == ":memory:" || path == "file::memory:" || options.Get("mode") == "memory" {
+	options.Set("_ignore_check_constraints", "0")
+	if path == "" || path == ":memory:" || path == "file::memory:" || options.Get("mode") == "memory" {
 		return path + "?" + options.Encode(), "", nil
 	}
 

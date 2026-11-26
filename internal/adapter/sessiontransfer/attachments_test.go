@@ -24,6 +24,9 @@ func TestAttachmentServesOnlyTheOwnersVisibleTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	if err := repo.CreatePasswordUser(ctx, auth.User{ID: "owner", Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	if err := repo.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
+	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 )
 
@@ -90,6 +91,9 @@ func TestPiDeliversSteeringBatchesAcrossModelRequests(t *testing.T) {
 	}
 	service := run.NewService(repository, resolve, uuid.NewString, controls, nil)
 	const owner, prompt = "owner", "Inspect the test."
+	if err := repo.CreatePasswordUser(lifetime, auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+		t.Fatal(err)
+	}
 	session, err := service.CreateSession(lifetime, owner, "")
 	if err != nil {
 		t.Fatal(err)

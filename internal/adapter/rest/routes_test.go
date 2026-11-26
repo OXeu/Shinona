@@ -43,6 +43,11 @@ func restFixture(t *testing.T) (*sqlite.Repository, *gin.Engine) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	for _, id := range []string{"alice", "bob"} {
+		if err := repo.CreatePasswordUser(t.Context(), auth.User{ID: id, Email: id + "@example.test"}, []byte("test-hash")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	router := gin.New()
 	Register(router.Group(Prefix, httpserver.Compress), fixtureService(repo), fixtureApplication{}, slog.New(slog.DiscardHandler))
 	return repo, router

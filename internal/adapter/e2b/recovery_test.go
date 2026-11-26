@@ -157,6 +157,7 @@ func TestProjectSandboxRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			spec := sandbox.Spec{RunID: "run-id", OwnerID: "owner", ProjectID: "project", Policy: sandbox.Shared}
+			seedWorkspaceOwner(t, store, spec.OwnerID, spec.ProjectID)
 			if saved, err := provider.saveProject(ctx, spec, "", oldID,
 				credentials{EnvdToken: "old-token", RecoverySnapshot: tc.previousBackup}); err != nil || !saved {
 				t.Fatalf("seed saved binding: %v, %v", saved, err)

@@ -19,6 +19,7 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/demo"
 	"github.com/OXeu/shinona/internal/adapter/pigo"
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
+	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
@@ -26,6 +27,23 @@ import (
 type controlledAgent struct {
 	inputs chan run.Input
 	drain  chan struct{}
+}
+
+func openComposerRepository(t *testing.T, ctx context.Context) *sqlite.Repository {
+	t.Helper()
+	repository, err := sqlite.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := repository.CreatePasswordUser(ctx, auth.User{ID: "owner", Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+		t.Fatal(err)
+	}
+	return repository
 }
 
 func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
@@ -82,11 +100,7 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := sqlite.Open(ctx, ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = repository.Close() })
+	repository := openComposerRepository(t, ctx)
 	agent := pigo.New(endpoint, "fixture", nil)
 	resolve := func(context.Context, string, string) (run.Target, error) {
 		return run.Target{Name: "test", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
@@ -225,15 +239,7 @@ func (a controlledAgent) Run(ctx context.Context, input run.Input, _ sandbox.Wor
 func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	repository, err := sqlite.Open(ctx, ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	}()
+	repository := openComposerRepository(t, ctx)
 	agent := controlledAgent{inputs: make(chan run.Input, 8), drain: make(chan struct{})}
 	resolve := func(context.Context, string, string) (run.Target, error) {
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
@@ -313,15 +319,7 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 func TestWorkerStopsRunningTurnAndRetainsQueue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	repository, err := sqlite.Open(ctx, ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	}()
+	repository := openComposerRepository(t, ctx)
 	agent := controlledAgent{inputs: make(chan run.Input, 8), drain: make(chan struct{})}
 	resolve := func(context.Context, string, string) (run.Target, error) {
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
