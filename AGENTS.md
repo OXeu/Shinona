@@ -5,3 +5,7 @@
 - Never write to `/tmp` or its descendants, including through tools that default to the system temporary directory.
 - Store temporary files and directories in `.tmp/` at the workspace root. Create it as needed and set `TMPDIR` to its absolute path for tools that use it. Set `TMP` or `TEMP` to the same path for tools that use those variables.
 - Before each use of `.tmp/`, remove files and directories inside it that have been inactive for more than two hours. Use the latest access or modification time and preserve entries still in use. Keep directories containing active entries. Restrict cleanup to `.tmp/` and avoid following symlinks outside it.
+
+## Commits
+
+- Commit functional changes separately in English according to [Conventional Commits 1.0.0](docs/conventional-commits.md). Descriptions must be imperative and at most 72 characters. See [Commit rules](docs/commit-rules.md).
