@@ -3,6 +3,9 @@
     "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "paths": {
+      "virtual:arrow-protocol": ["./node_modules/@arrow-js/sandbox/src/shared/protocol.ts"]
+    },
     "resolveJsonModule": true,
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["vite/client"],
@@ -15,5 +18,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "src/**/*.vue"]
+  "include": ["src/**/*.ts", "src/**/*.vue", "arrow-frame-runtime.ts", "arrow-frame-quickjs.ts", "arrow-frame-vendor.d.ts"]
 }

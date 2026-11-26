@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { languageTag, t } from '../i18n'
-import { borrowArrowFrame } from './arrowFramePool'
+import { mountArrowFrame } from './arrowFrames'
 import { UiButton } from './elements'
 
 const props = defineProps<{ source: Record<string, string>; summary: string }>()
@@ -17,48 +17,59 @@ const tokens = ['--background', '--surface', '--sidebar-bg', '--foreground', '--
 
 let observer: IntersectionObserver | undefined
 let activity: AbortController | undefined
-let current: Awaited<ReturnType<typeof borrowArrowFrame>>
+let current: Awaited<ReturnType<typeof mountArrowFrame>>
 let port: MessagePort | undefined
 let timeout: number | undefined
 let visible = false
 
-function release(reuse = true) {
+function release() {
   window.clearTimeout(timeout)
   port?.close()
   port = undefined
   activity?.abort()
   activity = undefined
-  current?.release(reuse)
+  current?.release()
   current = undefined
 }
 
 function fail() {
   failed.value = true
-  height.value = 0
-  release(false)
-}
-
-function revoke() {
-  inactive.value = true
+  inactive.value = false
   height.value = 0
   release()
 }
 
-async function show(replace = false) {
-  if (activity || failed.value || !slot.value) return
+function waitForSlot() {
+  inactive.value = true
+  height.value = 0
+}
+
+function revoke() {
+  release()
+  waitForSlot()
+  if (visible) void show()
+}
+
+async function show(priority = false) {
+  if (!visible || failed.value || !slot.value) return
+  if (activity) {
+    if (!priority || !inactive.value) return
+    release()
+  }
+  inactive.value = false
   const { signal } = activity = new AbortController()
   try {
-    const lease = await borrowArrowFrame(slot.value, props.summary, signal, revoke, replace)
+    const lease = await mountArrowFrame({
+      slot: slot.value, title: props.summary, signal, onWait: waitForSlot, onRevoke: revoke, priority,
+    })
     if (signal.aborted) {
-      lease?.release(false)
+      lease?.release()
       return
     }
-    if (!lease) {
-      revoke()
-      return
-    }
+    if (!lease) return
     inactive.value = false
     current = lease
+    lease.element.title = props.summary
     lease.element.height = String(height.value)
     lease.element.dataset.ready = 'false'
     timeout = window.setTimeout(fail, 10_000)
@@ -95,6 +106,10 @@ watch(() => props.source, () => {
   height.value = 0
   if (visible) void show()
 }, { deep: true })
+
+watch(() => props.summary, summary => {
+  if (current) current.element.title = summary
+})
 
 onMounted(() => {
   if (!container.value) return

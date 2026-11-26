@@ -1,105 +1,163 @@
-import { html, reactive } from '@arrow-js/core'
-import type { ArrowTemplate } from '@arrow-js/core'
-import { sandbox } from '@arrow-js/sandbox'
+import { preprocessModule } from 'virtual:arrow-compiler'
+import type { SerializedNode, VmPatch, VmToHostMessage } from 'virtual:arrow-protocol'
+import { HostRenderer } from 'virtual:arrow-renderer'
+import { createVmRunner } from 'virtual:arrow-vm'
+import type { VmRunner } from 'virtual:arrow-vm'
 
-import { initializeArrowWasm } from './arrow-frame-wasm'
+import { initializeArrowWasm } from './arrow-frame-quickjs'
 
 interface FrameInput {
   type: 'render'
   source: Record<string, string>
   theme: Record<string, string>
   lang: string
-  wasm?: ArrayBuffer
+  wasm: ArrayBuffer
 }
 
 const root = document.body
-const state = reactive<{ view: ArrowTemplate | undefined }>({ view: undefined })
-html`${() => state.view ?? ''}`(root)
+const activeElements = /^(?:base|embed|fencedframe|frame|iframe|link|meta|object|portal|script)$/i
+
+function assertPassive(nodes: SerializedNode[]) {
+  for (const node of nodes) {
+    if (node.kind === 'element') {
+      const tag = node.tag
+      if (typeof tag !== 'string' || activeElements.test(tag.slice(tag.lastIndexOf(':') + 1))) {
+        throw new Error('Unsupported active document element.')
+      }
+    }
+    if ('children' in node) assertPassive(node.children)
+  }
+}
 
 function preventNavigation(event: Event) {
   if (event.composedPath().some(node => node instanceof Element && ['a', 'area'].includes(node.localName))) {
     event.preventDefault()
   }
 }
-for (const name of ['click', 'auxclick']) root.addEventListener(name, preventNavigation, true)
 
-let closeView: (() => void) | undefined
-window.addEventListener('message', (event: MessageEvent<FrameInput | { type: 'clear' }>) => {
-  if (event.source !== window.parent) return
-  const input = event.data
-  if (input?.type === 'clear') {
-    closeView?.()
-    return
-  }
+function onMessage(event: MessageEvent<FrameInput>) {
   const port = event.ports[0]
-  if (input?.type !== 'render' || !port) return
-  closeView?.()
-  closeView = render(input, port)
-})
+  if (event.source !== window.parent || event.data?.type !== 'render' || !port) return
+  window.removeEventListener('message', onMessage)
+  void render(event.data, port)
+}
+window.addEventListener('message', onMessage)
 
-function render({ source, theme, lang, wasm }: FrameInput, port: MessagePort) {
+async function render({ source, theme, lang, wasm }: FrameInput, port: MessagePort) {
   initializeArrowWasm(wasm)
   document.documentElement.lang = lang
-  root.removeAttribute('style')
   for (const [name, value] of Object.entries(theme)) root.style.setProperty(name, value)
 
-  const listeners = new AbortController()
-  const { signal } = listeners
-  let resize: ResizeObserver | undefined
-  let mutations: MutationObserver | undefined
-  const fail = () => {
-    if (!signal.aborted) port.postMessage({ type: 'error' })
-  }
-  const mount = new MutationObserver(() => {
-    const host = root.querySelector('arrow-sandbox')
-    if (!host) return
-    mount.disconnect()
-    host.addEventListener('sandbox-error', fail, { signal })
-    const observe = () => {
-      const content = host.shadowRoot ?? host
-      const defaults = document.createElement('style')
-      defaults.textContent = ':where(table) { width: 100%; }'
-      content.prepend(defaults)
+  const host = document.createElement('arrow-sandbox')
+  const surface = host.attachShadow({ mode: 'open' })
+  const style = document.createElement('style')
+  style.textContent = ':where(table) { width: 100%; }\n' + (source['main.css'] ?? '')
+  const mountPoint = document.createElement('div')
+  surface.append(style, mountPoint)
+  root.append(host)
 
-      let lastHeight = 0
-      const report = () => {
-        const bounds = host.getBoundingClientRect()
-        const overflowBottom = host.scrollHeight > host.clientHeight
-          ? bounds.top + host.clientTop + host.scrollHeight + 1
-          : bounds.bottom
-        const contentBottom = Math.max(bounds.bottom, overflowBottom) + window.scrollY
-        const horizontalScrollbar = window.innerHeight - document.documentElement.clientHeight
-        const height = Math.max(1, Math.ceil(contentBottom) + horizontalScrollbar)
-        if (height === lastHeight) return
-        lastHeight = height
-        port.postMessage({ type: 'resize', height })
-      }
-      resize = new ResizeObserver(report)
-      resize.observe(host)
-      mutations = new MutationObserver(report)
-      mutations.observe(content, { attributes: true, characterData: true, childList: true, subtree: true })
-      content.addEventListener('load', report, { capture: true, signal })
-      window.addEventListener('resize', report, { signal })
-      report()
-    }
-    if (host.getAttribute('data-ready') === 'true') observe()
-    else host.addEventListener('sandbox-ready', observe, { once: true, signal })
+  const lifetime = new AbortController()
+  const { signal } = lifetime
+  for (const name of ['click', 'auxclick']) root.addEventListener(name, preventNavigation, { capture: true, signal })
+  let runner: VmRunner | undefined
+  let initialTree: SerializedNode | undefined
+  const initialPatches: VmPatch[] = []
+  let failed = false
+  const fail = () => {
+    if (failed || signal.aborted) return
+    failed = true
+    port.postMessage({ type: 'error' })
+  }
+  const renderer = new HostRenderer({
+    mountPoint,
+    async onEvent(handlerId, event) {
+      if (!failed) await runner?.dispatch({ type: 'event', payload: { handlerId, event } })
+    },
+    onError: fail,
   })
-  mount.observe(root, { childList: true, subtree: true })
+
+  window.addEventListener('pagehide', () => {
+    lifetime.abort()
+    port.close()
+    renderer.destroy()
+    runner?.destroy()
+  }, { once: true })
+
+  function receive(message: VmToHostMessage) {
+    if (signal.aborted || failed) return
+    try {
+      switch (message.type) {
+        case 'render':
+          assertPassive([message.tree])
+          if (runner) renderer.render(message.tree)
+          else initialTree = message.tree
+          break
+        case 'patch':
+          for (const patch of message.patches) {
+            if (patch.type === 'replace-region') assertPassive(patch.children)
+          }
+          if (runner) renderer.applyPatches(message.patches)
+          else initialPatches.push(...message.patches)
+          break
+        case 'error':
+          fail()
+      }
+    } catch {
+      fail()
+    }
+  }
   try {
-    state.view = sandbox({ source, onError: fail })
+    const script = source['main.js']
+    if (!script) throw new Error('Missing ArrowJS source.')
+    const entryPath = '/main.js'
+    const { code, descriptors } = preprocessModule(script, entryPath)
+    const boot = await createVmRunner({
+      compiled: {
+        entryPath,
+        modules: { [entryPath]: code },
+        descriptors: Object.fromEntries(descriptors.map(descriptor => [descriptor.id, descriptor])),
+      },
+      onMessage: receive,
+    })
+    if (signal.aborted || failed) {
+      boot.destroy()
+      return
+    }
+    runner = boot
+    if (!initialTree) throw new Error('The ArrowJS view did not render.')
+    renderer.render(initialTree)
+    renderer.applyPatches(initialPatches)
+    initialTree = undefined
+    initialPatches.length = 0
+    reportHeight(host, surface, port, signal)
   } catch {
     fail()
   }
+}
 
-  return () => {
-    listeners.abort()
-    mount.disconnect()
-    resize?.disconnect()
-    mutations?.disconnect()
-    state.view = undefined
-    root.removeAttribute('style')
-    port.close()
-    closeView = undefined
+function reportHeight(host: Element, surface: ShadowRoot, port: MessagePort, signal: AbortSignal) {
+  let lastHeight = 0
+  const report = () => {
+    const bounds = host.getBoundingClientRect()
+    const overflowBottom = host.scrollHeight > host.clientHeight
+      ? bounds.top + host.clientTop + host.scrollHeight + 1
+      : bounds.bottom
+    const contentBottom = Math.max(bounds.bottom, overflowBottom) + window.scrollY
+    const horizontalScrollbar = window.innerHeight - document.documentElement.clientHeight
+    const height = Math.max(1, Math.ceil(contentBottom) + horizontalScrollbar)
+    if (height === lastHeight) return
+    lastHeight = height
+    port.postMessage({ type: 'resize', height })
   }
+  const resize = new ResizeObserver(report)
+  resize.observe(host)
+  const mutations = new MutationObserver(report)
+  mutations.observe(surface, { attributes: true, characterData: true, childList: true, subtree: true })
+  surface.addEventListener('load', report, { capture: true, signal })
+  window.addEventListener('resize', report, { signal })
+  signal.addEventListener('abort', () => {
+    resize.disconnect()
+    mutations.disconnect()
+  }, { once: true })
+  report()
 }

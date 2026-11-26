@@ -1,7 +1,5 @@
 {
   "$schema": "https://unpkg.com/knip@6.48.0/schema.json",
   "entry": ["lint/*.test.js", "bench/*.js"],
-  "project": ["*.{js,ts}", "src/**/*.{js,ts,vue,less}", "lint/*.js", "bench/*.js", "!src/features/sessions/wire/*_pb.ts"],
-  // The Arrow build plugin resolves this package's WASM asset with createRequire.
-  "ignoreDependencies": ["@jitl/quickjs-wasmfile-release-asyncify"]
+  "project": ["*.{js,ts}", "src/**/*.{js,ts,vue,less}", "lint/*.js", "bench/*.js", "!src/features/sessions/wire/*_pb.ts"]
 }

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gzipSync } from 'node:zlib'
 import { build } from 'esbuild'
@@ -8,17 +9,19 @@ import { arrowFrameGzipBudget } from './arrow-frame-budget.ts'
 
 const id = 'virtual:arrow-frame'
 const entry = fileURLToPath(new URL('./arrow-frame-runtime.ts', import.meta.url))
-const wasmState = fileURLToPath(new URL('./arrow-frame-wasm.ts', import.meta.url))
+const quickJS = fileURLToPath(new URL('./arrow-frame-quickjs.ts', import.meta.url))
 const documentPath = fileURLToPath(new URL('./arrow-frame.html', import.meta.url))
-const wasmPath = createRequire(import.meta.url).resolve('@jitl/quickjs-wasmfile-release-asyncify/wasm')
+const require = createRequire(import.meta.url)
+const wasmPath = require.resolve('@jitl/quickjs-wasmfile-release-asyncify/wasm')
+const sandbox = dirname(require.resolve('@arrow-js/sandbox'))
+const vm = join(sandbox, 'host/quickjs.ts')
+const vendorModules = new Map([
+  ['virtual:arrow-compiler', join(sandbox, 'compiler/module.ts')],
+  ['virtual:arrow-renderer', join(sandbox, 'host/renderer.ts')],
+  ['virtual:arrow-vm', vm],
+])
+const watchFiles = [entry, quickJS, documentPath]
 const devPrefix = '/@shinona/arrow-frame/'
-
-function replaceOnce(source: string, anchor: string, replacement: string) {
-  if (!source.includes(anchor) || source.indexOf(anchor) !== source.lastIndexOf(anchor)) {
-    throw new Error(`The ArrowJS sandbox integration needs updating at ${anchor}`)
-  }
-  return source.replace(anchor, replacement)
-}
 
 export function arrowFrame(): Plugin {
   let serve = false
@@ -42,9 +45,9 @@ export function arrowFrame(): Plugin {
     name: 'shinona-arrow-frame',
     configResolved(config) { serve = config.command === 'serve' },
     configureServer(server) {
-      server.watcher.add([entry, wasmState, documentPath])
+      server.watcher.add(watchFiles)
       server.watcher.on('change', path => {
-        if (path === entry || path === wasmState || path === documentPath) assets = undefined
+        if (watchFiles.includes(path)) assets = undefined
       })
       server.middlewares.use(devPrefix, (request, response, next) => {
         const file = request.url?.split('?', 1)[0]
@@ -63,9 +66,7 @@ export function arrowFrame(): Plugin {
     resolveId: source => source === id ? '\0' + id : null,
     async load(source) {
       if (source !== '\0' + id) return
-      this.addWatchFile(entry)
-      this.addWatchFile(wasmState)
-      this.addWatchFile(documentPath)
+      for (const file of watchFiles) this.addWatchFile(file)
       if (serve) {
         return `export default ${JSON.stringify({
           runtime: devPrefix + 'runtime.js', document: devPrefix + 'document.html', wasm: devPrefix + 'quickjs.wasm.gz',
@@ -85,7 +86,7 @@ export function arrowFrame(): Plugin {
 }
 
 async function bundleRuntime() {
-  const patched = new Set<string>()
+  let isolatedVM = false
   const bundle = await build({
     entryPoints: [entry],
     format: 'iife',
@@ -96,54 +97,20 @@ async function bundleRuntime() {
     plugins: [{
       name: 'isolated-arrow-runtime',
       setup(plugin) {
-        plugin.onLoad({ filter: /@arrow-js[\\/]sandbox[\\/]src[\\/]host[\\/]quickjs\.ts$/ }, async ({ path }) => {
-          let code = await readFile(path, 'utf8')
-          // The parent supplies the bytes. Each opaque frame compiles them
-          // once and creates an isolated QuickJS runtime for each view.
-          code = replaceOnce(code, 'newQuickJSAsyncWASMModule(debug ? DEBUG_ASYNC : RELEASE_ASYNC)',
-            'newQuickJSAsyncWASMModule(newVariant(RELEASE_ASYNC, { wasmModule: arrowWasmModule }))')
-          // An uninterrupted guest evaluation or job queue must yield the UI thread.
-          code = replaceOnce(code, 'runtime.setMaxStackSize(512 * 1024)',
-            'runtime.setMaxStackSize(512 * 1024)\n  runtime.setInterruptHandler(() => performance.now() > (deadlines.get(runtime) ?? Infinity))')
-          code = replaceOnce(code, 'function flushPendingJobs(runtime: any, context: any) {',
-            'function flushPendingJobs(runtime: any, context: any) {\n  beginExecution(runtime)')
-          code = replaceOnce(code, 'context.unwrapResult(runtime.executePendingJobs())',
-            'if (performance.now() > deadlines.get(runtime)) throw new Error("ArrowJS execution limit exceeded")\n    context.unwrapResult(runtime.executePendingJobs(1))')
-          code = replaceOnce(code, 'const result = await context.evalCodeAsync(code, fileName, { type: \'module\' })',
-            'beginExecution(runtime)\n  const result = await context.evalCodeAsync(code, fileName, { type: \'module\' })')
-          code = replaceOnce(code, 'const result = context.callFunction(callback, context.undefined, args)',
-            'beginExecution(runtime)\n      const result = context.callFunction(callback, context.undefined, args)')
-          const setup = [
-            'import { newVariant } from "quickjs-emscripten"',
-            `import { arrowWasmModule } from ${JSON.stringify(wasmState)}`,
-            'const deadlines = new WeakMap<object, number>()',
-            'function beginExecution(runtime: object) { deadlines.set(runtime, performance.now() + 750) }',
-          ].join('\n')
-          patched.add('execution')
-          return { contents: setup + '\n' + code, loader: 'ts' }
+        // The pinned sandbox package only exposes a complete DOM host. Use its
+        // JavaScript compiler, renderer and VM directly for this opaque iframe.
+        plugin.onResolve({ filter: /^virtual:arrow-/ }, ({ path }) => {
+          const file = vendorModules.get(path)
+          return file ? { path: file } : undefined
         })
-        plugin.onLoad({ filter: /@arrow-js[\\/]sandbox[\\/]src[\\/]compiler[\\/]index\.ts$/ }, async ({ path }) => {
-          // The tool accepts JavaScript. Acorn still checks its syntax and extracts templates.
-          let code = await readFile(path, 'utf8')
-          code = replaceOnce(code, "import ts from 'typescript'\n", '')
-          const contents = replaceOnce(code, '    const emitted = transpileModule(path, source)\n    const processed = preprocessModule(emitted, path)',
-            '    const processed = preprocessModule(source, path)')
-          patched.add('compiler')
-          return { contents, loader: 'ts' }
-        })
-        plugin.onLoad({ filter: /@arrow-js[\\/]sandbox[\\/]src[\\/]compiler[\\/]template\.ts$/ }, async ({ path }) => {
-          const code = await readFile(path, 'utf8')
-          // Active document elements can navigate their own frame even with a restrictive CSP.
-          const contents = replaceOnce(code, 'function compileElementNode(element: Element): ElementDescriptor {',
-            'function compileElementNode(element: Element): ElementDescriptor {\n' +
-            '  if (/^(?:base|embed|frame|iframe|link|meta|object|script)$/i.test(element.localName)) {\n' +
-            '    throw new SandboxCompileError("Unsupported active document element")\n  }')
-          patched.add('elements')
-          return { contents, loader: 'ts' }
+        plugin.onResolve({ filter: /^quickjs-emscripten$/ }, ({ importer }) => {
+          if (importer !== vm) return
+          isolatedVM = true
+          return { path: quickJS }
         })
       },
     }],
   })
-  if (patched.size !== 3 || !bundle.outputFiles[0]) throw new Error('The ArrowJS sandbox build is missing required integration changes')
+  if (!isolatedVM || !bundle.outputFiles[0]) throw new Error('The ArrowJS bundle requires the bounded QuickJS runtime.')
   return bundle.outputFiles[0].contents
 }
