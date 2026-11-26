@@ -52,9 +52,9 @@ func (r *handler) SaveSSHServer(ctx context.Context, input sshServerInput) (sshS
 	return sshServer(server), r.sshServerError(err)
 }
 
-func (r *handler) TestSSHServer(ctx context.Context, input sshServerInput) (bool, error) {
+func (r *handler) TestSSHServer(ctx context.Context, input sshServerInput) error {
 	err := r.app.TestSSHServer(ctx, input.server())
-	return err == nil, r.sshServerError(err)
+	return r.sshServerError(err)
 }
 
 func (r *handler) sshServerError(err error) error {
@@ -65,7 +65,7 @@ func (r *handler) sshServerError(err error) error {
 	return r.apiError(err)
 }
 
-func (r *handler) RemoveSSHServer(ctx context.Context, args resourceID) (bool, error) {
+func (r *handler) RemoveSSHServer(ctx context.Context, args resourceID) error {
 	err := r.app.RemoveSSHServer(ctx, args.ID)
-	return err == nil, r.apiError(err)
+	return r.apiError(err)
 }

@@ -21,8 +21,6 @@ import (
 
 const Prefix = "/api/v1"
 
-type responseControllerKey struct{}
-
 // Register installs resource routes on the authenticated API group.
 func Register(api *gin.RouterGroup, service *run.Service, app Application, logger *slog.Logger) {
 	readConnections := min(max(runtime.GOMAXPROCS(0), 2), 16)
@@ -37,18 +35,18 @@ func Register(api *gin.RouterGroup, service *run.Service, app Application, logge
 	api.GET("/sessions", h.sessionList())
 	api.POST("/sessions", endpoint(http.StatusCreated, true, h.createSession))
 	api.PATCH("/sessions/:id", endpoint(http.StatusOK, true, h.updateSession))
-	api.DELETE("/sessions/:id", endpoint(http.StatusNoContent, false, h.archiveSession))
-	api.PUT("/sessions/:id/read-marker", endpoint(http.StatusNoContent, true, h.markSessionRead))
+	api.DELETE("/sessions/:id", command(false, h.archiveSession))
+	api.PUT("/sessions/:id/read-marker", command(true, h.markSessionRead))
 	api.GET("/sessions/:id/transcript", h.transcript)
 	api.POST("/sessions/:id/turns", endpoint(http.StatusAccepted, true, h.SubmitRun))
 	api.POST("/sessions/:id/turns/:turnId/retry", endpoint(http.StatusAccepted, true, h.RetryTurn))
 	api.POST("/sessions/:id/turns/:turnId/revert", endpoint(http.StatusOK, true, h.RevertTurn))
-	api.POST("/sessions/:id/turns/:turnId/steering", endpoint(http.StatusNoContent, true, h.SteerRun))
-	api.POST("/sessions/:id/turns/:turnId/steering/:steeringId/queue", endpoint(http.StatusNoContent, true, h.queueSteering))
+	api.POST("/sessions/:id/turns/:turnId/steering", command(true, h.SteerRun))
+	api.POST("/sessions/:id/turns/:turnId/steering/:steeringId/queue", command(true, h.queueSteering))
 	api.DELETE("/sessions/:id/turns/:turnId/steering/:steeringId", endpoint(http.StatusOK, false, h.takeSteering))
-	api.POST("/sessions/:id/turns/:turnId/steer", endpoint(http.StatusNoContent, true, h.steerQueued))
+	api.POST("/sessions/:id/turns/:turnId/steer", command(true, h.steerQueued))
 	api.DELETE("/sessions/:id/turns/:turnId/queue", endpoint(http.StatusOK, false, h.takeQueued))
-	api.POST("/sessions/:id/turns/:turnId/stop", endpoint(http.StatusNoContent, false, h.StopRun))
+	api.POST("/sessions/:id/turns/:turnId/stop", command(false, h.StopRun))
 
 	api.GET("/sessions/:id/workspace/root", endpoint(http.StatusOK, false, h.WorkspaceRoot))
 	api.PUT("/sessions/:id/workspace/root", endpoint(http.StatusOK, true, h.SetWorkspaceRoot))
@@ -61,12 +59,12 @@ func Register(api *gin.RouterGroup, service *run.Service, app Application, logge
 	api.GET("/projects", read(h.Projects))
 	api.POST("/projects", endpoint(http.StatusCreated, true, h.CreateProject))
 	api.PATCH("/projects/:id", endpoint(http.StatusOK, true, h.RenameProject))
-	api.DELETE("/projects/:id", endpoint(http.StatusNoContent, false, h.RemoveProject))
+	api.DELETE("/projects/:id", command(false, h.RemoveProject))
 	api.GET("/projects/:id/sandbox", endpoint(http.StatusOK, false, h.ProjectSandbox))
-	api.PUT("/projects/:id/sandbox/config", endpoint(http.StatusNoContent, true, h.SaveProjectSandbox))
-	api.POST("/projects/:id/sandbox", endpoint(http.StatusNoContent, false, h.CreateProjectSandbox))
-	api.DELETE("/projects/:id/sandbox", endpoint(http.StatusNoContent, false, h.DestroyProjectSandbox))
-	api.POST("/projects/:id/sandbox/recreate", endpoint(http.StatusNoContent, false, h.RecreateProjectSandbox))
+	api.PUT("/projects/:id/sandbox/config", command(true, h.SaveProjectSandbox))
+	api.POST("/projects/:id/sandbox", command(false, h.CreateProjectSandbox))
+	api.DELETE("/projects/:id/sandbox", command(false, h.DestroyProjectSandbox))
+	api.POST("/projects/:id/sandbox/recreate", command(false, h.RecreateProjectSandbox))
 
 	api.GET("/composer/options", read(h.ComposerOptions))
 	api.PUT("/composer/defaults", endpoint(http.StatusOK, true, h.SetComposerDefaults))
@@ -86,15 +84,15 @@ func Register(api *gin.RouterGroup, service *run.Service, app Application, logge
 	api.DELETE("/settings/mcp/servers", endpoint(http.StatusOK, false, h.RemoveMCPServer))
 	api.GET("/settings/ssh", read(h.SSHServers))
 	api.PUT("/settings/ssh/servers", endpoint(http.StatusOK, true, h.SaveSSHServer))
-	api.POST("/settings/ssh/connection-test", endpoint(http.StatusNoContent, true, h.TestSSHServer))
-	api.DELETE("/settings/ssh/servers/:id", endpoint(http.StatusNoContent, false, h.RemoveSSHServer))
+	api.POST("/settings/ssh/connection-test", command(true, h.TestSSHServer))
+	api.DELETE("/settings/ssh/servers/:id", command(false, h.RemoveSSHServer))
 }
 
 func protectWrites() gin.HandlerFunc {
 	protection := http.NewCrossOriginProtection()
 	return func(c *gin.Context) {
 		if err := protection.Check(c.Request); err != nil {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "Cross-origin request is forbidden."})
+			reject(c, http.StatusForbidden, "CROSS_ORIGIN_REQUEST", "Cross-origin request is forbidden.")
 			return
 		}
 		c.Next()
@@ -113,17 +111,26 @@ func endpoint[Input, Output any](status int, body bool, operation func(context.C
 		if !bind(c, &args, body) {
 			return
 		}
-		ctx := context.WithValue(c.Request.Context(), responseControllerKey{}, http.NewResponseController(c.Writer))
-		result, err := operation(ctx, args)
+		result, err := operation(c.Request.Context(), args)
 		if err != nil {
 			writeError(c, err)
 			return
 		}
-		if status == http.StatusNoContent {
-			c.Status(status)
+		c.JSON(status, result)
+	}
+}
+
+func command[Input any](body bool, operation func(context.Context, Input) error) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var args Input
+		if !bind(c, &args, body) {
 			return
 		}
-		c.JSON(status, result)
+		if err := operation(c.Request.Context(), args); err != nil {
+			writeError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
 	}
 }
 
@@ -131,7 +138,7 @@ func bind(c *gin.Context, args any, body bool) bool {
 	if body {
 		contentType, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
 		if err != nil || contentType != "application/json" {
-			c.AbortWithStatusJSON(http.StatusUnsupportedMediaType, gin.H{"message": "An application/json body is required."})
+			reject(c, http.StatusUnsupportedMediaType, "JSON_REQUIRED", "An application/json body is required.")
 			return false
 		}
 		decoder := json.NewDecoder(httpserver.MaxBytesReader(c.Writer, c.Request.Body, 6<<20))
@@ -147,18 +154,18 @@ func bind(c *gin.Context, args any, body bool) bool {
 		if err != nil {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
-				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"message": "Request body is too large."})
+				reject(c, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "Request body is too large.")
 			} else {
-				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"message": "Invalid JSON body."})
+				reject(c, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON body.")
 			}
 			return false
 		}
 	} else if c.Request.URL.RawQuery != "" && c.ShouldBindQuery(args) != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"message": "Invalid query parameters."})
+		reject(c, http.StatusBadRequest, "INVALID_QUERY", "Invalid query parameters.")
 		return false
 	}
 	if len(c.Params) != 0 && c.ShouldBindUri(args) != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"message": "Invalid resource path."})
+		reject(c, http.StatusBadRequest, "INVALID_RESOURCE_PATH", "Invalid resource path.")
 		return false
 	}
 	return true

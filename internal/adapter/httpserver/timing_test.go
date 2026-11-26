@@ -58,9 +58,12 @@ func TestServerTimingHTTP(t *testing.T) {
 func TestServerTimingFlush(t *testing.T) {
 	finish := make(chan struct{})
 	server := httptest.NewServer(ServerTiming(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if err := http.NewResponseController(w).Flush(); err != nil {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("timed writer must support HTTP flushing")
 			return
 		}
+		flusher.Flush()
 		<-finish
 	})))
 	defer server.Close()

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
@@ -41,7 +42,7 @@ func Attachment(reader AttachmentReader, logger *slog.Logger) http.Handler {
 		w.Header().Add("Vary", "Cookie")
 		index, err := strconv.Atoi(r.PathValue("index"))
 		if err != nil || index < 0 || index >= run.MaxImages {
-			http.NotFound(w, r)
+			httpserver.WriteError(w, http.StatusNotFound, "ATTACHMENT_NOT_FOUND", "Attachment not found.")
 			return
 		}
 		key := attachmentKey{auth.CurrentUser(r.Context()).ID, r.PathValue("id"), r.PathValue("turnId"), index}
@@ -52,7 +53,7 @@ func Attachment(reader AttachmentReader, logger *slog.Logger) http.Handler {
 			var visible bool
 			visible, err = reader.AttachmentTurnVisible(r.Context(), key.owner, key.session, key.turn)
 			if err == nil && !visible {
-				http.NotFound(w, r)
+				httpserver.WriteError(w, http.StatusNotFound, "ATTACHMENT_NOT_FOUND", "Attachment not found.")
 				return
 			}
 		} else {
@@ -63,11 +64,11 @@ func Attachment(reader AttachmentReader, logger *slog.Logger) http.Handler {
 		}
 		if err != nil {
 			logger.Error("read turn attachment", "error", err)
-			http.Error(w, "Attachment is unavailable.", http.StatusInternalServerError)
+			httpserver.WriteError(w, http.StatusInternalServerError, "ATTACHMENT_UNAVAILABLE", "Attachment is unavailable.")
 			return
 		}
 		if len(image.data) == 0 {
-			http.NotFound(w, r)
+			httpserver.WriteError(w, http.StatusNotFound, "ATTACHMENT_NOT_FOUND", "Attachment not found.")
 			return
 		}
 		w.Header().Set("Content-Type", image.mediaType)

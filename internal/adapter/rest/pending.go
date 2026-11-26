@@ -34,16 +34,16 @@ func (r *handler) queueSteering(ctx context.Context, args struct {
 	RunID      string `uri:"turnId" json:"-"`
 	SteeringID string `uri:"steeringId" json:"-"`
 	Options    *payloadInput
-}) (bool, error) {
+}) error {
 	err := r.service.QueueSteering(ctx, auth.CurrentUser(ctx).ID, args.SessionID, args.RunID, args.SteeringID, args.Options.payload().Options)
-	return err == nil, r.apiError(err)
+	return r.apiError(err)
 }
 
 func (r *handler) steerQueued(ctx context.Context, args struct {
 	SessionID string `uri:"id" json:"-"`
 	TurnID    string `uri:"turnId" json:"-"`
 	RunID     string
-}) (bool, error) {
+}) error {
 	err := r.service.SteerQueued(ctx, auth.CurrentUser(ctx).ID, args.SessionID, args.TurnID, args.RunID)
-	return err == nil, r.apiError(err)
+	return r.apiError(err)
 }

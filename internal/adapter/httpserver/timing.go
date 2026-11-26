@@ -17,19 +17,34 @@ const timingHeader = "Server-Timing"
 
 // ServerTiming records the time from handler entry until the response starts.
 func ServerTiming(next http.Handler) http.Handler {
+	return serverTiming(next, true)
+}
+
+func AuthenticatedServerTiming(next http.Handler) http.Handler {
+	return serverTiming(next, false)
+}
+
+func serverTiming(next http.Handler, includeBusiness bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, phases := timing.WithRecorder(r.Context())
-		response := &timedWriter{ResponseWriter: w, started: time.Now(), phases: phases}
+		response := &timedWriter{ResponseWriter: w, started: time.Now(), phases: phases, includeBusiness: includeBusiness}
 		next.ServeHTTP(response, r.WithContext(ctx))
 		response.commitTiming()
 	})
 }
 
+func AllowBusinessTiming(w http.ResponseWriter) {
+	if timed := findTimedWriter(w); timed != nil {
+		timed.includeBusiness = true
+	}
+}
+
 type timedWriter struct {
 	http.ResponseWriter
-	started   time.Time
-	phases    *timing.Recorder
-	committed bool
+	started         time.Time
+	phases          *timing.Recorder
+	committed       bool
+	includeBusiness bool
 }
 
 func (w *timedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -49,7 +64,11 @@ func phaseValues(phases *timing.Recorder) []string {
 }
 
 func (w *timedWriter) metrics() []string {
-	return append([]string{metricValue("app", time.Since(w.started))}, phaseValues(w.phases)...)
+	metrics := []string{metricValue("app", time.Since(w.started))}
+	if w.includeBusiness {
+		metrics = append(metrics, phaseValues(w.phases)...)
+	}
+	return metrics
 }
 
 func (w *timedWriter) commitTiming() {
@@ -77,6 +96,8 @@ func (w *timedWriter) FlushError() error {
 	w.commitTiming()
 	return http.NewResponseController(w.ResponseWriter).Flush()
 }
+
+func (w *timedWriter) Flush() { _ = w.FlushError() }
 
 func (w *timedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	conn, buffer, err := http.NewResponseController(w.ResponseWriter).Hijack()
@@ -111,7 +132,7 @@ func findTimedWriter(w http.ResponseWriter) *timedWriter {
 // StreamTiming collects phases that finish after the initial HTTP headers.
 func StreamTiming(w http.ResponseWriter, ctx context.Context) (context.Context, func()) {
 	timed := findTimedWriter(w)
-	if timed == nil {
+	if timed == nil || !timed.includeBusiness {
 		return ctx, func() {}
 	}
 	ctx, phases := timing.WithRecorder(ctx)

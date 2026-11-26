@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 )
@@ -74,7 +75,7 @@ func (r *handler) apiError(err error) error {
 func writeError(c *gin.Context, err error) {
 	var failure codedError
 	if !errors.As(err, &failure) {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		reject(c, http.StatusInternalServerError, "SERVICE_UNAVAILABLE", err.Error())
 		return
 	}
 	status := http.StatusBadRequest
@@ -93,6 +94,10 @@ func writeError(c *gin.Context, err error) {
 	case "MODEL_FETCH_FAILED", "PROJECT_SANDBOX_CLEANUP_FAILED":
 		status = http.StatusBadGateway
 	}
-	c.Header("X-Shinona-Error-Code", failure.code)
-	c.AbortWithStatusJSON(status, gin.H{"code": failure.code, "message": failure.Error()})
+	reject(c, status, failure.code, failure.Error())
+}
+
+func reject(c *gin.Context, status int, code, message string) {
+	c.Abort()
+	httpserver.WriteError(c.Writer, status, code, message)
 }

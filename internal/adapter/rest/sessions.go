@@ -189,8 +189,9 @@ func (r *handler) transcript(c *gin.Context) {
 	}
 	if err != nil {
 		if !c.Writer.Written() {
-			c.Header("Content-Type", "")
-			c.Header("Content-Encoding", "")
+			c.Writer.Header().Del("Content-Type")
+			c.Writer.Header().Del("Content-Encoding")
+			c.Writer.Header().Del("Trailer")
 			writeError(c, r.apiError(err))
 		} else {
 			r.logger.Debug("write transcript response", "error", err)
@@ -220,18 +221,18 @@ type resourceID struct {
 	ID string `uri:"id" json:"-"`
 }
 
-func (r *handler) archiveSession(ctx context.Context, args resourceID) (bool, error) {
+func (r *handler) archiveSession(ctx context.Context, args resourceID) error {
 	err := r.service.ArchiveSession(ctx, auth.CurrentUser(ctx).ID, args.ID)
-	return err == nil, r.apiError(err)
+	return r.apiError(err)
 }
 
 func (r *handler) markSessionRead(ctx context.Context, args struct {
 	ID        string  `uri:"id" json:"-"`
 	Through   int     `json:"through"`
 	ThroughID *string `json:"throughId"`
-}) (bool, error) {
+}) error {
 	err := r.service.MarkSessionRead(ctx, auth.CurrentUser(ctx).ID, args.ID, args.Through, value(args.ThroughID))
-	return err == nil, r.apiError(err)
+	return r.apiError(err)
 }
 
 type sandboxSettings struct {

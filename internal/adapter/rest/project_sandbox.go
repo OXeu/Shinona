@@ -2,8 +2,6 @@ package rest
 
 import (
 	"context"
-	"net/http"
-	"time"
 
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
@@ -39,7 +37,6 @@ type projectSandboxProvider struct {
 }
 
 func (r *handler) ProjectSandbox(ctx context.Context, args resourceID) (projectSandboxResponse, error) {
-	setSandboxWriteDeadline(ctx, 20*time.Second)
 	status, err := r.service.ProjectSandbox(ctx, auth.CurrentUser(ctx).ID, projectID(args.ID))
 	if err != nil {
 		return projectSandboxResponse{}, r.apiError(err)
@@ -62,8 +59,7 @@ func (r *handler) SaveProjectSandbox(ctx context.Context, args struct {
 	ID             string `uri:"id" json:"-"`
 	Input          projectSandboxConfig
 	SkipCleanupFor *string
-}) (bool, error) {
-	setSandboxWriteDeadline(ctx, run.ProjectSandboxTimeout+30*time.Second)
+}) error {
 	var skipCleanupFor string
 	if args.SkipCleanupFor != nil {
 		skipCleanupFor = *args.SkipCleanupFor
@@ -72,31 +68,22 @@ func (r *handler) SaveProjectSandbox(ctx context.Context, args struct {
 		Provider: args.Input.Provider, Template: args.Input.Template,
 		TimeoutSeconds: int(args.Input.TimeoutSeconds), OnTimeout: args.Input.OnTimeout,
 	}, skipCleanupFor)
-	return err == nil, r.apiError(err)
+	return r.apiError(err)
 }
 
-func (r *handler) DestroyProjectSandbox(ctx context.Context, args resourceID) (bool, error) {
-	setSandboxWriteDeadline(ctx, run.ProjectSandboxTimeout+30*time.Second)
+func (r *handler) DestroyProjectSandbox(ctx context.Context, args resourceID) error {
 	err := r.service.ResetProjectSandbox(ctx, auth.CurrentUser(ctx).ID, projectID(args.ID), false)
-	return err == nil, r.apiError(err)
+	return r.apiError(err)
 }
 
-func (r *handler) CreateProjectSandbox(ctx context.Context, args resourceID) (bool, error) {
-	setSandboxWriteDeadline(ctx, run.ProjectSandboxTimeout+30*time.Second)
+func (r *handler) CreateProjectSandbox(ctx context.Context, args resourceID) error {
 	err := r.service.CreateProjectSandbox(ctx, auth.CurrentUser(ctx).ID, projectID(args.ID))
-	return err == nil, r.apiError(err)
+	return r.apiError(err)
 }
 
-func (r *handler) RecreateProjectSandbox(ctx context.Context, args resourceID) (bool, error) {
-	setSandboxWriteDeadline(ctx, run.ProjectSandboxTimeout+30*time.Second)
+func (r *handler) RecreateProjectSandbox(ctx context.Context, args resourceID) error {
 	err := r.service.ResetProjectSandbox(ctx, auth.CurrentUser(ctx).ID, projectID(args.ID), true)
-	return err == nil, r.apiError(err)
-}
-
-func setSandboxWriteDeadline(ctx context.Context, duration time.Duration) {
-	if controller, ok := ctx.Value(responseControllerKey{}).(*http.ResponseController); ok {
-		_ = controller.SetWriteDeadline(time.Now().Add(duration))
-	}
+	return r.apiError(err)
 }
 
 // The default project has an empty ID in the domain model.

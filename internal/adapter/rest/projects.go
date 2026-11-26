@@ -42,9 +42,9 @@ func (r *handler) RenameProject(ctx context.Context, args struct {
 	return projectResponse{ID: project.ID, Name: project.Name}, nil
 }
 
-func (r *handler) RemoveProject(ctx context.Context, args resourceID) (bool, error) {
+func (r *handler) RemoveProject(ctx context.Context, args resourceID) error {
 	if err := r.service.RemoveProject(ctx, auth.CurrentUser(ctx).ID, args.ID); err != nil {
-		return false, r.apiError(err)
+		return r.apiError(err)
 	}
-	return true, nil
+	return nil
 }

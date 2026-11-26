@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -93,10 +94,10 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	config.mcpOAuth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)
 	server := &http.Server{
-		Handler:           httpserver.ServerTiming(allowedHost(router, config.Host)),
+		Handler:           httpserver.AuthenticatedServerTiming(allowedHost(router, config.Host)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout:      run.ProjectSandboxTimeout + 15*time.Second,
 	}
 
 	workerCtx, stopWorker := context.WithCancel(ctx)
@@ -133,7 +134,7 @@ func newAPIRouter(ctx context.Context, origin string, service *run.Service, app 
 	router.RedirectTrailingSlash = false
 	router.HandleMethodNotAllowed = true
 	router.Use(gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered any) {
-		logger.Error("HTTP handler panicked", "error", recovered)
+		logger.Error("HTTP handler panicked", "error", recovered, "stack", string(debug.Stack()))
 		c.AbortWithStatus(http.StatusInternalServerError)
 	}))
 	routes := httpserver.GinRoutes{IRoutes: router}

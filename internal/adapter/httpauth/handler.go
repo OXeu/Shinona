@@ -96,9 +96,10 @@ func (h *Handler) authenticated(w http.ResponseWriter, r *http.Request) *http.Re
 		return nil
 	}
 	if user == nil {
-		http.Error(w, "Sign in required.", http.StatusUnauthorized)
+		authError(w, "AUTH_REQUIRED", "Sign in required.", http.StatusUnauthorized)
 		return nil
 	}
+	httpserver.AllowBusinessTiming(w)
 	return r.WithContext(auth.WithUser(r.Context(), *user))
 }
 
@@ -191,6 +192,7 @@ func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	phases.Publish(r.Context())
+	httpserver.AllowBusinessTiming(w)
 	h.respond(w, &user)
 }
 
@@ -339,6 +341,5 @@ func readCookie(r *http.Request, name string) string {
 }
 
 func authError(w http.ResponseWriter, code, message string, status int) {
-	w.Header().Set("X-Shinona-Error-Code", code)
-	http.Error(w, message, status)
+	httpserver.WriteError(w, status, code, message)
 }

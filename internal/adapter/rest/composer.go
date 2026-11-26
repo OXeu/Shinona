@@ -138,11 +138,11 @@ func (r *handler) SubmitRun(ctx context.Context, args struct {
 func (r *handler) StopRun(ctx context.Context, args struct {
 	SessionID string `uri:"id" json:"-"`
 	RunID     string `uri:"turnId" json:"-"`
-}) (bool, error) {
+}) error {
 	if err := r.service.Stop(ctx, auth.CurrentUser(ctx).ID, args.SessionID, args.RunID); err != nil {
-		return false, r.apiError(err)
+		return r.apiError(err)
 	}
-	return true, nil
+	return nil
 }
 
 type retryOptionsInput struct {
@@ -191,9 +191,9 @@ func (r *handler) SteerRun(ctx context.Context, args struct {
 	SessionID string `uri:"id" json:"-"`
 	RunID     string `uri:"turnId" json:"-"`
 	Prompt    string
-}) (bool, error) {
+}) error {
 	if err := r.service.Steer(auth.CurrentUser(ctx).ID, args.SessionID, args.RunID, args.Prompt); err != nil {
-		return false, r.apiError(err)
+		return r.apiError(err)
 	}
-	return true, nil
+	return nil
 }

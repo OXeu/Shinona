@@ -118,9 +118,7 @@ func (r *handler) fullTranscriptResponse(c *gin.Context, key transcriptPageKey, 
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 	controller := http.NewResponseController(c.Writer)
-	if err := controller.SetWriteDeadline(deadline); err == nil {
-		defer func() { _ = controller.SetWriteDeadline(time.Time{}) }()
-	}
+	_ = controller.SetWriteDeadline(deadline)
 	ctx, finish := httpserver.StreamTiming(c.Writer, ctx)
 	defer finish()
 	defer timing.Start(ctx, "transcript_write")()
