@@ -1,6 +1,6 @@
 package pigo
 
-import "github.com/guanshan/pi-go/packages/ai"
+import "github.com/sky-valley/pi/ai"
 
 func contextTokens(usage ai.Usage) int {
 	if usage.TotalTokens > 0 {

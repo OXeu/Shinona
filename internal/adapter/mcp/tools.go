@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/guanshan/pi-go/packages/agent"
-	"github.com/guanshan/pi-go/packages/ai"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sky-valley/pi/agent"
+	"github.com/sky-valley/pi/ai"
 
 	"github.com/OXeu/shinona/internal/settings"
 )
@@ -137,9 +137,17 @@ func listTools(ctx context.Context, connection *sdk.ClientSession, prefix, sourc
 			continue
 		}
 		seen[entry.Name] = true
-		tools = append(tools, tool{
-			name: entry.Name, qualifiedName: prefix + entry.Name, description: source + entry.Description,
-			schema: schema, session: connection,
+		raw, err := json.Marshal(schema)
+		if err != nil {
+			return nil, fmt.Errorf("encode MCP tool %q schema: %w", entry.Name, err)
+		}
+		var parameters ai.Schema
+		if err := json.Unmarshal(raw, &parameters); err != nil {
+			return nil, fmt.Errorf("decode MCP tool %q schema: %w", entry.Name, err)
+		}
+		tools = append(tools, agent.AgentTool{
+			Name: prefix + entry.Name, Label: prefix + entry.Name, Description: source + entry.Description,
+			Parameters: &parameters, Execute: executeTool(connection, entry.Name),
 		})
 		if len(tools) == 64 {
 			break
@@ -148,38 +156,27 @@ func listTools(ctx context.Context, connection *sdk.ClientSession, prefix, sourc
 	return tools, nil
 }
 
-type tool struct {
-	name          string
-	qualifiedName string
-	description   string
-	schema        map[string]any
-	session       *sdk.ClientSession
-}
-
-func (t tool) Name() string           { return t.qualifiedName }
-func (t tool) Label() string          { return t.Name() }
-func (t tool) Description() string    { return t.description }
-func (t tool) Schema() map[string]any { return t.schema }
-
-func (t tool) Execute(ctx context.Context, args json.RawMessage, _ agent.ToolUpdateCallback) (agent.AgentToolResult, error) {
-	result, err := t.session.CallTool(ctx, &sdk.CallToolParams{Name: t.name, Arguments: args})
-	if err != nil {
-		return agent.AgentToolResult{}, err
-	}
-	var text strings.Builder
-	for _, content := range result.Content {
-		if item, ok := content.(*sdk.TextContent); ok {
-			text.WriteString(item.Text[:min(len(item.Text), (16<<10)-text.Len())])
-		}
-	}
-	if text.Len() == 0 && result.StructuredContent != nil {
-		data, err := json.Marshal(result.StructuredContent)
+func executeTool(session *sdk.ClientSession, name string) func(context.Context, string, map[string]any, agent.ToolUpdateFunc) (agent.AgentToolResult, error) {
+	return func(ctx context.Context, _ string, args map[string]any, _ agent.ToolUpdateFunc) (agent.AgentToolResult, error) {
+		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
 		if err != nil {
 			return agent.AgentToolResult{}, err
 		}
-		text.Write(data[:min(len(data), 16<<10)])
+		var text strings.Builder
+		for _, content := range result.Content {
+			if item, ok := content.(*sdk.TextContent); ok {
+				text.WriteString(item.Text[:min(len(item.Text), (16<<10)-text.Len())])
+			}
+		}
+		if text.Len() == 0 && result.StructuredContent != nil {
+			data, err := json.Marshal(result.StructuredContent)
+			if err != nil {
+				return agent.AgentToolResult{}, err
+			}
+			text.Write(data[:min(len(data), 16<<10)])
+		}
+		return agent.AgentToolResult{
+			Content: ai.ContentList{ai.TextContent{Text: strings.ToValidUTF8(text.String(), "�")}}, IsError: result.IsError,
+		}, nil
 	}
-	return agent.AgentToolResult{
-		Content: ai.TextBlocks(strings.ToValidUTF8(text.String(), "�")), IsError: result.IsError,
-	}, nil
 }

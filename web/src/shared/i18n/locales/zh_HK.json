@@ -224,6 +224,7 @@
   "chat.failed": "此輪處理失敗。",
   "chat.failedDeadline": "本輪已達到時限，助理未能完成回覆。",
   "chat.failedModel": "模型端點未傳回完整回覆。",
+  "chat.failedModelIdle": "模型端點長時間未傳回新資料，本輪等待回覆逾時。",
   "chat.retryModel": "重試模型",
   "chat.retryCurrentModel": "輸入區目前的模型",
   "chat.retryTurn": "重試",

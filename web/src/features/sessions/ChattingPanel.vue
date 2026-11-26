@@ -95,6 +95,7 @@ function retryFromDetails() {
 function failureMessage(turn: Turn) {
   switch (failurePart(turn)?.text) {
     case 'deadline': return t('chat.failedDeadline')
+    case 'model_idle': return t('chat.failedModelIdle')
     case 'model': return t('chat.failedModel')
     case 'machine': return t('chat.failedSandbox')
     case 'sandbox': return t('chat.failedSandbox')

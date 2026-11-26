@@ -1,34 +1,46 @@
 package pigo
 
 import (
+	"bytes"
 	"encoding/json"
-	"slices"
 
-	"github.com/guanshan/pi-go/packages/agent"
-	"github.com/guanshan/pi-go/packages/ai"
+	"github.com/sky-valley/pi/agent"
+	"github.com/sky-valley/pi/ai"
 
 	"github.com/OXeu/shinona/internal/run"
 )
 
-func encodeTurnMessages(messages []agent.AgentMessage) ([]byte, error) {
+func encodeMessages(messages []agent.AgentMessage, compacted bool) ([]byte, error) {
 	if len(messages) == 0 {
 		return nil, nil
 	}
-	// RunAgentLoop returns the initial prompt followed by the messages it added.
-	// The repository already stores the prompt and its attachments.
-	replay := make([]agent.AgentMessage, 0, len(messages)-1)
-	for _, entry := range messages[1:] {
-		switch message := entry.(type) {
-		case ai.AssistantMessage:
-			if message.StopReason == "error" || message.StopReason == "aborted" {
+	// The repository already stores the initial user message and its attachments.
+	replay := make([]agent.AgentMessage, 0, len(messages))
+	promptSeen := compacted
+	for _, entry := range messages {
+		switch entry.MessageRole() {
+		case ai.RoleSystem:
+			continue
+		case ai.RoleUser:
+			if !promptSeen {
+				promptSeen = true
 				continue
 			}
-			message.Diagnostics = nil
-			message.ErrorMessage = ""
-			replay = append(replay, message)
-		case ai.ToolResultMessage:
-			message.Details = nil
-			replay = append(replay, message)
+			replay = append(replay, entry)
+		case ai.RoleAssistant:
+			message := assistantMessage(entry)
+			if message.StopReason == ai.StopError || message.StopReason == ai.StopAborted {
+				continue
+			}
+			copy := *message
+			copy.Diagnostics = nil
+			copy.ErrorMessage = ""
+			replay = append(replay, copy)
+		case ai.RoleToolResult:
+			if message, ok := entry.(ai.ToolResultMessage); ok {
+				message.Details = nil
+				replay = append(replay, message)
+			}
 		default:
 			replay = append(replay, entry)
 		}
@@ -36,42 +48,98 @@ func encodeTurnMessages(messages []agent.AgentMessage) ([]byte, error) {
 	return json.Marshal(replay)
 }
 
-func conversationHistory(exchanges []run.Exchange, model ai.Model) ([]agent.AgentMessage, error) {
-	supportsImages := slices.Contains(model.Input, "image")
+func conversationHistory(exchanges []run.Exchange, fallbackModel ai.Model) ([]agent.AgentMessage, error) {
 	history := make([]agent.AgentMessage, 0, len(exchanges)*2)
-	for _, exchange := range exchanges {
-		prompt := exchange.Prompt
-		var blocks []ai.ContentBlock
-		if supportsImages {
-			blocks = imageBlocks(exchange.Images)
-		} else if prompt == "" && len(exchange.Images) > 0 && len(exchange.AgentMessages) > 0 {
-			prompt = "(image omitted: model does not support images)"
-		}
-		if prompt != "" || len(blocks) > 0 {
-			history = append(history, ai.NewUserMessage(prompt, blocks))
-		}
-		if len(exchange.AgentMessages) > 0 {
-			var entries []json.RawMessage
-			if err := json.Unmarshal(exchange.AgentMessages, &entries); err != nil {
+	for i := len(exchanges) - 1; i >= 0; i-- {
+		if len(exchanges[i].CompactedContext) > 0 {
+			var err error
+			history, err = appendMessages(history, exchanges[i].CompactedContext)
+			if err != nil {
 				return nil, err
 			}
-			for _, entry := range entries {
-				message, err := ai.UnmarshalMessageJSON(entry)
-				if err != nil {
-					return nil, err
-				}
-				history = append(history, message)
+			exchanges = exchanges[i+1:]
+			break
+		}
+	}
+	for _, exchange := range exchanges {
+		if len(exchange.Images) > 0 {
+			content := ai.ContentList{ai.TextContent{Text: exchange.Prompt}}
+			for _, image := range imageBlocks(exchange.Images) {
+				content = append(content, image)
+			}
+			history = append(history, ai.UserMessage{Content: content})
+		} else if exchange.Prompt != "" {
+			history = append(history, ai.NewUserText(exchange.Prompt, 0))
+		}
+		if len(exchange.AgentMessages) > 0 {
+			var err error
+			history, err = appendMessages(history, exchange.AgentMessages)
+			if err != nil {
+				return nil, err
 			}
 			continue
 		}
 		for _, steer := range exchange.Steering {
 			if steer.Delivered {
-				history = append(history, ai.NewUserMessage(steer.Text, nil))
+				history = append(history, ai.NewUserText(steer.Text, 0))
 			}
 		}
 		if exchange.Output != "" {
-			history = append(history, ai.NewAssistantMessageForModel(model, ai.TextBlocks(exchange.Output), ai.Usage{}, "stop"))
+			history = append(history, ai.AssistantMessage{
+				Api: fallbackModel.Api, Provider: fallbackModel.Provider, Model: fallbackModel.ID, StopReason: ai.StopStop,
+				Content: ai.ContentList{ai.TextContent{Text: exchange.Output}},
+			})
 		}
 	}
 	return history, nil
+}
+
+func appendMessages(history []agent.AgentMessage, data []byte) ([]agent.AgentMessage, error) {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		message, err := restoreMessage(entry)
+		if err != nil {
+			return nil, err
+		}
+		history = append(history, message)
+	}
+	return history, nil
+}
+
+func assistantMessage(message ai.Message) *ai.AssistantMessage {
+	switch value := message.(type) {
+	case ai.AssistantMessage:
+		return &value
+	case *ai.AssistantMessage:
+		return value
+	default:
+		return nil
+	}
+}
+
+func restoreMessage(data json.RawMessage) (ai.Message, error) {
+	message, err := ai.UnmarshalMessage(data)
+	if err != nil || message.MessageRole() != ai.RoleAssistant || !bytes.Contains(data, []byte(`"signature"`)) {
+		return message, err
+	}
+	assistant := assistantMessage(message)
+	// The previous SDK serialized this field as signature.
+	var legacy struct {
+		Content []struct{ Signature string }
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return nil, err
+	}
+	for i, block := range assistant.Content {
+		if thinking, ok := block.(ai.ThinkingContent); ok {
+			if thinking.ThinkingSignature == "" && i < len(legacy.Content) {
+				thinking.ThinkingSignature = legacy.Content[i].Signature
+				assistant.Content[i] = thinking
+			}
+		}
+	}
+	return assistant, nil
 }

@@ -135,8 +135,8 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 					if sameModel && got.ReasoningContent != "fixture reasoning" {
 						t.Fatalf("same-model request lost reasoning content: %+v", got)
 					}
-					if !sameModel && (got.ReasoningContent != "" || !strings.Contains(string(got.Content), "fixture reasoning")) {
-						t.Fatalf("model switch did not convert reasoning content to text: %+v", got)
+					if !sameModel && (got.ReasoningContent != "" || strings.Contains(string(got.Content), "fixture reasoning")) {
+						t.Fatalf("model switch replayed reasoning from a different model: %+v", got)
 					}
 				case firstSteps[2]:
 					if got.ToolCallID != "call_fixture" {
@@ -193,7 +193,7 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 				t.Fatal("model failure details were not saved")
 			}
 			detail := parts[len(parts)-1]
-			if detail.Kind != "failure" || detail.Text != "model" || !strings.Contains(detail.Output, "model HTTP 400") ||
+			if detail.Kind != "failure" || detail.Text != "model" || !strings.Contains(detail.Output, "400") ||
 				!strings.Contains(detail.Output, "Rejected turn") || strings.Contains(detail.Output, modelKey) || strings.Contains(detail.Output, "fake-response-token") {
 				t.Fatalf("incorrect failure detail: %+v", detail)
 			}

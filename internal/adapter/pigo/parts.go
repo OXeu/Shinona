@@ -1,134 +1,163 @@
 package pigo
 
 import (
-	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"github.com/guanshan/pi-go/packages/agent"
-	"github.com/guanshan/pi-go/packages/ai"
+	"github.com/sky-valley/pi/agent"
+	"github.com/sky-valley/pi/ai"
 
 	"github.com/OXeu/shinona/internal/run"
 )
 
 const (
-	partLimit     = 48
 	partBytes     = 8 << 10
 	argumentBytes = 4 << 10
 )
 
-type turnParts struct {
-	report     func([]run.TurnPart)
-	completed  []run.TurnPart
-	current    []run.TurnPart
-	toolIndex  map[string]int
-	finalStart int
-	lastReport time.Time
-}
-
-func (p *turnParts) snapshot() []run.TurnPart {
-	return slices.Concat(p.completed, p.current)
-}
-
-func (p *turnParts) event(_ context.Context, event agent.AgentEvent) error {
-	switch ev := event.(type) {
-	case agent.MessageUpdateEvent:
-		if time.Since(p.lastReport) < 150*time.Millisecond {
-			return nil
+// liveParts projects current activity and keeps assistant output visible as tools run.
+func liveParts(report func([]run.TurnPart)) func(agent.AgentEvent) {
+	var lastReport time.Time
+	var output []run.TurnPart
+	return func(event agent.AgentEvent) {
+		if report == nil {
+			return
 		}
-		if message, ok := ai.AsAssistantMessage(ev.Message); ok {
-			if p.report != nil {
-				p.current = p.messageParts(message, false)
+		var parts []run.TurnPart
+		switch event.Type {
+		case agent.EvMessageUpdate, agent.EvToolExecutionUpdate:
+			if time.Since(lastReport) < 150*time.Millisecond {
+				return
 			}
 		}
-	case agent.MessageEndEvent:
-		message, ok := ai.AsAssistantMessage(ev.Message)
-		if !ok {
-			return nil
-		}
-		p.finalStart = len(p.completed)
-		p.completed = append(p.completed, p.messageParts(message, true)...)
-		p.current = nil
-	case agent.ToolExecutionStartEvent:
-		if index, ok := p.toolIndex[ev.ToolCallID]; ok {
-			p.completed[index].Status = string(run.Running)
-			p.completed[index].Input = clipPart(string(ev.Args), argumentBytes)
-		}
-	case agent.ToolExecutionEndEvent:
-		if index, ok := p.toolIndex[ev.ToolCallID]; ok {
-			state := run.Succeeded
-			if ev.IsError {
-				state = run.Failed
+		switch event.Type {
+		case agent.EvMessageUpdate, agent.EvMessageEnd:
+			message := assistantMessage(event.Message)
+			if message == nil {
+				return
 			}
-			if display, ok := ev.Result.Details.(renderedUI); ok && !ev.IsError {
-				p.completed[index] = run.TurnPart{Kind: "ui", Tool: "arrow-js", Text: display.summary, Output: display.source}
-				break
-			}
-			p.completed[index].Status = string(state)
-			p.completed[index].Output = toolOutput(ev.Result.Content)
-		}
-	default:
-		return nil
-	}
-	if p.report != nil {
-		p.report(p.snapshot())
-	}
-	p.lastReport = time.Now()
-	return nil
-}
-
-func (p *turnParts) messageParts(message ai.AssistantMessage, complete bool) []run.TurnPart {
-	var parts []run.TurnPart
-	for _, block := range message.Content {
-		if len(p.completed)+len(parts) == partLimit {
-			break
-		}
-		switch block.Type {
-		case "text":
-			if block.Text != "" {
-				parts = append(parts, run.TurnPart{Kind: "text", Text: clipPart(block.Text, partBytes)})
-			}
-		case "thinking":
-			if !block.Redacted && block.Thinking != "" {
-				part := run.TurnPart{Kind: "thinking", Text: clipPart(block.Thinking, partBytes)}
-				if !complete {
-					part.Status = string(run.Running)
-					// Use the untruncated UTF-8 text. The endpoint does not report
-					// per-block token usage as it streams.
-					part.EstimatedTokens = int32((len(block.Thinking) + 3) / 4)
+			streaming := event.Type == agent.EvMessageUpdate
+			for _, block := range message.Content {
+				if part, ok := textPart(block, streaming); ok {
+					switch {
+					case streaming:
+						parts = append(parts, part)
+					case part.Kind == "text":
+						output = append(output, part)
+					}
 				}
-				parts = append(parts, part)
 			}
-		case "toolCall":
-			if block.Name == "" {
+		case agent.EvToolExecutionStart, agent.EvToolExecutionUpdate:
+			part := toolPart(event.ToolName, event.Args, run.Running)
+			if result, ok := event.PartialResult.(agent.AgentToolResult); ok {
+				part.Output = toolOutput(result.Content)
+			}
+			parts = []run.TurnPart{part}
+		case agent.EvToolExecutionEnd:
+			if result, ok := event.Result.(agent.AgentToolResult); ok && !event.IsError {
+				if display, ok := result.Details.(renderedUI); ok {
+					output = append(output, uiPart(display))
+				}
+			}
+		default:
+			return
+		}
+		report(slices.Concat(output, parts))
+		lastReport = time.Now()
+	}
+}
+
+func transcriptParts(messages []agent.AgentMessage, omitFinalText bool) []run.TurnPart {
+	var parts []run.TurnPart
+	toolCalls := make(map[string]int)
+	for index, entry := range messages {
+		if result, ok := entry.(ai.ToolResultMessage); ok {
+			if call, found := toolCalls[result.ToolCallID]; found {
+				part := &parts[call]
+				if result.IsError {
+					part.Status = string(run.Failed)
+				} else if display, ok := result.Details.(renderedUI); ok {
+					*part = uiPart(display)
+					continue
+				} else {
+					part.Status = string(run.Succeeded)
+				}
+				part.Output = toolOutput(result.Content)
+			}
+			continue
+		}
+		message := assistantMessage(entry)
+		if message == nil {
+			continue
+		}
+		clear(toolCalls)
+		for _, block := range message.Content {
+			if call, ok := block.(ai.ToolCall); ok && call.Name != "" {
+				toolCalls[call.ID] = len(parts)
+				parts = append(parts, toolPart(call.Name, call.Arguments, run.Queued))
 				continue
 			}
-			if complete {
-				p.toolIndex[block.ID] = len(p.completed) + len(parts)
+			if part, ok := textPart(block, false); ok && (part.Kind != "text" || !omitFinalText || index != len(messages)-1) {
+				parts = append(parts, part)
 			}
-			parts = append(parts, run.TurnPart{
-				Kind: "tool", Tool: clipPart(block.Name, 256), Input: clipPart(string(block.Arguments), argumentBytes),
-				Status: string(run.Queued),
-			})
 		}
 	}
 	return parts
 }
 
-func toolOutput(blocks []ai.ContentBlock) string {
+func textPart(block ai.Content, streaming bool) (run.TurnPart, bool) {
+	switch block := block.(type) {
+	case ai.TextContent:
+		if block.Text != "" {
+			return run.TurnPart{Kind: "text", Text: clipPart(block.Text, partBytes)}, true
+		}
+	case ai.ThinkingContent:
+		if !block.Redacted && block.Thinking != "" {
+			part := run.TurnPart{Kind: "thinking", Text: clipPart(block.Thinking, partBytes)}
+			if streaming {
+				part.Status = string(run.Running)
+				// Use the untruncated UTF-8 text. The endpoint does not report
+				// per-block token usage as it streams.
+				part.EstimatedTokens = int32((len(block.Thinking) + 3) / 4)
+			}
+			return part, true
+		}
+	}
+	return run.TurnPart{}, false
+}
+
+func uiPart(display renderedUI) run.TurnPart {
+	return run.TurnPart{Kind: "ui", Tool: "arrow-js", Text: display.summary, Output: display.source}
+}
+
+func toolPart(name string, args map[string]any, status run.Status) run.TurnPart {
+	return run.TurnPart{Kind: "tool", Tool: clipPart(name, 256), Input: argumentPreview(args), Status: string(status)}
+}
+
+func argumentPreview(args map[string]any) string {
+	raw, _ := json.Marshal(args)
+	return clipPart(string(raw), argumentBytes)
+}
+
+func toolOutput(blocks ai.ContentList) string {
 	var text strings.Builder
 	for _, block := range blocks {
-		if block.Type != "text" || block.Text == "" {
+		item, ok := block.(ai.TextContent)
+		if !ok || item.Text == "" {
 			continue
+		}
+		if text.Len() >= partBytes-1 {
+			break
 		}
 		if text.Len() > 0 {
 			text.WriteByte('\n')
 		}
 		remaining := partBytes - text.Len()
-		text.WriteString(clipPart(block.Text, remaining))
-		if len(block.Text) > remaining {
+		text.WriteString(clipPart(item.Text, remaining))
+		if len(item.Text) > remaining {
 			break
 		}
 	}

@@ -23,29 +23,30 @@ import (
 )
 
 type row struct {
-	ID            string `gorm:"primaryKey"`
-	OwnerID       string
-	SessionID     string `gorm:"index:idx_turns_session,priority:1;index:idx_runs_session_status,priority:1;index:idx_runs_retries,priority:1,where:retry_of <> ''"`
-	RetryOf       string
-	Sequence      int `gorm:"index:idx_turns_session,priority:2;index:idx_runs_retries,priority:2"`
-	Policy        sandbox.Policy
-	Backend       string
-	MachineID     string
-	Prompt        string                `gorm:"not null"`
-	Payload       run.Payload           `gorm:"serializer:json"`
-	Steering      []run.SteeringMessage `gorm:"serializer:json"`
-	Parts         []run.TurnPart        `gorm:"serializer:json"`
-	AgentMessages []byte
-	ContextTokens int
-	ContextWindow int
-	TokenUsage    *run.TokenUsage  `gorm:"serializer:json"`
-	LiveContext   run.ContextUsage `gorm:"-"`
-	Status        run.Status       `gorm:"not null;index:idx_runs_queue,priority:1;index:idx_runs_session_status,priority:2"`
-	Output        string
-	CreatedAt     time.Time `gorm:"not null;index:idx_runs_queue,priority:2;index"`
-	StartedAt     *time.Time
-	UpdatedAt     time.Time `gorm:"not null"`
-	RevertedAt    *time.Time
+	ID               string `gorm:"primaryKey"`
+	OwnerID          string
+	SessionID        string `gorm:"index:idx_turns_session,priority:1;index:idx_runs_session_status,priority:1;index:idx_runs_retries,priority:1,where:retry_of <> ''"`
+	RetryOf          string
+	Sequence         int `gorm:"index:idx_turns_session,priority:2;index:idx_runs_retries,priority:2"`
+	Policy           sandbox.Policy
+	Backend          string
+	MachineID        string
+	Prompt           string                `gorm:"not null"`
+	Payload          run.Payload           `gorm:"serializer:json"`
+	Steering         []run.SteeringMessage `gorm:"serializer:json"`
+	Parts            []run.TurnPart        `gorm:"serializer:json"`
+	AgentMessages    []byte
+	CompactedContext []byte
+	ContextTokens    int
+	ContextWindow    int
+	TokenUsage       *run.TokenUsage  `gorm:"serializer:json"`
+	LiveContext      run.ContextUsage `gorm:"-"`
+	Status           run.Status       `gorm:"not null;index:idx_runs_queue,priority:1;index:idx_runs_session_status,priority:2"`
+	Output           string
+	CreatedAt        time.Time `gorm:"not null;index:idx_runs_queue,priority:2;index"`
+	StartedAt        *time.Time
+	UpdatedAt        time.Time `gorm:"not null"`
+	RevertedAt       *time.Time
 }
 
 func (row) TableName() string { return "runs" }
@@ -212,6 +213,7 @@ func (r *Repository) Complete(ctx context.Context, id string, completion run.Com
 				"status": completion.Status, "output": completion.Output, "updated_at": completion.UpdatedAt,
 				"steering": string(steering), "parts": string(parts), "context_tokens": completion.ContextTokens,
 				"context_window": completion.ContextWindow, "token_usage": usage, "agent_messages": completion.AgentMessages,
+				"compacted_context": completion.CompactedContext,
 			})
 		if result.Error != nil {
 			return result.Error

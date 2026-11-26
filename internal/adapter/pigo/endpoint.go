@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/guanshan/pi-go/packages/ai"
+	"github.com/sky-valley/pi/ai"
 
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -36,13 +36,14 @@ func (n *catalogTokenLimit) UnmarshalJSON(data []byte) error {
 }
 
 type Endpoint struct {
-	base    *url.URL
-	key     string
-	client  *http.Client
-	mu      sync.Mutex
-	models  []ModelInfo
-	expires time.Time
-	flight  *catalogFetch
+	base           *url.URL
+	key            string
+	client         *http.Client
+	completionIdle time.Duration
+	mu             sync.Mutex
+	models         []ModelInfo
+	expires        time.Time
+	flight         *catalogFetch
 }
 
 type catalogFetch struct {
@@ -58,7 +59,7 @@ func NewEndpoint(base, key string, client *http.Client) (*Endpoint, error) {
 		target.Fragment != "" || (target.Scheme != "https" && target.Scheme != "http") {
 		return nil, errors.New("enter an HTTP(S) OpenAI-compatible base URL without credentials, query, or fragment")
 	}
-	return &Endpoint{base: target, key: key, client: client}, nil
+	return &Endpoint{base: target, key: key, client: client, completionIdle: modelResponseIdle}, nil
 }
 
 func (e *Endpoint) Catalog(ctx context.Context, force bool) ([]ModelInfo, error) {
@@ -173,8 +174,8 @@ func (e *Endpoint) fetch(ctx context.Context) ([]ModelInfo, error) {
 func (e *Endpoint) Model(id string) ai.Model {
 	model := ai.Model{ID: id, Name: id, Input: []string{"text", "image"}}
 	if strings.EqualFold(e.base.Hostname(), "api.openai.com") {
-		if known, ok := ai.Find(ai.GeneratedModels(), "openai", id); ok {
-			model = known
+		if known := ai.GetModel("openai", id); known != nil {
+			model = *known
 		}
 	}
 	e.mu.Lock()
@@ -183,12 +184,26 @@ func (e *Endpoint) Model(id string) ai.Model {
 		model.ContextWindow = int(e.models[index].ContextWindow)
 	}
 	e.mu.Unlock()
-	model.Provider, model.API, model.BaseURL = "openai", "openai-completions", e.base.String()
-	model.EnvKey = ""
-	model.MaxOutput = 0
-	model.Compat.SupportsStore = new(false)
-	if !strings.EqualFold(e.base.Hostname(), "api.openai.com") {
-		model.Compat.SupportsDeveloperRole = new(false)
-	}
+	model.Provider, model.Api, model.BaseURL = "openai", ai.APIOpenAICompletions, e.base.String()
+	model.Compat = completionCompatibility(model.Compat, !strings.EqualFold(e.base.Hostname(), "api.openai.com"), false)
 	return model
+}
+
+func completionCompatibility(previous json.RawMessage, custom, reasoning bool) json.RawMessage {
+	compat := make(map[string]json.RawMessage)
+	if len(previous) > 0 {
+		_ = json.Unmarshal(previous, &compat)
+	}
+	if compat == nil {
+		compat = make(map[string]json.RawMessage)
+	}
+	compat["supportsStore"] = json.RawMessage("false")
+	if custom {
+		compat["supportsDeveloperRole"] = json.RawMessage("false")
+	}
+	if reasoning {
+		compat["supportsReasoningEffort"] = json.RawMessage("true")
+	}
+	value, _ := json.Marshal(compat)
+	return value
 }

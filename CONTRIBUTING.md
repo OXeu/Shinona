@@ -1,6 +1,6 @@
 # Contributing
 
-Keep account workflows in `internal/auth` and conversation behavior in `internal/run`. Transport, ORM, provider, and pi-go types belong in their adapters. Scope account data by the authenticated account ID. Agent commands go through `sandbox.Workspace.Exec`. Go lint enforces domain import boundaries and rejects `os/exec` in app code.
+Keep account workflows in `internal/auth` and conversation behavior in `internal/run`. Transport, ORM, provider, and pi types belong in their adapters. Scope account data by the authenticated account ID. Agent commands go through `sandbox.Workspace.Exec`. Go lint enforces domain import boundaries and rejects `os/exec` in app code.
 
 ## Vue components and feedback
 

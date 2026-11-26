@@ -378,13 +378,19 @@ func (r *Repository) History(ctx context.Context, turn run.Run, limit int) ([]ru
 	retried := conversationTurns(db, turn.OwnerID, turn.SessionID).Select("retry_of").
 		Where("sequence <= ? AND retry_of <> ''", turn.Sequence).
 		Where("status <> ? OR started_at IS NOT NULL", run.Stopped)
-	query := conversationTurns(db, turn.OwnerID, turn.SessionID).Select("prompt", "output", "steering", "payload", "agent_messages").
-		Where("sequence < ?", turn.Sequence).
-		Where("id NOT IN (?)", retried).
-		Where("(status IN ? OR (status = ? AND started_at IS NOT NULL))", []run.Status{run.Succeeded, run.Failed}, run.Stopped).
+	eligibleTurns := func() *gorm.DB {
+		return conversationTurns(db, turn.OwnerID, turn.SessionID).
+			Where("sequence < ?", turn.Sequence).
+			Where("id NOT IN (?)", retried).
+			Where("(status IN ? OR (status = ? AND started_at IS NOT NULL))", []run.Status{run.Succeeded, run.Failed}, run.Stopped)
+	}
+	query := eligibleTurns().Select("prompt", "output", "steering", "payload", "agent_messages", "compacted_context").
 		Order("sequence DESC")
 	if limit > 0 {
 		query = query.Limit(limit)
+	} else {
+		checkpoint := eligibleTurns().Select("sequence").Where("compacted_context IS NOT NULL").Order("sequence DESC").Limit(1)
+		query = query.Where("sequence >= COALESCE((?), 0)", checkpoint)
 	}
 	if err := query.Find(&records).Error; err != nil {
 		return nil, err
@@ -393,7 +399,7 @@ func (r *Repository) History(ctx context.Context, turn run.Run, limit int) ([]ru
 	for i, record := range records {
 		history[len(records)-1-i] = run.Exchange{
 			Prompt: record.Prompt, Output: record.Output, Steering: record.Steering, Images: record.Payload.Images,
-			AgentMessages: record.AgentMessages,
+			AgentMessages: record.AgentMessages, CompactedContext: record.CompactedContext,
 		}
 	}
 	return history, nil

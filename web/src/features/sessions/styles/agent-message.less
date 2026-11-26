@@ -11,12 +11,12 @@
 .agent-message :is(.agent-process, .agent-answer) { width: 100%; min-width: 0; }
 .agent-process { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 
-.agent-message :is(.agent-process-toggle, .agent-completion-label, .agent-message-meta) {
+.agent-message :is(.agent-process-toggle, .agent-current-activity, .agent-completion-label, .agent-message-meta) {
   color: var(--muted);
   font-size: 0.75rem;
 }
 
-.agent-message .agent-process-toggle {
+.agent-message :is(.agent-process-toggle, .agent-current-activity) {
   display: inline-flex;
   align-items: center;
   gap: 5px;

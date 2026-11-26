@@ -1,241 +1,159 @@
 package pigo
 
 import (
-	"bufio"
 	"bytes"
-	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"strings"
+	"time"
 
-	"github.com/guanshan/pi-go/packages/agent"
-	"github.com/guanshan/pi-go/packages/ai"
-	"github.com/guanshan/pi-go/packages/ai/providers"
-	"github.com/guanshan/pi-go/packages/ai/providers/openaichat"
+	"github.com/sky-valley/pi/ai"
+	"github.com/sky-valley/pi/ai/providers"
 
 	"github.com/OXeu/shinona/internal/run"
 )
 
-// Keep pi-go's request formatting and response parsing. Own the HTTP request
-// because pi-go's built-in provider applies a deadline even without one in its options.
-func (e *Endpoint) stream(ctx context.Context, model ai.Model, input ai.Context, options ai.StreamOptions,
-	onContext func(run.ContextUsage),
-) agent.AssistantStream {
-	events := ai.NewAssistantMessageEventStreamWithContext(ctx, 16)
-	go func() {
-		var last int
-		report := func(usage ai.Usage) {
-			tokens := contextTokens(usage)
-			if onContext == nil || tokens <= 0 || tokens == last || ctx.Err() != nil {
-				return
-			}
-			last = tokens
-			onContext(run.ContextUsage{Tokens: int32(tokens), Window: int32(model.ContextWindow)})
-		}
-		message, err := e.complete(ctx, model, input, options, events, report)
-		report(message.Usage)
-		if err != nil {
-			if message.Model == "" {
-				message = ai.NewAssistantMessageForModel(model, nil, ai.Usage{}, "error")
-			}
-			message.StopReason = "error"
-			message.ErrorMessage = err.Error()
-		}
-		if e.key != "" && message.ErrorMessage != "" {
-			message.ErrorMessage = strings.ReplaceAll(message.ErrorMessage, e.key, "[redacted]")
-		}
-		if message.StopReason == "error" || message.StopReason == "aborted" {
-			events.Push(ai.AssistantMessageEvent{Type: "error", Reason: message.StopReason, Error: message})
-			return
-		}
-		events.Push(ai.AssistantMessageEvent{Type: "done", Reason: message.StopReason, Message: message})
-	}()
-	return events
-}
+const (
+	modelResponseIdle   = 3 * time.Minute
+	modelIdleDiagnostic = "model_idle"
+)
 
-func (e *Endpoint) complete(ctx context.Context, model ai.Model, input ai.Context, options ai.StreamOptions,
-	events *ai.AssistantMessageEventStream, report func(ai.Usage),
-) (ai.AssistantMessage, error) {
-	compat := ai.GetOpenAICompletionsCompat(model)
-	request := providers.BuildOpenAIChatRequest(e.key, providers.OpenAIChatRequestOptions{
-		ModelID: model.ID, Provider: model.Provider, BaseURL: model.BaseURL,
-		SystemPrompt: input.SystemPrompt, Messages: completionMessages(input.Messages, model),
-		Tools: ai.ToolDefinitions(ai.ToolsByName(input.Tools)), SupportsImages: ai.SupportsInput(model, "image"),
-		ModelHeaders: model.Headers, RequestHeaders: options.Headers,
-		Temperature: options.Temperature, ToolChoice: options.ToolChoice,
-		ThinkingLevel: string(options.Reasoning), ThinkingLevelMap: model.ThinkingLevelMap, Reasoning: model.Reasoning,
-		CacheRetention: options.CacheRetention, SessionID: options.SessionID,
-		SupportsStore: compat.SupportsStore, SupportsDeveloperRole: compat.SupportsDeveloperRole,
-		SupportsReasoningEffort: compat.SupportsReasoningEffort, CacheControlFormat: compat.CacheControlFormat,
-		SendSessionAffinityHeaders: compat.SendSessionAffinityHeaders,
-		SupportsLongCacheRetention: new(compat.SupportsLongCacheRetention),
-		RequiresToolResultName:     compat.RequiresToolResultName, RequiresAssistantAfterToolResult: compat.RequiresAssistantAfterToolResult,
-		RequiresThinkingAsText:                      compat.RequiresThinkingAsText,
-		RequiresReasoningContentOnAssistantMessages: compat.RequiresReasoningContentOnAssistantMessages,
-		ThinkingFormat:                              compat.ThinkingFormat, ZaiToolStream: compat.ZaiToolStream, SupportsStrictMode: compat.SupportsStrictMode,
-		OpenRouterRouting: compat.OpenRouterRouting, VercelGatewayRouting: compat.VercelGatewayRouting,
-	})
-	request.Body["stream"] = true
-	request.Body["stream_options"] = map[string]bool{"include_usage": true}
-	body, err := providers.MarshalJSON(request.Body)
-	if err != nil {
-		return ai.AssistantMessage{}, err
+func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.TranscriptContext,
+	options *ai.SimpleStreamOptions, report func(run.ContextUsage),
+) *ai.AssistantMessageEventStream {
+	request, cancel := context.WithCancelCause(ctx)
+	timer := time.AfterFunc(e.completionIdle, func() { cancel(run.ErrModelIdle) })
+	resetIdle := func() {
+		if timer.Stop() {
+			timer.Reset(e.completionIdle)
+		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, providers.OpenAIChatURL(model.BaseURL), bytes.NewReader(body))
-	if err != nil {
-		return ai.AssistantMessage{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream, application/json")
-	if request.BearerAuth && request.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+request.Key)
-	}
-	for key, value := range request.Headers {
-		req.Header.Set(key, value)
-	}
+
+	opts := *options
+	opts.APIKey = e.key
+	opts.Identity = &ai.ClientIdentity{Attribution: ai.NoAttribution}
 	client := *e.client
 	client.Timeout = 0
-	response, err := client.Do(req)
-	if err != nil {
-		return ai.AssistantMessage{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		details, _ := io.ReadAll(io.LimitReader(response.Body, int64(4096+len(e.key))))
-		return ai.AssistantMessage{}, fmt.Errorf("model HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(details)))
-	}
-	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "event-stream") {
-		raw, err := io.ReadAll(response.Body)
-		if err != nil {
-			return ai.AssistantMessage{}, err
+	opts.HTTPClient = completionClient{&client}
+	opts.OnPayload = func(payload any, _ *ai.Model) (any, error) {
+		if body, ok := payload.(map[string]any); ok {
+			delete(body, "max_tokens")
+			delete(body, "max_completion_tokens")
 		}
-		parsed, err := providers.ParseOpenAIChatCompletionRawForProvider(raw, model.Provider)
-		return completionMessage(model, parsed), err
+		return payload, nil
 	}
-	return readCompletionStream(model, response.Body, events, report)
-}
+	var lastTokens int
+	opts.OnProviderStreamEvent = func(data any, _ *ai.Model) error {
+		chunk, _ := data.(ai.OrderedObject)
+		tokens := completionUsage(chunk)
+		if tokens > 0 && tokens != lastTokens {
+			resetIdle()
+			lastTokens = tokens
+			if report != nil && request.Err() == nil {
+				report(run.ContextUsage{Tokens: int32(tokens), Window: int32(model.ContextWindow)})
+			}
+		}
+		return nil
+	}
 
-func readCompletionStream(model ai.Model, body io.Reader, events *ai.AssistantMessageEventStream,
-	report func(ai.Usage),
-) (ai.AssistantMessage, error) {
-	accumulator := openaichat.NewStreamAccumulator(model.Provider)
-	partial := ai.NewAssistantMessageForModel(model, nil, ai.Usage{}, "stop")
-	events.Push(ai.AssistantMessageEvent{Type: "start", Partial: partial})
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
-	for scanner.Scan() {
-		line, dataLine := strings.CutPrefix(scanner.Text(), "data:")
-		if !dataLine {
-			continue
-		}
-		line = strings.TrimSpace(line)
-		if line == "[DONE]" {
-			break
-		}
-		if line == "" {
-			continue
-		}
-		frame := []byte(line)
-		updates, err := accumulator.ApplyRaw(frame)
-		if err != nil {
-			return partial, err
-		}
-		// Providers can send usage in its own chunk, without any text delta.
-		if len(updates) > 0 || bytes.Contains(frame, []byte(`"usage"`)) {
-			partial = completionMessage(model, accumulator.Parsed(false))
-			report(partial.Usage)
-		}
-		for _, update := range updates {
-			events.Push(ai.AssistantMessageEvent{Type: update.Type, ContentIndex: update.ContentIndex, Delta: update.Delta, Partial: partial})
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return partial, err
-	}
-	message := completionMessage(model, accumulator.Parsed(true))
-	if !accumulator.SawFinishReason() {
-		return message, fmt.Errorf("model stream ended without a finish reason")
-	}
-	return message, nil
-}
-
-func completionMessages(messages []ai.Message, model ai.Model) []providers.OpenAIChatMessage {
-	result := make([]providers.OpenAIChatMessage, 0, len(messages))
-	var pending []ai.ContentBlock
-	finishToolCalls := func() {
-		// A turn can stop after the model requests tools but before the results
-		// are appended. Chat Completions requires a result for every call.
-		for _, call := range pending {
-			result = append(result, providers.OpenAIChatMessage{
-				Role: "toolResult", ToolCallID: call.ID, ToolName: call.Name,
-				Blocks: []providers.OpenAIChatMessageBlock{{Type: "text", Text: "No result provided"}},
-			})
-		}
-		pending = pending[:0]
-	}
-	for _, message := range messages {
-		role := ai.MessageRole(message)
-		if role == "toolResult" {
-			id := ai.MessageToolCallID(message)
-			pending = slices.DeleteFunc(pending, func(call ai.ContentBlock) bool { return call.ID == id })
-		} else {
-			finishToolCalls()
-		}
-		assistant, isAssistant := ai.AsAssistantMessage(message)
-		sameModel := assistant.Provider == model.Provider && assistant.API == model.API && assistant.Model == model.ID
-		content := ai.MessageBlocks(message)
-		blocks := make([]providers.OpenAIChatMessageBlock, 0, len(content))
-		for _, block := range content {
-			// Follow pi-go's provider history rules for model-specific reasoning.
-			if isAssistant && !sameModel {
-				switch block.Type {
-				case "thinking":
-					if block.Redacted || block.Thinking == "" {
-						continue
-					}
-					block = ai.ContentBlock{Type: "text", Text: block.Thinking}
-				case "toolCall":
-					block.ThoughtSignature = ""
+	source := providers.StreamSimpleOpenAICompletions(request, model, input, &opts)
+	output := ai.NewAssistantMessageEventStream()
+	go func() {
+		defer cancel(nil)
+		defer timer.Stop()
+		defer output.End()
+		for event := range source.Events() {
+			switch event.Type {
+			case ai.EventToolCallStart:
+				resetIdle()
+			case ai.EventTextDelta, ai.EventThinkingDelta, ai.EventToolCallDelta:
+				if event.Delta != "" {
+					resetIdle()
 				}
 			}
-			if block.Type == "toolCall" {
-				pending = append(pending, block)
+			if event.Type == ai.EventError && event.Error != nil {
+				message := event.Error.Clone()
+				if e.key != "" {
+					message.ErrorMessage = strings.ReplaceAll(message.ErrorMessage, e.key, "[redacted]")
+				}
+				if errors.Is(context.Cause(request), run.ErrModelIdle) {
+					event.Reason = ai.StopError
+					message.StopReason = ai.StopError
+					message.Diagnostics = append(message.Diagnostics, ai.Diagnostic{Type: modelIdleDiagnostic})
+				}
+				event.Error = message
 			}
-			blocks = append(blocks, providers.OpenAIChatMessageBlock{
-				Type: block.Type, Text: block.Text, MimeType: block.MimeType, Data: block.Data, Thinking: block.Thinking,
-				ID: block.ID, Name: block.Name, Arguments: block.Arguments,
-				ThinkingSignature: cmp.Or(block.Signature, block.ThinkingSignature), ThoughtSignature: block.ThoughtSignature,
-			})
+			output.Push(event)
 		}
-		result = append(result, providers.OpenAIChatMessage{
-			Role: role, Text: ai.MessageText(message), Blocks: blocks,
-			ToolCallID: ai.MessageToolCallID(message), ToolName: ai.MessageToolName(message),
-		})
-	}
-	finishToolCalls()
-	return result
+	}()
+	return output
 }
 
-func completionMessage(model ai.Model, parsed providers.OpenAIChatParsed) ai.AssistantMessage {
-	blocks := make([]ai.ContentBlock, 0, len(parsed.Blocks))
-	for _, block := range parsed.Blocks {
-		blocks = append(blocks, ai.ContentBlock{
-			Type: block.Type, Text: block.Text, Thinking: block.Thinking, Signature: block.ThinkingSignature,
-			ID: block.ID, Name: block.Name, Arguments: block.Arguments, ThoughtSignature: block.ThoughtSignature,
-		})
+func completionUsage(chunk ai.OrderedObject) int {
+	value, _ := chunk.Get("usage")
+	usage, _ := value.(ai.OrderedObject)
+	number := func(field string) int {
+		value, _ := usage.Get(field)
+		switch count := value.(type) {
+		case float64:
+			return int(count)
+		case json.Number:
+			parsed, _ := count.Int64()
+			return int(parsed)
+		default:
+			return 0
+		}
 	}
-	usage := ai.Usage{
-		Input: parsed.Usage.Input, Output: parsed.Usage.Output,
-		CacheRead: parsed.Usage.CacheRead, CacheWrite: parsed.Usage.CacheWrite, TotalTokens: parsed.Usage.TotalTokens,
+	if total := number("total_tokens"); total > 0 {
+		return total
 	}
-	usage.Cost = ai.CalculateCost(model, usage)
-	message := ai.NewAssistantMessageForModel(model, blocks, usage, parsed.StopReason)
-	message.ErrorMessage, message.ResponseID = parsed.ErrorMessage, parsed.ResponseID
-	if parsed.ResponseModel != model.ID {
-		message.ResponseModel = parsed.ResponseModel
+	return number("prompt_tokens") + number("completion_tokens")
+}
+
+type completionClient struct{ *http.Client }
+
+// Some compatible endpoints return a JSON completion even when streaming is requested.
+func (c completionClient) Do(req *http.Request) (*http.Response, error) {
+	response, err := c.Client.Do(req)
+	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 ||
+		strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "event-stream") {
+		return response, err
 	}
-	return message
+	defer response.Body.Close()
+	var completion map[string]json.RawMessage
+	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&completion); err != nil {
+		return nil, err
+	}
+	var choices []map[string]json.RawMessage
+	if err := json.Unmarshal(completion["choices"], &choices); err != nil {
+		return nil, fmt.Errorf("decode compatible model response: %w", err)
+	}
+	for _, choice := range choices {
+		choice["delta"] = choice["message"]
+		delete(choice, "message")
+	}
+	completion["choices"], err = json.Marshal(choices)
+	if err != nil {
+		return nil, err
+	}
+	frame, err := json.Marshal(completion)
+	if err != nil {
+		return nil, err
+	}
+	var stream bytes.Buffer
+	stream.WriteString("data: ")
+	stream.Write(frame)
+	stream.WriteString("\n\ndata: [DONE]\n\n")
+	if response.Header == nil {
+		response.Header = make(http.Header)
+	}
+	response.Header.Set("Content-Type", "text/event-stream")
+	response.Header.Del("Content-Length")
+	response.ContentLength = int64(stream.Len())
+	response.Body = io.NopCloser(&stream)
+	return response, nil
 }

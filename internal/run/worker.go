@@ -107,6 +107,8 @@ func turnFailureReason(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return "deadline"
+	case errors.Is(err, ErrModelIdle):
+		return "model_idle"
 	case errors.Is(err, ErrModelResponse), errors.Is(err, ErrModelConfig):
 		return "model"
 	case errors.Is(err, errWorkspaceSetup), errors.Is(err, ErrPolicy):

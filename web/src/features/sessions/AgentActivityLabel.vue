@@ -25,13 +25,14 @@ const letters = computed(() => Array.from(segmenter.segment(props.text), ({ segm
 </template>
 
 <style scoped lang="less">
+.activity-label {
+  --activity-highlight: color-mix(in srgb, var(--muted), var(--background) 10%);
+}
+
 .activity-letter {
-  display: inline-block;
   white-space: pre;
   --letter-delay: 0ms;
-  animation:
-    activity-letter-enter 420ms ease-in-out var(--letter-delay) both,
-    activity-letter-glow 2s ease-in-out calc(420ms + var(--letter-delay)) infinite;
+  animation: activity-letter-lighten 2s ease-in-out var(--letter-delay) infinite;
 }
 
 each(range(32), {
@@ -41,17 +42,13 @@ each(range(32), {
   }
 });
 
-@keyframes activity-letter-enter {
-  0% { opacity: 0.45; filter: blur(0.16em); }
-  45% { transform: scale(1.35); filter: blur(0.24em); }
-  100% { opacity: 1; transform: scale(1); filter: none; }
+@keyframes activity-letter-lighten {
+  0%, 100% { color: var(--muted); }
+  50% { color: var(--activity-highlight); }
 }
 
-@keyframes activity-letter-glow {
-  50% {
-    color: var(--foreground);
-    text-shadow: 0 0 3px color-mix(in srgb, currentColor 28%, transparent);
-  }
+@media (prefers-color-scheme: dark) {
+  .activity-label { --activity-highlight: var(--foreground); }
 }
 
 @media (prefers-reduced-motion: reduce) {

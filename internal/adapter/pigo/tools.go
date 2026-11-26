@@ -2,80 +2,48 @@ package pigo
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/guanshan/pi-go/packages/agent"
-	"github.com/guanshan/pi-go/packages/ai"
+	"github.com/sky-valley/pi/agent"
+	"github.com/sky-valley/pi/ai"
 
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
-type tool struct {
-	name        string
-	description string
-	fields      []string
-	optional    []string
-	execute     func(context.Context, map[string]string) (agent.AgentToolResult, error)
-}
-
-func (t tool) Name() string        { return t.name }
-func (t tool) Label() string       { return t.name }
-func (t tool) Description() string { return t.description }
-
-func (t tool) Schema() map[string]any {
-	properties := make(map[string]any, len(t.fields))
-	for _, field := range t.fields {
-		properties[field] = map[string]string{"type": "string"}
-	}
-	for _, field := range t.optional {
-		properties[field] = map[string]string{"type": "string"}
-	}
-	return map[string]any{
-		"type": "object", "properties": properties, "required": t.fields, "additionalProperties": false,
-	}
-}
-
-func (t tool) Execute(ctx context.Context, input json.RawMessage, _ agent.ToolUpdateCallback) (agent.AgentToolResult, error) {
-	var args map[string]string
-	if err := json.Unmarshal(input, &args); err != nil {
-		return agent.AgentToolResult{}, err
-	}
-	for _, field := range t.fields {
-		if _, found := args[field]; !found {
-			return agent.AgentToolResult{}, fmt.Errorf("missing %q", field)
-		}
-	}
-	return t.execute(ctx, args)
-}
-
 func tools(workspace sandbox.Workspace, writable bool) []agent.AgentTool {
-	read := []agent.AgentTool{
-		tool{name: "read", description: "Read a text file at a workspace-relative path.", fields: []string{"path"},
-			execute: func(ctx context.Context, args map[string]string) (agent.AgentToolResult, error) {
-				data, err := workspace.ReadFile(ctx, args["path"])
-				return textResult(string(data)), err
-			}},
-	}
+	read := []agent.AgentTool{{
+		Name: "read", Label: "read", Description: "Read a text file at a workspace-relative path.",
+		Parameters: toolParameters(ai.Prop("path", ai.String())),
+		Execute: func(ctx context.Context, _ string, args map[string]any, _ agent.ToolUpdateFunc) (agent.AgentToolResult, error) {
+			data, err := workspace.ReadFile(ctx, args["path"].(string))
+			return textResult(string(data)), err
+		},
+	}}
 	if !writable {
 		return read
 	}
 	return append(read,
-		tool{name: "write", description: "Write text to a workspace-relative path.", fields: []string{"path", "content"},
-			execute: func(ctx context.Context, args map[string]string) (agent.AgentToolResult, error) {
-				err := workspace.WriteFile(ctx, args["path"], []byte(args["content"]))
+		agent.AgentTool{
+			Name: "write", Label: "write", Description: "Write text to a workspace-relative path.",
+			Parameters: toolParameters(ai.Prop("path", ai.String()), ai.Prop("content", ai.String())),
+			Execute: func(ctx context.Context, _ string, args map[string]any, _ agent.ToolUpdateFunc) (agent.AgentToolResult, error) {
+				err := workspace.WriteFile(ctx, args["path"].(string), []byte(args["content"].(string)))
 				return textResult("File written."), err
-			}},
-		tool{name: "bash", description: "Run a Bash command inside the sandbox workspace.", fields: []string{"command"},
-			execute: func(ctx context.Context, args map[string]string) (agent.AgentToolResult, error) {
-				if args["command"] == "" {
+			},
+		},
+		agent.AgentTool{
+			Name: "bash", Label: "bash", Description: "Run a Bash command inside the sandbox workspace.",
+			Parameters: toolParameters(ai.Prop("command", ai.String())),
+			Execute: func(ctx context.Context, _ string, args map[string]any, _ agent.ToolUpdateFunc) (agent.AgentToolResult, error) {
+				command := args["command"].(string)
+				if command == "" {
 					return agent.AgentToolResult{}, errors.New("command must be nonempty")
 				}
 				start := time.Now()
-				result, err := workspace.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{"-c", args["command"]}})
+				result, err := workspace.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{"-c", command}})
 				if err != nil {
 					text := fmt.Sprintf("Bash failed after %s without an exit code.\n%s%s",
 						time.Since(start).Round(time.Millisecond), clipPart(err.Error(), 1024), failedCommandOutput(result))
@@ -93,8 +61,15 @@ func tools(workspace sandbox.Workspace, writable bool) []agent.AgentTool {
 					text += "\nOutput truncated."
 				}
 				return textResult(text), nil
-			}},
+			},
+		},
 	)
+}
+
+func toolParameters(fields ...ai.Field) *ai.Schema {
+	parameters := ai.Object(fields...)
+	parameters.AdditionalAllowed = new(false)
+	return parameters
 }
 
 func failedCommandOutput(result sandbox.Result) string {
@@ -114,9 +89,9 @@ func failedCommandOutput(result sandbox.Result) string {
 }
 
 func textResult(text string) agent.AgentToolResult {
-	return agent.AgentToolResult{Content: ai.TextBlocks(text)}
+	return agent.AgentToolResult{Content: ai.ContentList{ai.TextContent{Text: text}}}
 }
 
 func toolFailure(text string) agent.AgentToolResult {
-	return agent.AgentToolResult{Content: ai.TextBlocks(text), IsError: true}
+	return agent.AgentToolResult{Content: ai.ContentList{ai.TextContent{Text: text}}, IsError: true}
 }

@@ -132,6 +132,35 @@ func TestHistoryScopesEarlierTurnsAndSkipsCancelledQueueItems(t *testing.T) {
 	}
 }
 
+func TestHistoryStartsAtLatestEligibleCompaction(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	reverted := time.Now().UTC()
+	checkpoint := []byte(`[{"role":"user","content":"Compacted history"}]`)
+	rows := []row{
+		{ID: "old", OwnerID: "owner", SessionID: "session", Sequence: 1, Status: run.Succeeded, Prompt: "old"},
+		{ID: "compact", OwnerID: "owner", SessionID: "session", Sequence: 2, Status: run.Running, Prompt: "compacted"},
+		{ID: "failed", OwnerID: "owner", SessionID: "session", Sequence: 3, Status: run.Failed, CompactedContext: checkpoint},
+		{ID: "retry", OwnerID: "owner", SessionID: "session", Sequence: 4, RetryOf: "failed", Status: run.Succeeded, Prompt: "retry"},
+		{ID: "reverted", OwnerID: "owner", SessionID: "session", Sequence: 5, Status: run.Succeeded, RevertedAt: &reverted, CompactedContext: checkpoint},
+		{ID: "other", OwnerID: "other", SessionID: "session", Sequence: 5, Status: run.Succeeded, CompactedContext: checkpoint},
+	}
+	if err := repo.db.WithContext(ctx).Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Complete(ctx, "compact", run.Completion{Result: run.Result{CompactedContext: checkpoint}, Status: run.Succeeded, UpdatedAt: reverted}); err != nil {
+		t.Fatal(err)
+	}
+	history, err := repo.History(ctx, run.Run{OwnerID: "owner", SessionID: "session", Sequence: 6}, 0)
+	if err != nil || len(history) != 2 || history[0].Prompt != "compacted" || !slices.Equal(history[0].CompactedContext, checkpoint) || history[1].Prompt != "retry" {
+		t.Fatalf("expected the current branch's checkpoint and later messages: %+v, %v", history, err)
+	}
+}
+
 func TestLegacyRunsStayPrivateAndCanBeAdopted(t *testing.T) {
 	ctx := t.Context()
 	filename := filepath.Join(t.TempDir(), "shinona.db")

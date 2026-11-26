@@ -3,6 +3,7 @@ package pigo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -132,5 +133,129 @@ func TestCompatibleEndpointCatalogAndComposerPayload(t *testing.T) {
 	}
 	if len(readings) != 1 || readings[0] != (run.ContextUsage{Tokens: 131, Window: 32000}) {
 		t.Fatalf("expected one provider-reported reading: %+v", readings)
+	}
+}
+
+func TestAgentReportsModelInactivityWithPartialOutput(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Partial answer.\"}}]}\n\n")
+		controller := http.NewResponseController(w)
+		if err := controller.Flush(); err != nil {
+			return
+		}
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				_, _ = fmt.Fprint(w, ": keepalive\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"}}]}\n\n")
+				if err := controller.Flush(); err != nil {
+					return
+				}
+			}
+		}
+	}))
+	defer server.Close()
+	endpoint, err := NewEndpoint(server.URL, "fixture", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint.completionIdle = 150 * time.Millisecond
+	result, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Explain."}, &recordingWorkspace{})
+	if !errors.Is(err, run.ErrModelIdle) || len(result.Parts) != 1 || result.Parts[0].Text != "Partial answer." {
+		t.Fatalf("model idle timeout should preserve the partial response: %+v, %v", result.Parts, err)
+	}
+}
+
+func TestCompatibleEndpointReplaysAcrossModelChanges(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct{ Messages json.RawMessage }
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if messages := string(request.Messages); !strings.Contains(messages, "Previous visible reply.") || strings.Contains(messages, "Previous private reasoning.") {
+			t.Errorf("expected Pi to preserve the previous reply and drop the other model's reasoning: %s", messages)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Current reply.\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+	endpoint, err := NewEndpoint(server.URL, "fixture", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := New(endpoint, "current-model", nil).Run(t.Context(), run.Input{
+		Prompt: "Continue.",
+		History: []run.Exchange{{Prompt: "Start.", AgentMessages: []byte(`[
+			{"role":"assistant","api":"openai-completions","provider":"openai","model":"previous-model","stopReason":"stop","content":[
+				{"type":"thinking","thinking":"Previous private reasoning.","signature":"reasoning_content"},
+				{"type":"text","text":"Previous visible reply."}
+			]}
+		]`)}},
+	}, &recordingWorkspace{})
+	if err != nil || result.Output != "Current reply." {
+		t.Fatalf("continue after model change: %q, %v", result.Output, err)
+	}
+}
+
+func TestAgentRestoresPiCompactedContext(t *testing.T) {
+	const oldDetail = "Old workspace details. "
+	const summary = "Pi summarized the old workspace details."
+	var summaries atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /models", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"fixture","context_length":50000}]}`)
+	})
+	mux.HandleFunc("POST /chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages json.RawMessage
+			Tools    []json.RawMessage
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if r.Header.Get("Authorization") != "Bearer fixture" {
+			t.Error("Pi's model and summary requests must both use the account credential")
+		}
+		response := "Current answer."
+		messages := string(request.Messages)
+		if len(request.Tools) == 0 {
+			summaries.Add(1)
+			response = summary
+		} else if !strings.Contains(messages, summary) || !strings.Contains(messages, "Keep this recent message.") || strings.Contains(messages, oldDetail) {
+			t.Errorf("regular request should use the Pi summary and recent messages without the summarized prefix (message bytes=%d)", len(messages))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":%q},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", response)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	endpoint, err := NewEndpoint(server.URL, "fixture", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := endpoint.Catalog(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	history := []run.Exchange{
+		{Prompt: "Inspect the workspace.", Output: strings.Repeat(oldDetail, 5000)},
+		{Prompt: "Keep the test context.", Output: "Keep this recent message. " + strings.Repeat("recent ", 12000)},
+	}
+	result, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Continue.", History: history}, &recordingWorkspace{})
+	if err != nil || result.Output != "Current answer." || summaries.Load() == 0 || len(result.CompactedContext) == 0 {
+		t.Fatalf("Pi did not compact the original context: output=%q, summaries=%d, error=%v", result.Output, summaries.Load(), err)
+	}
+	summaryCount := summaries.Load()
+	history = append(history, run.Exchange{Prompt: "Continue.", Output: result.Output, AgentMessages: result.AgentMessages, CompactedContext: result.CompactedContext})
+	resumed, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Follow up.", History: history}, &recordingWorkspace{})
+	if err != nil || resumed.Output != "Current answer." || summaries.Load() != summaryCount {
+		t.Fatalf("restoring the saved Pi context summarized the same messages again or failed: output=%q, summaries=%d, error=%v", resumed.Output, summaries.Load(), err)
 	}
 }

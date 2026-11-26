@@ -34,6 +34,7 @@ var (
 	ErrRetryTurn      = errors.New("only the latest failed turn can be retried")
 	ErrPolicy         = sandbox.ErrPolicy
 	ErrModelResponse  = errors.New("the model did not return a final response")
+	ErrModelIdle      = errors.New("the model endpoint stopped sending response data")
 	ErrModelConfig    = errors.New("set a model endpoint, API key, and default model for this account")
 )
 
@@ -79,29 +80,30 @@ type RevertedTurn struct {
 }
 
 type Run struct {
-	ID            string
-	OwnerID       string
-	SessionID     string
-	RetryOf       string // The previous failed attempt, if this turn retries it.
-	Sequence      int
-	Policy        sandbox.Policy
-	Backend       string
-	MachineID     string
-	Prompt        string
-	Payload       Payload
-	Steering      []SteeringMessage
-	Parts         []TurnPart
-	AgentMessages []byte `json:"-"`
-	ContextTokens int
-	ContextWindow int
-	TokenUsage    *TokenUsage
-	LiveContext   ContextUsage
-	Status        Status
-	Output        string
-	CreatedAt     time.Time
-	StartedAt     *time.Time
-	UpdatedAt     time.Time
-	RevertedAt    *time.Time
+	ID               string
+	OwnerID          string
+	SessionID        string
+	RetryOf          string // The previous failed attempt, if this turn retries it.
+	Sequence         int
+	Policy           sandbox.Policy
+	Backend          string
+	MachineID        string
+	Prompt           string
+	Payload          Payload
+	Steering         []SteeringMessage
+	Parts            []TurnPart
+	AgentMessages    []byte `json:"-"`
+	CompactedContext []byte `json:"-"`
+	ContextTokens    int
+	ContextWindow    int
+	TokenUsage       *TokenUsage
+	LiveContext      ContextUsage
+	Status           Status
+	Output           string
+	CreatedAt        time.Time
+	StartedAt        *time.Time
+	UpdatedAt        time.Time
+	RevertedAt       *time.Time
 }
 
 type Completion struct {
@@ -112,11 +114,12 @@ type Completion struct {
 }
 
 type Exchange struct {
-	Images        []Image
-	Prompt        string
-	Output        string
-	Steering      []SteeringMessage
-	AgentMessages []byte
+	Images           []Image
+	Prompt           string
+	Output           string
+	Steering         []SteeringMessage
+	AgentMessages    []byte
+	CompactedContext []byte
 }
 
 type Input struct {

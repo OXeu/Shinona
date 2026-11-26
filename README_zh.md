@@ -2,7 +2,7 @@
   <img src="web/public/shinona-logo.webp" width="64" height="64" alt="Shinona 标志" />
 </p>
 <h3 align="center">Shinona</h3>
-<p align="center">Shinona 是一款可自托管的 Web 应用，用于在 E2B 工作区中运行 pi-go 智能体。</p>
+<p align="center">Shinona 是一款可自托管的 Web 应用，用于在沙箱工作区中运行 <a href="https://github.com/sky-valley/pi">pi</a> 智能体。</p>
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README_zh.md">简体中文</a>

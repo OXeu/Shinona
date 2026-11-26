@@ -13,6 +13,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
+	"github.com/sky-valley/pi/ai"
 	"golang.org/x/oauth2"
 
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
@@ -152,13 +153,13 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools) != 1 || tools[0].Name() != "mcp_echo" {
+	if len(tools) != 1 || tools[0].Name != "mcp_echo" {
 		_ = closeTools()
 		t.Fatalf("unexpected tools: %v", tools)
 	}
-	result, err := tools[0].Execute(ctx, json.RawMessage(`{"text":"hello"}`), nil)
+	result, err := tools[0].Execute(ctx, "fixture-call", map[string]any{"text": "hello"}, nil)
 	_ = closeTools()
-	if err != nil || len(result.Content) != 1 || result.Content[0].Text != "hello" {
+	if err != nil || len(result.Content) != 1 || ai.ContentText(result.Content) != "hello" {
 		t.Fatalf("call tool: %+v, %v", result, err)
 	}
 	grant, _, err = oauth.grant(ctx, "owner", server)

@@ -63,12 +63,13 @@ type RetryOptions struct {
 }
 
 type Result struct {
-	Output        string
-	Parts         []TurnPart
-	AgentMessages []byte // Adapter-encoded messages added after the turn's initial prompt.
-	ContextTokens int
-	ContextWindow int
-	TokenUsage    *TokenUsage
+	Output           string
+	Parts            []TurnPart
+	AgentMessages    []byte // Adapter-encoded messages added after the turn's initial prompt.
+	CompactedContext []byte // Optional model context through the completed turn.
+	ContextTokens    int
+	ContextWindow    int
+	TokenUsage       *TokenUsage
 }
 
 // TurnPart is ordered display data produced by an agent during one turn.

@@ -2,7 +2,7 @@
   <img src="web/public/shinona-logo.webp" width="64" height="64" alt="Shinona logo" />
 </p>
 <h3 align="center">Shinona</h3>
-<p align="center">A self-hosted web app for running pi-go agents in E2B workspaces.</p>
+<p align="center">A self-hosted web app for running <a href="https://github.com/sky-valley/pi">pi</a> agents in sandbox workspaces.</p>
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README_zh.md">简体中文</a>

@@ -36,6 +36,7 @@ const tokenUsage = computed(() => {
 })
 const chunks = computed(() => messageChunks(props.turn))
 const lastProcess = computed(() => chunks.value.findLast((chunk) => chunk.kind === 'process'))
+const waiting = computed(() => props.turn.status === 'RUNNING' && chunks.value.at(-1)?.kind !== 'process')
 const elapsed = computed(() => {
   if (!props.turn.startedAt) return t('chat.processCompleted')
   const duration = Date.parse(props.turn.updatedAt) - Date.parse(props.turn.startedAt)
@@ -48,7 +49,7 @@ const displayedChunks = computed(() => chunks.value.map((chunk) => {
   if (chunk.kind !== 'process') return chunk
   const active = !settled.value && chunk === chunks.value.at(-1)
   const summary = completed.value && chunk === lastProcess.value
-    ? { text: elapsed.value, icon: 'time-line', animationKey: '' }
+    ? { text: elapsed.value, icon: 'time-line' }
     : activity(chunk.parts, active)
   return { ...chunk, summary, animate: active && props.turn.status === 'RUNNING' }
 }))
@@ -63,13 +64,11 @@ function activity(parts: TurnPart[], active: boolean) {
     return {
       icon: activityIcons.thinking,
       text: t('chat.activeThinkingTokens', { count: new Intl.NumberFormat(languageTag()).format(estimatedTokens) }),
-      animationKey: 'thinking-tokens',
     }
   }
   return {
     icon: activityIcons[category],
     text: active ? t('chat.activeActivity', { activity: labels[0] ?? '' }) : new Intl.ListFormat(languageTag()).format(labels),
-    animationKey: category,
   }
 }
 
@@ -121,9 +120,9 @@ async function copy() {
           >
             <UiIcon :name="group.summary.icon" />
             <AgentActivityLabel
-              v-for="summary in group.animate ? [group.summary] : []"
-              :key="summary.animationKey"
-              :text="summary.text"
+              v-for="activeGroup in group.animate ? [group] : []"
+              :key="activeGroup.index"
+              :text="activeGroup.summary.text"
             />
             <UiInline :hidden="group.animate">{{ group.summary.text }}</UiInline>
             <UiIcon :name="openGroups.has(group.index) ? 'arrow-down-s-line' : 'arrow-right-s-line'" />
@@ -156,6 +155,15 @@ async function copy() {
       </template>
     </UiBox>
 
+    <UiBox
+      :hidden="!waiting"
+      class="agent-current-activity"
+      role="group"
+      :aria-label="t('chat.activeActivity', { activity: t('chat.activity.thinking') })"
+    >
+      <UiIcon :name="activityIcons.thinking" />
+      <AgentActivityLabel :text="t('chat.activeActivity', { activity: t('chat.activity.thinking') })" />
+    </UiBox>
     <UiMarkdown class="agent-answer" :hidden="!turn.output" :text="turn.output" />
     <UiBox class="agent-message-meta" :hidden="!settled">
       <UiInline :hidden="!tokenUsage" class="agent-token-usage">{{ tokenUsage }}</UiInline>
