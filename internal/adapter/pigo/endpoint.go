@@ -43,6 +43,7 @@ type Endpoint struct {
 	key            string
 	client         *http.Client
 	completionIdle time.Duration
+	streamLimit    int64
 	mu             sync.Mutex
 	models         []ModelInfo
 	expires        time.Time
@@ -65,7 +66,8 @@ func NewEndpoint(base, key string, client *http.Client) (*Endpoint, error) {
 	catalogOrigin := slices.ContainsFunc(ai.GetModels(completionProvider), func(model *ai.Model) bool {
 		return matchesModelOrigin(target, model.BaseURL)
 	})
-	return &Endpoint{base: target, catalogOrigin: catalogOrigin, key: key, client: client, completionIdle: modelResponseIdle}, nil
+	return &Endpoint{base: target, catalogOrigin: catalogOrigin, key: key, client: client,
+		completionIdle: modelResponseIdle, streamLimit: maxModelStreamBytes}, nil
 }
 
 func matchesModelOrigin(endpoint *url.URL, modelBase string) bool {

@@ -53,7 +53,7 @@ func decodeJSONCompletion(body io.Reader, model *ai.Model) (*ai.AssistantMessage
 		}
 	}
 	if limited.N == 0 {
-		return nil, errors.New("model completion exceeds the response size limit")
+		return nil, errModelResponseTooLarge
 	}
 	if err != nil {
 		return nil, fmt.Errorf("decode JSON model completion: %w", err)

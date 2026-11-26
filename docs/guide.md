@@ -229,7 +229,7 @@ Shinona shows current activity and completed steps as Pi runs. The completed ste
 
 Pi prepares the conversation for the selected model and compacts long histories when the model's context window is known. SQLite saves Pi's compacted context alongside the turn. Later requests resume from the latest applicable compacted context and replay the messages after it. When another compaction is needed, Pi updates the saved summary with newer history. Reverted turns and submissions cancelled before processing stay out of model history. The conversation list returns the newest 30 sessions.
 
-The worker runs until the agent finishes or errors, the user stops it, or the server shuts down. A model request fails after three minutes without new text, reasoning, tool call activity, or usage. Model endpoints enforce their context windows, output defaults, and quotas.
+The worker runs until the agent finishes or errors, the user stops it, or the server shuts down. A model request fails after three minutes without new text, reasoning, tool call activity, or usage. Each request accepts up to 32 MiB of event-stream data, 8 MiB of JSON completion data, or 64 KiB of HTTP error details. If a stream exceeds its limit, text already received stays in the conversation. Model endpoints enforce their own context windows, output defaults, and quotas.
 
 Tools accept an optional integer `timeout` in seconds from the tool call. Without one, the tool inherits turn cancellation. MCP tools with a native timeout parameter use their own schema. Tool errors are sent to the assistant with any captured output. Workspace cleanup and result persistence keep separate deadlines.
 

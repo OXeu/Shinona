@@ -20,6 +20,8 @@ import (
 const (
 	modelResponseIdle   = 3 * time.Minute
 	modelIdleDiagnostic = "model_idle"
+	maxModelStreamBytes = 32 << 20
+	maxModelErrorBytes  = 64 << 10
 )
 
 func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.TranscriptContext,
@@ -46,7 +48,7 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 	opts.Identity = &ai.ClientIdentity{Attribution: ai.NoAttribution}
 	client := *e.client
 	client.Timeout = 0
-	transport := &completionClient{Client: &client}
+	transport := &completionClient{Client: &client, streamLimit: e.streamLimit}
 	opts.HTTPClient = transport
 	var completed *ai.AssistantMessage
 	onResponse := opts.OnResponse
@@ -169,10 +171,14 @@ func completionUsage(chunk ai.OrderedObject) int {
 	return number("prompt_tokens") + number("completion_tokens")
 }
 
-var errCompletedJSON = errors.New("handled completed JSON response")
+var (
+	errCompletedJSON         = errors.New("handled completed JSON response")
+	errModelResponseTooLarge = errors.New("model completion exceeds the response size limit")
+)
 
 type completionClient struct {
 	*http.Client
+	streamLimit   int64
 	completedBody io.Reader
 }
 
@@ -180,12 +186,33 @@ type completionClient struct {
 func (c *completionClient) Do(req *http.Request) (*http.Response, error) {
 	response, err := c.Client.Do(req)
 	c.completedBody = nil
-	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
+	if err != nil {
 		return response, err
 	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		response.Body = limitCompletionBody(response.Body, maxModelErrorBytes)
+		return response, nil
+	}
 	mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if mediaType != "text/event-stream" {
+	if mediaType == "text/event-stream" {
+		// Bound the SDK's read-ahead before it has found an event separator.
+		response.Body = limitCompletionBody(response.Body, c.streamLimit)
+	} else {
 		c.completedBody = response.Body
 	}
 	return response, nil
+}
+
+type limitedCompletionBody struct{ io.ReadCloser }
+
+func limitCompletionBody(body io.ReadCloser, limit int64) io.ReadCloser {
+	return limitedCompletionBody{http.MaxBytesReader(nil, body, limit)}
+}
+
+func (body limitedCompletionBody) Read(data []byte) (int, error) {
+	n, err := body.ReadCloser.Read(data)
+	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
+		return n, errModelResponseTooLarge
+	}
+	return n, err
 }

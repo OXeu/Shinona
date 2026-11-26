@@ -276,6 +276,63 @@ func TestAgentReportsModelInactivityWithPartialOutput(t *testing.T) {
 	}
 }
 
+func TestModelStreamLimitPreservesPreviouslyDeliveredOutput(t *testing.T) {
+	const limit = 1024
+	const text = `data: {"choices":[{"index":0,"delta":{"content":"Partial answer."}}]}` + "\n\n"
+	const finish = `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"
+	for _, tc := range []struct {
+		name, padding string
+		limited       bool
+	}{
+		{name: "exact limit", padding: ":" + strings.Repeat(" ", limit-len(text)-len(finish)-3) + "\n\n"},
+		{name: "over limit", padding: ":" + strings.Repeat(" ", limit-len(text)) + "\n\n", limited: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, text)
+				if err := http.NewResponseController(w).Flush(); err != nil {
+					return
+				}
+				_, _ = io.WriteString(w, tc.padding+finish)
+			}))
+			t.Cleanup(server.Close)
+			endpoint, err := NewEndpoint(server.URL, "fixture", server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint.streamLimit = limit
+			result, err := New(endpoint, "fixture", nil).Run(t.Context(), run.Input{Prompt: "Explain."}, &recordingWorkspace{})
+			if !tc.limited {
+				if err != nil || result.Output != "Partial answer." {
+					t.Fatalf("completion at the size limit: output=%q, error=%v", result.Output, err)
+				}
+				return
+			}
+			if !errors.Is(err, run.ErrModelResponse) || !strings.Contains(err.Error(), "response size limit") ||
+				len(result.Parts) != 1 || result.Parts[0].Text != "Partial answer." {
+				t.Fatalf("expected a size error and the partial output: %+v, %v", result.Parts, err)
+			}
+		})
+	}
+}
+
+func TestModelHTTPErrorBodyHasAnIndependentSizeLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, strings.Repeat("diagnostic text\n", maxModelErrorBytes/16+1))
+	}))
+	t.Cleanup(server.Close)
+	endpoint, err := NewEndpoint(server.URL, "fixture", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(endpoint, "fixture", nil).Run(t.Context(), run.Input{Prompt: "Explain."}, &recordingWorkspace{})
+	if !errors.Is(err, run.ErrModelResponse) || !strings.Contains(err.Error(), "response size limit") || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("expected a bounded model error with its HTTP status, got %d error bytes", len(fmt.Sprint(err)))
+	}
+}
+
 func TestCompatibleEndpointReplaysAcrossModelChanges(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct{ Messages json.RawMessage }
