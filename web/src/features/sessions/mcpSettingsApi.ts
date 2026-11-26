@@ -5,6 +5,8 @@ export interface McpServer {
   url: string
   hasToken: boolean
   oauth: boolean
+  oauthClientId?: string
+  hasOAuthClientSecret?: boolean
   connected: boolean
 }
 
@@ -19,6 +21,8 @@ interface McpServerInput {
   url: string
   token: string | null
   oauth: boolean
+  oauthClientId?: string
+  oauthClientSecret?: string
 }
 
 export const mcpSettingsApi = {

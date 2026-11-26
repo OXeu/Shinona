@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -8,6 +9,68 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 )
+
+func TestMCPSettingsUseRegisteredOAuthClient(t *testing.T) {
+	app, repo, query := settingsTestApp(t, nil)
+	ctx := t.Context()
+	const owner, name, endpoint = "alice", "registry", "https://mcp.example.test/tools"
+	const secret = "fixture-client-secret"
+	input := map[string]any{"name": name, "url": endpoint, "oauth": true, "oauthClientId": "registered", "oauthClientSecret": secret}
+	assertClient := func(id, storedSecret string) {
+		t.Helper()
+		response := query(owner, http.MethodPut, "/settings/mcp/servers", input)
+		var view settings.MCPSettings
+		if err := json.Unmarshal([]byte(response), &view); err != nil || len(view.Servers) != 1 || strings.Contains(response, secret) {
+			t.Fatal("saving MCP settings failed or exposed the registered secret")
+		}
+		info := view.Servers[0]
+		if !info.OAuth || info.OAuthClientID != id || info.HasOAuthClientSecret != (storedSecret != "") {
+			t.Fatalf("unexpected public OAuth client metadata: %+v", info)
+		}
+		server, ok := app.lookupMCP(ctx, owner, name)
+		if !ok || server.OAuth == nil || server.OAuth.ClientID != id || server.OAuth.ClientSecret != storedSecret {
+			t.Fatal("OAuth discovery did not receive the saved client configuration")
+		}
+	}
+	assertClient("registered", secret)
+	if response := query(owner, http.MethodGet, "/settings/mcp", nil); strings.Contains(response, secret) ||
+		!strings.Contains(response, `"oauthClientId":"registered"`) {
+		t.Fatal("loading MCP settings did not report redacted client metadata")
+	}
+	if err := repo.Settings.SaveMCPGrant(ctx, owner, name, []byte("grant-fixture")); err != nil {
+		t.Fatal(err)
+	}
+	input["previousName"] = name
+	delete(input, "oauthClientSecret")
+	assertClient("registered", secret)
+	if data, err := repo.Settings.MCPGrant(ctx, owner, name); err != nil || string(data) != "grant-fixture" {
+		t.Fatalf("saving unchanged credentials removed the grant: %v", err)
+	}
+
+	input["oauthClientId"] = "different-client"
+	assertClient("different-client", "")
+	if data, err := repo.Settings.MCPGrant(ctx, owner, name); err != nil || len(data) != 0 {
+		t.Fatalf("changing client credentials retained the old grant: %v", err)
+	}
+	input["oauthClientSecret"] = secret
+	assertClient("different-client", secret)
+	input["oauthClientSecret"] = ""
+	assertClient("different-client", "")
+
+	input["oauthClientSecret"] = secret
+	assertClient("different-client", secret)
+	delete(input, "oauthClientSecret")
+	input["url"] = "https://other.example.test/tools"
+	assertClient("different-client", "")
+
+	input["oauthClientId"] = ""
+	assertClient("", "")
+	input["oauthClientSecret"] = secret
+	if response := query(owner, http.MethodPut, "/settings/mcp/servers", input); !strings.Contains(response, "INVALID_MCP_OAUTH_CLIENT") ||
+		strings.Contains(response, secret) {
+		t.Fatal("saving a client secret without an ID did not return a redacted validation error")
+	}
+}
 
 func TestMCPSettingsBelongToTheAccount(t *testing.T) {
 	t.Setenv("SHINONA_MCP_SERVERS", `[{"name":"startup","url":"https://example.test/mcp","token":"startup-secret"}]`)

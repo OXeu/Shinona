@@ -86,6 +86,7 @@ const errorKeys: Readonly<Partial<Record<string, MessageKey>>> = {
   MCP_SERVER_NOT_FOUND: 'mcp.notFound',
   MCP_TOKEN_REQUIRED_FOR_URL_CHANGE: 'mcp.tokenForChangedUrl',
   INVALID_MCP_OAUTH: 'mcp.oauthInvalid',
+  INVALID_MCP_OAUTH_CLIENT: 'mcp.oauthClientInvalid',
   MCP_OAUTH_CLIENT_REQUIRED: 'mcp.oauthClientRequired',
   MCP_OAUTH_START_FAILED: 'mcp.oauthStartFailed',
   MCP_OAUTH_DISCONNECT_FAILED: 'mcp.oauthDisconnectFailed',

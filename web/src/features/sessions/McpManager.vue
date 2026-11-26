@@ -6,6 +6,7 @@ import { navigateToOAuth } from '../../shared/http'
 import { t } from '../../shared/i18n'
 import type { MessageKey } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
+import UiCheckbox from '../../shared/ui/UiCheckbox.vue'
 import UiChoiceDropdown from '../../shared/ui/UiChoiceDropdown.vue'
 import UiDialog from '../../shared/ui/UiDialog.vue'
 import UiInput from '../../shared/ui/UiInput.vue'
@@ -22,6 +23,9 @@ const draftName = ref('')
 const draftUrl = ref('')
 const draftAuth = ref('none')
 const draftToken = ref('')
+const draftClientId = ref('')
+const draftClientSecret = ref('')
+const clearClientSecret = ref(false)
 const busy = ref(false)
 const request = new AbortController()
 const authOptions = computed(() => [
@@ -30,6 +34,8 @@ const authOptions = computed(() => [
   { value: 'oauth', label: t('mcp.oauth') },
 ])
 const retainingToken = computed(() => target.value?.hasToken && target.value.url === draftUrl.value.trim())
+const retainingClientSecret = computed(() => target.value?.hasOAuthClientSecret &&
+  target.value.url === draftUrl.value.trim() && target.value.oauthClientId === draftClientId.value.trim())
 const dialogTitle = computed(() => {
   switch (action.value) {
     case 'edit':
@@ -48,6 +54,9 @@ function edit(server: McpServer | null) {
   draftUrl.value = server?.url ?? ''
   draftAuth.value = server?.oauth ? 'oauth' : server?.hasToken ? 'bearer' : 'none'
   draftToken.value = ''
+  draftClientId.value = server?.oauthClientId ?? ''
+  draftClientSecret.value = ''
+  clearClientSecret.value = false
   open.value = true
 }
 
@@ -89,12 +98,17 @@ function save() {
     notify.error(t(target.value?.hasToken ? 'mcp.tokenForChangedUrl' : 'mcp.tokenRequired'))
     return
   }
+  const oauth = draftAuth.value === 'oauth'
+  const clientId = draftClientId.value.trim()
+  const clientSecret = clearClientSecret.value && retainingClientSecret.value ? '' : draftClientSecret.value || undefined
   const input = {
     previousName: target.value?.name ?? null,
     name,
     url,
     token: draftAuth.value === 'bearer' ? token || null : '',
-    oauth: draftAuth.value === 'oauth',
+    oauth,
+    oauthClientId: oauth ? clientId : undefined,
+    oauthClientSecret: oauth && clientId ? clientSecret : undefined,
   }
   return change(() => mcpSettingsApi.save(input, request.signal), 'mcp.saved')
 }
@@ -132,6 +146,7 @@ async function toggleConnection(server: McpServer) {
 watch(open, (visible) => {
   if (!visible) {
     draftToken.value = ''
+    draftClientSecret.value = ''
   }
 })
 onUnmounted(() => request.abort())
@@ -219,6 +234,33 @@ onUnmounted(() => request.abort())
             type="password"
             autocomplete="new-password"
           />
+        </UiBox>
+        <UiBox v-if="draftAuth === 'oauth'">
+          <UiInput
+            id="mcp-oauth-client-id"
+            v-model="draftClientId"
+            :label="t('mcp.oauthClientId')"
+            :placeholder="t('mcp.oauthAutomatic')"
+            :disabled="busy"
+          />
+          <UiInput
+            v-if="draftClientId.trim()"
+            id="mcp-oauth-client-secret"
+            v-model="draftClientSecret"
+            :label="t('mcp.oauthClientSecret')"
+            :placeholder="retainingClientSecret && !clearClientSecret ? t('mcp.keepClientSecret') : undefined"
+            :disabled="busy || (!!retainingClientSecret && clearClientSecret)"
+            type="password"
+            autocomplete="new-password"
+          />
+          <UiCheckbox
+            v-if="retainingClientSecret && !draftClientSecret"
+            v-model="clearClientSecret"
+            :label="t('mcp.clearClientSecret')"
+            :disabled="busy"
+          >
+            {{ t('mcp.clearClientSecret') }}
+          </UiCheckbox>
         </UiBox>
         <UiBox class="form-actions">
           <UiButton class="secondary-button" :disabled="busy" @click="open = false">{{ t('mcp.cancel') }}</UiButton>

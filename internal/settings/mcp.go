@@ -30,11 +30,13 @@ type MCPRepository interface {
 }
 
 type MCPServerInfo struct {
-	Name      string `json:"name"`
-	URL       string `json:"url"`
-	HasToken  bool   `json:"hasToken"`
-	OAuth     bool   `json:"oauth"`
-	Connected bool   `json:"connected"`
+	Name                 string `json:"name"`
+	URL                  string `json:"url"`
+	HasToken             bool   `json:"hasToken"`
+	OAuth                bool   `json:"oauth"`
+	OAuthClientID        string `json:"oauthClientId,omitempty"`
+	HasOAuthClientSecret bool   `json:"hasOAuthClientSecret,omitempty"`
+	Connected            bool   `json:"connected"`
 }
 
 type MCPSettings struct {
@@ -43,17 +45,24 @@ type MCPSettings struct {
 }
 
 type MCPServerInput struct {
-	PreviousName *string
-	Name         string
-	URL          string
-	Token        *string // nil retains the saved token, and an empty string clears it.
-	OAuth        *bool
+	PreviousName      *string
+	Name              string
+	URL               string
+	Token             *string // nil retains the saved token, and an empty string clears it.
+	OAuth             *bool
+	OAuthClientID     *string `json:"oauthClientId"`     // An empty string enables automatic registration.
+	OAuthClientSecret *string `json:"oauthClientSecret"` // nil retains the secret for the same endpoint and client ID.
 }
 
 func (servers MCPConfig) Info(overridden bool) MCPSettings {
 	result := MCPSettings{Servers: make([]MCPServerInfo, len(servers)), Overridden: overridden}
 	for i, server := range servers {
-		result.Servers[i] = MCPServerInfo{Name: server.Name, URL: server.URL, HasToken: server.Token != "", OAuth: server.OAuth != nil}
+		info := MCPServerInfo{Name: server.Name, URL: server.URL, HasToken: server.Token != "", OAuth: server.OAuth != nil}
+		if server.OAuth != nil {
+			info.OAuthClientID = server.OAuth.ClientID
+			info.HasOAuthClientSecret = server.OAuth.ClientSecret != ""
+		}
+		result.Servers[i] = info
 	}
 	slices.SortFunc(result.Servers, func(a, b MCPServerInfo) int { return strings.Compare(a.Name, b.Name) })
 	return result
@@ -67,34 +76,59 @@ func (servers MCPConfig) Save(input MCPServerInput) (MCPConfig, error) {
 	if input.Token != nil {
 		entry.Token = *input.Token
 	}
-	if input.OAuth != nil && *input.OAuth {
-		entry.OAuth = &MCPOAuthConfig{}
+	oauth := input.OAuth != nil && *input.OAuth
+	if !oauth && (input.OAuthClientID != nil || input.OAuthClientSecret != nil) {
+		return nil, Invalid("INVALID_MCP_OAUTH", "enable OAuth to configure an OAuth client")
 	}
 	if strings.ContainsAny(entry.Name, "\x00\r\n") || strings.ContainsRune(entry.Token, 0) {
 		return nil, Invalid("INVALID_MCP_SERVERS", "the MCP server name or token contains an invalid character")
 	}
 
-	next := slices.Clone(servers)
-	if input.PreviousName == nil {
-		next = append(next, entry)
-	} else {
-		i := servers.index(*input.PreviousName)
-		if i < 0 {
+	index := -1
+	var previousClient *MCPOAuthConfig
+	if input.PreviousName != nil {
+		index = servers.index(*input.PreviousName)
+		if index < 0 {
 			return nil, mcpServerNotFound()
 		}
-		saved := servers[i]
-		if input.Token == nil && entry.OAuth == nil {
+		saved := servers[index]
+		if input.Token == nil && !oauth {
 			if saved.Token != "" && saved.URL != entry.URL {
 				return nil, Invalid("MCP_TOKEN_REQUIRED_FOR_URL_CHANGE", "enter a new token or select no authentication when changing the endpoint")
 			}
 			entry.Token = saved.Token
 		}
-		if entry.OAuth != nil && saved.OAuth != nil && saved.URL == entry.URL {
-			entry.OAuth = saved.OAuth
+		if saved.URL == entry.URL {
+			previousClient = saved.OAuth
 		}
-		next[i] = entry
+	}
+	if oauth {
+		client := input.oauthClient(previousClient)
+		entry.OAuth = &client
+	}
+	next := slices.Clone(servers)
+	if index < 0 {
+		next = append(next, entry)
+	} else {
+		next[index] = entry
 	}
 	return next, next.Validate()
+}
+
+func (input MCPServerInput) oauthClient(previous *MCPOAuthConfig) MCPOAuthConfig {
+	var client MCPOAuthConfig
+	if previous != nil {
+		client.ClientID = previous.ClientID
+	}
+	if input.OAuthClientID != nil {
+		client.ClientID = strings.TrimSpace(*input.OAuthClientID)
+	}
+	if input.OAuthClientSecret != nil {
+		client.ClientSecret = *input.OAuthClientSecret
+	} else if previous != nil && previous.ClientID == client.ClientID {
+		client.ClientSecret = previous.ClientSecret
+	}
+	return client
 }
 
 func (servers MCPConfig) Remove(name string) (MCPConfig, error) {
@@ -129,10 +163,14 @@ func (servers MCPConfig) Validate() error {
 		if names[entry.Name] {
 			return Invalid("MCP_SERVER_DUPLICATE", "MCP server names must be unique")
 		}
-		if entry.OAuth != nil && (entry.Token != "" || len(entry.OAuth.ClientID) > 2048 ||
-			len(entry.OAuth.ClientSecret) > 4096 || strings.ContainsAny(entry.OAuth.ClientID+entry.OAuth.ClientSecret, "\x00\r\n") ||
-			(entry.OAuth.ClientSecret != "" && entry.OAuth.ClientID == "")) {
-			return Invalid("INVALID_MCP_OAUTH", "choose OAuth without a bearer token")
+		if client := entry.OAuth; client != nil {
+			if entry.Token != "" {
+				return Invalid("INVALID_MCP_OAUTH", "choose OAuth without a bearer token")
+			}
+			if len(client.ClientID) > 2048 || len(client.ClientSecret) > 4096 || strings.ContainsAny(client.ClientID+client.ClientSecret, "\x00\r\n") ||
+				(client.ClientSecret != "" && client.ClientID == "") {
+				return Invalid("INVALID_MCP_OAUTH_CLIENT", "enter a valid client ID for the OAuth client secret")
+			}
 		}
 		names[entry.Name] = true
 	}
