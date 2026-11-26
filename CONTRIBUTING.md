@@ -33,6 +33,21 @@ npm --prefix web run build
 
 Coordinate GraphQL schema changes with the hand-written operations and types in `web/src/features/sessions/sessionApi.ts` and `web/src/features/sessions/settingsApi.ts`. Editable instance setting keys are registered in `internal/settings`. Protect credential fields with server-side redaction, and keep address and database configuration in startup wiring.
 
+## Performance benchmarks
+
+The [Benchmarks workflow](.github/workflows/benchmarks.yml) runs the session list, transcript, and session storage benchmarks on pushes to `main`, pull requests targeting `main`, and manual runs. It saves the full Go output in the `go-bench` artifact. Before running the same suite locally, follow the repository's [temporary file instructions](AGENTS.md).
+
+```sh
+mkdir -p .tmp
+TMPDIR="$PWD/.tmp" TMP="$PWD/.tmp" TEMP="$PWD/.tmp" GOTMPDIR="$PWD/.tmp" \
+  go test -p 1 -cpu 2 -run '^$' \
+    -bench '^Benchmark(SessionsList|Transcript|TranscriptPages|SessionStorageAppend|SessionStorageRestore)$' \
+    -benchmem -benchtime=500ms -count=1 \
+    ./internal/adapter/sqlite ./internal/adapter/pigo
+```
+
+In GitHub Actions settings, set the repository secret `BENCHER_API_KEY` to a project key for [Shinona](https://bencher.dev/console/projects/shinona). The workflow uploads mean latency in ns/op to the `github-ubuntu-24.04-x64` testbed. Same-repository PR reports use `pr-<number>` with the target branch as their start point. Fork PRs and runs without a key still produce the Go artifact.
+
 ## Session transfer schema
 
 The binary read adapter uses [session_transfer.proto](internal/adapter/sessiontransfer/session_transfer.proto). Keep existing Protobuf field numbers stable. After changing the schema, regenerate both checked-in bindings. Install `protoc` and `protoc-gen-go` v1.36.11 on your `PATH`.

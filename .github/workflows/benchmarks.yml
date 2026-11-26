@@ -1,0 +1,72 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Prepare benchmark directory
+        run: |
+          mkdir -p .tmp
+          for name in TMPDIR TMP TEMP GOTMPDIR; do
+            printf '%s=%s/.tmp\n' "$name" "$GITHUB_WORKSPACE"
+          done >> "$GITHUB_ENV"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Run Go benchmarks
+        run: |
+          set -o pipefail
+          go test -p 1 -cpu 2 -run '^$' \
+            -bench '^Benchmark(SessionsList|Transcript|TranscriptPages|SessionStorageAppend|SessionStorageRestore)$' \
+            -benchmem -benchtime=500ms -count=1 \
+            ./internal/adapter/sqlite ./internal/adapter/pigo | tee .tmp/go-bench.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: go-bench
+          path: .tmp/go-bench.txt
+          include-hidden-files: true
+          if-no-files-found: error
+      - uses: bencherdev/bencher@b2484bc6734c8e6da4fad141bd13527a11da3988 # v0.6.17
+        if: github.repository == 'OXeu/Shinona' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      - name: Publish to Bencher
+        if: github.repository == 'OXeu/Shinona' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          BENCHMARK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ -z "$BENCHER_API_KEY" ]]; then
+            echo "::warning::Set the BENCHER_API_KEY repository secret to publish benchmark results."
+            exit 0
+          fi
+
+          branch="$GITHUB_REF_NAME"
+          options=()
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            branch="pr-$PR_NUMBER"
+            options+=(--start-point "$GITHUB_BASE_REF" --ci-number "$PR_NUMBER")
+          fi
+
+          bencher run --project shinona --branch "$branch" --hash "$BENCHMARK_SHA" \
+            --testbed github-ubuntu-24.04-x64 --adapter go_bench --file .tmp/go-bench.txt \
+            --github-actions "$GITHUB_TOKEN" "${options[@]}"
