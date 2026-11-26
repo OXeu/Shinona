@@ -465,7 +465,7 @@
   "mcp.updateFailed": "Could not update MCP settings.",
   "mcp.duplicate": "MCP server names must be unique.",
   "mcp.fieldLimit": "Server URLs are limited to 2,048 bytes and tokens to 4,096 bytes.",
-  "mcp.limit": "You can configure up to 16 MCP servers.",
+  "mcp.limit": "The MCP server limit has been reached. Remove a server before adding another.",
   "mcp.notFound": "This MCP server no longer exists.",
   "composer.options": "Options",
   "composer.setDefault": "Set as default",

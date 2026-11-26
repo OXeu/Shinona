@@ -465,7 +465,7 @@
   "mcp.updateFailed": "無法更新 MCP 設定。",
   "mcp.duplicate": "MCP 服務名稱不能重複。",
   "mcp.fieldLimit": "服務網址最多 2,048 位元組，權杖最多 4,096 位元組。",
-  "mcp.limit": "最多可以設定 16 個 MCP 服務。",
+  "mcp.limit": "MCP 服務數量已達上限，請先移除一個服務再新增。",
   "mcp.notFound": "此 MCP 服務已不存在。",
   "composer.options": "選項",
   "composer.setDefault": "設為預設值",

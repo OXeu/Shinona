@@ -465,7 +465,7 @@
   "mcp.updateFailed": "无法更新 MCP 配置。",
   "mcp.duplicate": "MCP 服务名称不能重复。",
   "mcp.fieldLimit": "服务网址最多 2,048 字节，令牌最多 4,096 字节。",
-  "mcp.limit": "最多可以配置 16 个 MCP 服务。",
+  "mcp.limit": "MCP 服务数量已达上限，请先移除一个服务再添加。",
   "mcp.notFound": "此 MCP 服务已不存在。",
   "composer.options": "选项",
   "composer.setDefault": "设为默认值",
