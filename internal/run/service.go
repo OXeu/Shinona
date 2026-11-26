@@ -136,6 +136,10 @@ func (s *Service) RecentSessions(ctx context.Context, owner string, projectID *s
 	return s.repo.RecentSessions(ctx, owner, projectID, recentSessionLimit)
 }
 
+func (s *Service) SessionListRevision(ctx context.Context, owner string) (int64, error) {
+	return s.repo.SessionListRevision(ctx, owner)
+}
+
 func (s *Service) Transcript(ctx context.Context, owner, id string) (*Transcript, error) {
 	return s.TranscriptPage(ctx, owner, id, 0)
 }

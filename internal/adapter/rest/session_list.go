@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/auth"
 )
 
@@ -32,8 +33,11 @@ type sessionListKey struct {
 }
 
 type sessionListVersion struct {
-	key  sessionListKey
-	body sessionsResponse
+	key      sessionListKey
+	revision int64
+	body     sessionsResponse
+	encoded  []byte
+	zstd     func() []byte
 }
 
 // Recent versions allow any tab to resume from its own snapshot. Missing
@@ -41,6 +45,7 @@ type sessionListVersion struct {
 type sessionListHistory struct {
 	mu       sync.Mutex
 	versions map[sessionListKey]*list.Element
+	latest   map[sessionListScope]*list.Element
 	recent   list.List
 }
 
@@ -54,22 +59,49 @@ func (h *sessionListHistory) get(key sessionListKey) (sessionsResponse, bool) {
 	return sessionsResponse{}, false
 }
 
-func (h *sessionListHistory) save(key sessionListKey, body sessionsResponse) {
+func (h *sessionListHistory) current(scope sessionListScope, revision int64) (sessionListVersion, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if entry := h.versions[key]; entry != nil {
-		h.recent.MoveToFront(entry)
-		return
+	if entry := h.latest[scope]; entry != nil {
+		if version := entry.Value.(sessionListVersion); version.revision == revision {
+			h.recent.MoveToFront(entry)
+			return version, true
+		}
 	}
+	return sessionListVersion{}, false
+}
+
+func (h *sessionListHistory) save(version sessionListVersion) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	key := version.key
+	scope := key.sessionListScope
 	if h.versions == nil {
 		h.versions = make(map[sessionListKey]*list.Element)
+		h.latest = make(map[sessionListScope]*list.Element)
 	}
-	if h.recent.Len() == sessionListHistoryLimit {
-		oldest := h.recent.Back()
-		delete(h.versions, oldest.Value.(sessionListVersion).key)
-		h.recent.Remove(oldest)
+	element := h.versions[key]
+	if element == nil {
+		if h.recent.Len() == sessionListHistoryLimit {
+			oldest := h.recent.Back()
+			oldKey := oldest.Value.(sessionListVersion).key
+			delete(h.versions, oldKey)
+			if h.latest[oldKey.sessionListScope] == oldest {
+				delete(h.latest, oldKey.sessionListScope)
+			}
+			h.recent.Remove(oldest)
+		}
+		element = h.recent.PushFront(version)
+		h.versions[key] = element
+	} else {
+		if element.Value.(sessionListVersion).revision <= version.revision {
+			element.Value = version
+		}
+		h.recent.MoveToFront(element)
 	}
-	h.versions[key] = h.recent.PushFront(sessionListVersion{key: key, body: body})
+	if latest := h.latest[scope]; version.revision >= 0 && (latest == nil || latest.Value.(sessionListVersion).revision <= version.revision) {
+		h.latest[scope] = element
+	}
 }
 
 func (r *handler) sessionList() gin.HandlerFunc {
@@ -83,52 +115,76 @@ func (r *handler) sessionList() gin.HandlerFunc {
 			return
 		}
 		ctx := c.Request.Context()
-		current, err := r.sessions(ctx, args.ProjectID)
-		if err != nil {
-			writeError(c, err)
-			return
-		}
-		body, err := json.Marshal(current)
-		if err != nil {
-			writeError(c, r.apiError(err))
-			return
-		}
 		scope := sessionListScope{owner: auth.CurrentUser(ctx).ID}
 		if args.ProjectID != nil {
 			scope.filtered, scope.project = true, *args.ProjectID
 		}
-		hash := sha256.New()
-		_, _ = fmt.Fprintf(hash, "%q/%t/%q\n", scope.owner, scope.filtered, scope.project)
-		_, _ = hash.Write(body)
-		// The same snapshot can be transported with different content encodings.
-		tag := `W/"` + hex.EncodeToString(hash.Sum(nil)) + `"`
+		revision, err := r.service.SessionListRevision(ctx, scope.owner)
+		if err != nil {
+			writeError(c, r.apiError(err))
+			return
+		}
+		version, found := history.current(scope, revision)
+		if !found {
+			current, err := r.sessions(ctx, args.ProjectID)
+			if err != nil {
+				writeError(c, err)
+				return
+			}
+			body, err := json.Marshal(current)
+			if err != nil {
+				writeError(c, r.apiError(err))
+				return
+			}
+			hash := sha256.New()
+			_, _ = fmt.Fprintf(hash, "%q/%t/%q\n", scope.owner, scope.filtered, scope.project)
+			_, _ = hash.Write(body)
+			// The same snapshot can be transported with different content encodings.
+			tag := `W/"` + hex.EncodeToString(hash.Sum(nil)) + `"`
+			version = sessionListVersion{key: sessionListKey{scope, tag}, revision: revision, body: current, encoded: body}
+			if len(body)+len(scope.owner)+len(scope.project) <= sessionListMaxSnapshot {
+				if len(body) >= httpserver.MinimumCompressSize {
+					version.zstd = sync.OnceValue(func() []byte { return httpserver.EncodeZstd(body) })
+				}
+				// The list uses two reads. Only reuse it when no relevant write
+				// committed between fetching its revision and both queries.
+				if after, err := r.service.SessionListRevision(ctx, scope.owner); err != nil || after != revision {
+					version.revision = -1
+				}
+				defer history.save(version)
+			}
+		}
+		tag := version.key.etag
+		body := version.encoded
 		c.Header("ETag", tag)
 		c.Header("Cache-Control", "private, no-store")
 		validators := c.Request.Header.Values("If-None-Match")
 		unchanged := sessionListUnchanged(validators, tag)
+		patched := false
 		if args.Delta {
-			cacheable := len(body)+len(scope.owner)+len(scope.project) <= sessionListMaxSnapshot
 			// Only a single validator identifies a base for a patch.
 			if !unchanged && len(validators) == 1 {
 				baseTag := `W/` + strings.TrimPrefix(strings.TrimSpace(validators[0]), `W/`)
 				if base, found := history.get(sessionListKey{scope, baseTag}); found {
-					patch, err := json.Marshal(diffSessions(base, current))
+					patch, err := json.Marshal(diffSessions(base, version.body))
 					if err != nil {
 						writeError(c, r.apiError(err))
 						return
 					}
 					if len(patch) < len(body) {
 						body = patch
+						patched = true
 					}
 				}
-			}
-			if cacheable {
-				history.save(sessionListKey{scope, tag}, current)
 			}
 		}
 		if unchanged {
 			c.Status(http.StatusNotModified)
 			return
+		}
+		if !patched && version.zstd != nil && httpserver.AcceptsZstd(c.Request) {
+			c.Header("Content-Encoding", "zstd")
+			body = version.zstd()
 		}
 		c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 	}

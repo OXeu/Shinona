@@ -111,6 +111,9 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 	if err := initSessionCache(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
+	if err := initSessionListRevisions(db.WithContext(ctx)); err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
 	if err := retainE2BProjectProviders(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}

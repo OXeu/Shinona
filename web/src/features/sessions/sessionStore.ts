@@ -6,6 +6,7 @@ import type { ComposerSelection } from './composerPreferences'
 import { sessionApi } from './sessionApi'
 import type { Project, SessionSummary } from './sessionApi'
 import type { SessionListSnapshot } from './sessionListApi'
+import { SessionListPolling } from './sessionListPolling'
 
 export const useSessionStore = defineStore('sessions', () => {
   const recent = ref<SessionSummary[]>([])
@@ -19,14 +20,21 @@ export const useSessionStore = defineStore('sessions', () => {
   let projectVersion = 0
   let refreshID = 0
   let serverSnapshot: SessionListSnapshot | undefined
+  let polling: SessionListPolling | undefined
+
+  function resetPolling() {
+    refreshID++
+    serverSnapshot = undefined
+    polling?.close()
+    polling = undefined
+  }
 
   function useAccount(owner: string | undefined) {
     if (owner === account) return
     account = owner
     version++
     projectVersion++
-    refreshID++
-    serverSnapshot = undefined
+    resetPolling()
     recent.value = []
     projects.value = []
     composerSelections.value = new Map()
@@ -52,8 +60,7 @@ export const useSessionStore = defineStore('sessions', () => {
   function selectProject(id: string | null) {
     if (id === selectedProjectId.value) return
     version++
-    refreshID++
-    serverSnapshot = undefined
+    resetPolling()
     selectedProjectId.value = id
     recent.value = []
   }
@@ -63,6 +70,7 @@ export const useSessionStore = defineStore('sessions', () => {
     const project = await sessionApi.createProject(name, signal)
     if (signal.aborted || requestedFor !== account) return false
     projectVersion++
+    polling?.changed()
     projects.value = [...projects.value.filter(({ id }) => id !== project.id), project]
     selectProject(project.id)
     return true
@@ -73,6 +81,7 @@ export const useSessionStore = defineStore('sessions', () => {
     const project = await sessionApi.renameProject(id, name, signal)
     if (signal.aborted || requestedFor !== account) return false
     projectVersion++
+    polling?.changed()
     projects.value = projects.value.map((entry) => entry.id === id ? project : entry)
     return true
   }
@@ -83,6 +92,7 @@ export const useSessionStore = defineStore('sessions', () => {
     if (signal.aborted || requestedFor !== account) return false
     projectVersion++
     version++
+    polling?.changed()
     projects.value = projects.value.filter((entry) => entry.id !== id)
     if (selectedProjectId.value === id) selectProject(null)
     else recent.value = recent.value.map((item) => item.projectId === id ? { ...item, projectId: null } : item)
@@ -94,7 +104,8 @@ export const useSessionStore = defineStore('sessions', () => {
     const requestedAt = version
     const requestedProjectVersion = projectVersion
     const projectId = selectedProjectId.value
-    const response = await sessionApi.recent(projectId, serverSnapshot, signal)
+    const poller = polling ??= new SessionListPolling(account, projectId)
+    const response = await poller.refresh(serverSnapshot, signal)
     if (signal.aborted || request !== refreshID) return
     serverSnapshot = response
     if (requestedAt === version) recent.value = response.sessions
@@ -107,12 +118,14 @@ export const useSessionStore = defineStore('sessions', () => {
   function upsert(session: SessionSummary) {
     if (selectedProjectId.value !== null && (session.projectId ?? '') !== selectedProjectId.value) return
     version++
+    polling?.changed()
     const { id, projectId, title, defaultTitle, turnCount, updatedAt, pinned, active, unread } = session
     recent.value = [{ id, projectId, title, defaultTitle, turnCount, updatedAt, pinned, active, unread }, ...recent.value.filter((entry) => entry.id !== id)]
   }
 
   function remove(id: string) {
     version++
+    polling?.changed()
     recent.value = recent.value.filter((entry) => entry.id !== id)
     composerSelections.value.delete(id)
     if (account) writeComposerSelection(account, id)
@@ -122,6 +135,7 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = recent.value.find((entry) => entry.id === id)
     if (session && session.turnCount <= through && !session.active) {
       version++
+      polling?.changed()
       recent.value = recent.value.map((entry) => entry.id === id ? { ...entry, unread: false } : entry)
     }
   }

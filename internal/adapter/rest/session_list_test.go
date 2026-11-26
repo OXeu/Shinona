@@ -11,6 +11,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 func TestSessionListPolls(t *testing.T) {
@@ -29,11 +30,19 @@ func TestSessionListPolls(t *testing.T) {
 	poll := func(owner, path, tag string, status int) *httptest.ResponseRecorder {
 		t.Helper()
 		ctx := auth.WithUser(t.Context(), auth.User{ID: owner})
+		ctx, recorder := timing.WithRecorder(ctx)
 		request := httptest.NewRequestWithContext(ctx, http.MethodGet, Prefix+path, nil)
 		if tag != "" {
 			request.Header.Set("If-None-Match", tag)
 		}
-		return serve(t, router, request, status)
+		response := serve(t, router, request, status)
+		if status == http.StatusNotModified {
+			metrics := recorder.Metrics()
+			if len(metrics) != 1 || metrics[0].Name != "sqlite" || metrics[0].Calls != 1 {
+				t.Fatalf("unchanged list should check only its revision: %+v", metrics)
+			}
+		}
+		return response
 	}
 	initial := poll(owner, path, "", http.StatusOK)
 	full := decode[sessionsResponse](t, initial)

@@ -1,7 +1,6 @@
 import { fromBinary } from '@bufbuild/protobuf'
 
 import { apiJSON, request } from '../../shared/http'
-import { listSessions } from './sessionListApi'
 import { decodeRunOptions, decodeSandboxSettings, decodeSessionSummary, decodeTurn } from './wire/sessionMessages'
 import { TranscriptPageSchema } from './wire/session_transfer_pb'
 
@@ -159,7 +158,6 @@ async function transcriptPage(id: string, signal: AbortSignal, beforeSequence?: 
 }
 
 export const sessionApi = {
-  recent: listSessions,
   detail: (id: string, signal: AbortSignal) => transcriptPage(id, signal),
   olderTurns: (id: string, beforeSequence: number, signal: AbortSignal) =>
     transcriptPage(id, signal, beforeSequence),

@@ -12,6 +12,7 @@ import SessionProjectPicker from './SessionProjectPicker.vue'
 import type { SessionAction } from './presentation'
 import type { SessionSummary } from './sessionApi'
 import { useSessionStore } from './sessionStore'
+import { sessionPollInterval } from './sessionListPolling'
 
 const props = defineProps<{
   selectedId?: string
@@ -56,6 +57,7 @@ async function closeSearch() {
 async function refresh() {
   clearTimeout(timer)
   listing?.abort()
+  if (document.hidden) return
   listing = new AbortController()
   const { signal } = listing
   try {
@@ -67,13 +69,17 @@ async function refresh() {
       hadError = true
     }
   } finally {
-    if (!signal.aborted) timer = setTimeout(() => { void refresh() }, 2500)
+    if (!signal.aborted && !document.hidden) timer = setTimeout(() => { void refresh() }, sessionPollInterval)
   }
 }
 
 watch(() => store.selectedProjectId, refresh)
-onMounted(refresh)
+onMounted(() => {
+  document.addEventListener('visibilitychange', refresh)
+  void refresh()
+})
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', refresh)
   listing?.abort()
   clearTimeout(timer)
 })

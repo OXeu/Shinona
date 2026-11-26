@@ -166,6 +166,7 @@ type TokenUsage struct {
 type Repository interface {
 	CreateSession(context.Context, Session) error
 	RecentSessions(ctx context.Context, ownerID string, projectID *string, limit int) ([]Session, error)
+	SessionListRevision(ctx context.Context, ownerID string) (int64, error)
 	CreateProject(context.Context, Project) error
 	Projects(ctx context.Context, ownerID string) ([]Project, error)
 	Project(ctx context.Context, ownerID, id string) (Project, error)
