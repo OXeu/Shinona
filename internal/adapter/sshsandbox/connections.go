@@ -1,7 +1,6 @@
 package sshsandbox
 
 import (
-	"crypto/sha256"
 	"errors"
 	"sync"
 	"time"
@@ -25,7 +24,11 @@ type ProjectConnections struct {
 
 type projectConnectionKey struct {
 	owner    string
-	identity [sha256.Size]byte
+	identity connectionIdentity
+}
+
+type connectionIdentity struct {
+	address, user, hostFingerprint, keyFingerprint string
 }
 
 type projectConnection struct {

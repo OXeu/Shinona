@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -526,6 +527,27 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	release("alice", true)
+	nextConnection()
+
+	otherKey, otherPrivateKey := sshTestKey(t)
+	otherHost := server
+	otherHost.HostFingerprint = ssh.FingerprintSHA256(otherKey.PublicKey())
+	if err := repo.Settings.SaveSSHServer(t.Context(), "alice", otherHost, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := open("alice"); !errors.Is(err, sshsandbox.ErrHostKeyMismatch) {
+		t.Fatalf("changed host pin reused an authenticated transport: %v", err)
+	}
+	nextConnection()
+
+	otherCredential := server
+	otherCredential.PrivateKey = otherPrivateKey
+	if err := repo.Settings.SaveSSHServer(t.Context(), "alice", otherCredential, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := open("alice"); !errors.Is(err, sshsandbox.ErrHandshake) {
+		t.Fatalf("changed client key reused an authenticated transport: %v", err)
+	}
 	nextConnection()
 }
 

@@ -57,7 +57,7 @@ type Provider struct {
 	template     string
 	dial         func(context.Context, string, string) (net.Conn, error)
 	projects     *ProjectConnections
-	identity     [sha256.Size]byte
+	identity     connectionIdentity
 	container    ContainerConfig
 	cleanup      time.Duration
 	legacyLimits *responsecache.Cache[string, struct{}]
@@ -124,9 +124,10 @@ func New(config Config) (*Provider, error) {
 	if projects == nil {
 		projects = &ProjectConnections{}
 	}
-	identity := sha256.Sum256(ssh.Marshal(struct {
-		Address, User, HostKey, PublicKey string
-	}{config.Address, config.User, fingerprint, string(signer.PublicKey().Marshal())}))
+	identity := connectionIdentity{
+		address: config.Address, user: config.User, hostFingerprint: fingerprint,
+		keyFingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+	}
 	return &Provider{
 		address: config.Address, client: client, template: config.Template, dial: dial,
 		projects: projects, identity: identity, container: container, cleanup: config.CleanupTimeout,
