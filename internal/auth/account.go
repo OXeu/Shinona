@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,8 +21,8 @@ import (
 const (
 	MaxAvatarBytes  = 512 * 1024
 	EmailLifetime   = 10 * time.Minute
-	EmailCooldown   = time.Minute
-	MaxCodeAttempts = 5
+	emailCooldown   = time.Minute
+	maxCodeAttempts = 5
 	recentSignIn    = 15 * time.Minute
 )
 
@@ -69,6 +70,25 @@ type EmailChallenge struct {
 	SentAt     time.Time
 	ExpiresAt  time.Time
 	Attempts   int
+}
+
+func (c EmailChallenge) CheckResend(now time.Time) error {
+	if now.Before(c.ExpiresAt) && c.SentAt.After(now.Add(-emailCooldown)) {
+		return ErrEmailWait
+	}
+	return nil
+}
+
+// VerifyHash consumes one attempt when a live challenge receives the wrong code.
+func (c *EmailChallenge) VerifyHash(hash string, now time.Time) error {
+	if !now.Before(c.ExpiresAt) || c.Attempts >= maxCodeAttempts {
+		return ErrEmailCode
+	}
+	if subtle.ConstantTimeCompare([]byte(c.CodeHash), []byte(hash)) != 1 {
+		c.Attempts++
+		return ErrEmailCode
+	}
+	return nil
 }
 
 type AccountPage struct {

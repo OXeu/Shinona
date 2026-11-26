@@ -3,7 +3,6 @@ package sqlite
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"errors"
 	"strings"
 	"time"
@@ -130,13 +129,13 @@ func (r *AccountStore) SaveEmailChallenge(ctx context.Context, state auth.Creden
 		if err := tx.Delete(&emailChallengeRow{}, "expires_at <= ?", input.SentAt).Error; err != nil {
 			return err
 		}
-		var existing int64
-		if err := tx.Model(&emailChallengeRow{}).Where("owner_id = ? AND sent_at > ?", input.OwnerID,
-			input.SentAt.Add(-auth.EmailCooldown)).Count(&existing).Error; err != nil {
+		var existing emailChallengeRow
+		err := tx.Select("sent_at", "expires_at").Take(&existing, "owner_id = ?", input.OwnerID).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		if existing != 0 {
-			return auth.ErrEmailWait
+		if err := auth.EmailChallenge(existing).CheckResend(input.SentAt); err != nil {
+			return err
 		}
 		if err := ensureEmailAvailable(tx, input.Email); err != nil {
 			return err
@@ -155,17 +154,19 @@ func (r *AccountStore) VerifyEmailChallenge(ctx context.Context, owner, sessionK
 			return err
 		}
 		var challenge emailChallengeRow
-		err := tx.Take(&challenge, "owner_id = ? AND id = ? AND session_key = ? AND expires_at > ? AND attempts < ?",
-			owner, id, sessionKey, now, auth.MaxCodeAttempts).Error
+		err := tx.Take(&challenge, "owner_id = ? AND id = ? AND session_key = ? AND attempts IS NOT NULL", owner, id, sessionKey).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return auth.ErrEmailCode
 		}
 		if err != nil {
 			return err
 		}
-		if subtle.ConstantTimeCompare([]byte(challenge.CodeHash), []byte(codeHash)) != 1 {
-			rejected = auth.ErrEmailCode
-			return tx.Model(&challenge).Update("attempts", challenge.Attempts+1).Error
+		attempt := auth.EmailChallenge(challenge)
+		if rejected = attempt.VerifyHash(codeHash, now); rejected != nil {
+			if attempt.Attempts != challenge.Attempts {
+				return tx.Model(&challenge).Update("attempts", attempt.Attempts).Error
+			}
+			return nil
 		}
 		if err := ensureEmailAvailable(tx, challenge.Email); err != nil {
 			return err
