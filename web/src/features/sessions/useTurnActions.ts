@@ -10,7 +10,7 @@ import type { ComposerAction, ComposerPayload, ComposerRunOptions, ImageAttachme
 import { useSessionStore } from './sessionStore'
 import type { useSessionTranscript } from './useSessionTranscript'
 
-export type TurnActionError = 'submit' | 'stop' | 'pending' | 'revert' | 'retry' | 'create'
+export type TurnActionError = 'submit' | 'stop' | 'pending' | 'revert' | 'retry'
 
 export function useTurnActions(
   sessionId: () => string | undefined,
@@ -24,7 +24,6 @@ export function useTurnActions(
   const prompt = ref('')
   const images = ref<ImageAttachment[]>([])
   const submitting = ref(false)
-  const creating = ref(false)
   const reverting = ref(false)
   const revertOpen = ref(false)
   const revertTarget = ref<{ turnId: string; headId: string }>()
@@ -32,7 +31,7 @@ export function useTurnActions(
   let draftRequest: AbortController | undefined
 
   async function submit(action: ComposerAction, payload: ComposerPayload) {
-    if (submitting.value || creating.value || reverting.value) return
+    if (submitting.value || reverting.value) return
     setChatError('submit', '')
     const message = prompt.value.trim()
     if ((!message && !payload.images.length) || Array.from(message).length > 8_000) {
@@ -86,7 +85,6 @@ export function useTurnActions(
         const createSession = await sessionApi.create(project, signal)
         if (signal.aborted || route.fullPath !== from) return
         draftSession = createSession
-        store.upsert(createSession)
       }
       const entry = draftSession
       const submitRun = await sessionApi.submit(entry.id, message, payload, false, signal)
@@ -103,7 +101,7 @@ export function useTurnActions(
 
   async function retryTurn(id: string, options: ComposerRunOptions) {
     const scope = transcript.updates()
-    if (!scope || session.value?.active || submitting.value || creating.value || reverting.value) return
+    if (!scope || session.value?.active || submitting.value || reverting.value) return
     setChatError('retry', '')
     submitting.value = true
     try {
@@ -137,7 +135,7 @@ export function useTurnActions(
 
   async function changePending(message: PendingMessage, action: PendingAction, runId: string | undefined, options: ComposerRunOptions) {
     const scope = transcript.updates()
-    if (!scope || submitting.value || creating.value || reverting.value) return
+    if (!scope || submitting.value || reverting.value) return
     if (action === 'move' && message.kind === 'queue' && (!runId || message.attachments.length)) return
     const signal = scope.signal
     setChatError('pending', '')
@@ -171,7 +169,7 @@ export function useTurnActions(
   function askRevert(turnId: string) {
     const entry = session.value
     const head = entry?.turns.at(-1)
-    if (!head || entry?.active || submitting.value || creating.value || reverting.value) return
+    if (!head || entry?.active || submitting.value || reverting.value) return
     revertTarget.value = { turnId, headId: head.id }
     revertOpen.value = true
   }
@@ -205,23 +203,6 @@ export function useTurnActions(
     }
   }
 
-  async function create() {
-    if (creating.value || submitting.value) return
-    const from = route.fullPath
-    setChatError('create', '')
-    creating.value = true
-    try {
-      const createSession = await sessionApi.create(store.draftProject)
-      if (route.fullPath !== from) return
-      store.upsert(createSession)
-      await router.push({ name: 'session', params: { id: createSession.id } })
-    } catch (error) {
-      if (route.fullPath === from) setChatError('create', messageFor(error, 'sessions.createFailed'))
-    } finally {
-      creating.value = false
-    }
-  }
-
   watch(sessionId, () => {
     draftRequest?.abort()
     draftSession = undefined
@@ -234,6 +215,8 @@ export function useTurnActions(
   })
   onUnmounted(() => draftRequest?.abort())
 
-  return { prompt, images, submitting, creating, reverting, revertOpen,
-    submit, retryTurn, stop, changePending, askRevert, revertMessage, create }
+  return {
+    prompt, images, submitting, reverting, revertOpen,
+    submit, retryTurn, stop, changePending, askRevert, revertMessage,
+  }
 }

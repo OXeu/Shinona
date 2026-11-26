@@ -54,6 +54,15 @@ function manageSandbox(project: ProjectScope) {
   }
 }
 
+function choose(scope: ProjectScope, close: (restoreFocus?: boolean) => void) {
+  if (props.hideAll) {
+    if (scope.kind !== 'all') store.selectDraftProject(scope)
+  } else {
+    store.selectProject(scope)
+  }
+  close(true)
+}
+
 async function save() {
   if (saving.value) return
   const item = target.value
@@ -62,7 +71,7 @@ async function save() {
   saving.value = true
   try {
     let saved = false
-    if (operation === 'add') saved = await store.createProject(name.value, signal)
+    if (operation === 'add') saved = await store.createProject(name.value, signal, !props.hideAll)
     else if (item && operation === 'rename') saved = await store.renameProject(item.id, name.value, signal)
     else if (item) saved = await store.removeProject(item.id, signal)
     if (!saved) return
@@ -100,7 +109,7 @@ onUnmounted(() => request.abort())
             class="menu-item"
             :aria-current="item.key === selectedKey ? 'true' : undefined"
             :title="item.name"
-            @click="store.selectProject(item.scope); close(true)"
+            @click="choose(item.scope, close)"
           >
             <UiIcon :name="item.icon" /> <UiInline class="project-option-name">{{ item.name }}</UiInline>
             <UiIcon class="menu-tail" name="check-line" :hidden="item.key !== selectedKey" />

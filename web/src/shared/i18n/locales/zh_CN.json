@@ -168,7 +168,6 @@
   "sessions.renamed": "已重命名会话。",
   "sessions.updateFailed": "无法更新会话。",
   "sessions.notFound": "找不到会话。",
-  "sessions.createFailed": "无法创建会话。",
   "sessions.show": "显示会话",
   "sessions.hide": "隐藏会话",
   "sessions.invalidTitle": "请输入 1 至 80 个字符的标题。",

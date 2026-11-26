@@ -3,8 +3,11 @@ import { computed, ref, shallowRef } from 'vue'
 
 import { readComposerSelection, writeComposerSelection } from './composerPreferences'
 import type { ComposerSelection } from './composerPreferences'
-import { allProjects, defaultProject, includesProject, projectScopeKey } from './projectScope'
-import type { ProjectScope } from './projectScope'
+import {
+  allProjects, emptyDraftProjectState, includesProject, leaveSessionInState, openSessionInState, projectScopeKey,
+  removeProjectInState, resolveDraftProject, resolveSessionProjectInState, retainProjectsInState, selectProjectInState,
+} from './projectScope'
+import type { DraftProjectState, ProjectScope, ProjectTarget } from './projectScope'
 import { sessionApi } from './sessionApi'
 import type { Project, SessionSummary } from './sessionApi'
 import type { SessionListSnapshot } from './sessionListApi'
@@ -17,7 +20,8 @@ export const useSessionStore = defineStore('sessions', () => {
   const composerSelections = ref(new Map<string | null, ComposerSelection>())
   const projectNames = computed(() => new Map(projects.value.map(({ id, name }) => [id, name])))
   const selectedProject = shallowRef<ProjectScope>(allProjects)
-  const draftProject = computed(() => selectedProject.value.kind === 'all' ? defaultProject : selectedProject.value)
+  const draftProjectState = shallowRef<DraftProjectState>(emptyDraftProjectState)
+  const draftProject = computed(() => resolveDraftProject(draftProjectState.value))
   let account: string | undefined
   let version = 0
   let projectVersion = 0
@@ -42,6 +46,7 @@ export const useSessionStore = defineStore('sessions', () => {
     projects.value = []
     composerSelections.value = new Map()
     selectedProject.value = allProjects
+    draftProjectState.value = emptyDraftProjectState
   }
 
   function composerSelection(session: string | null): ComposerSelection {
@@ -60,7 +65,7 @@ export const useSessionStore = defineStore('sessions', () => {
     composerSelections.value.delete(null)
   }
 
-  function selectProject(project: ProjectScope) {
+  function setSelectedProject(project: ProjectScope) {
     if (projectScopeKey(project) === projectScopeKey(selectedProject.value)) return
     version++
     resetPolling()
@@ -68,14 +73,37 @@ export const useSessionStore = defineStore('sessions', () => {
     recent.value = []
   }
 
-  async function createProject(name: string, signal: AbortSignal) {
+  function selectProject(project: ProjectScope) {
+    draftProjectState.value = selectProjectInState(draftProjectState.value, project)
+    setSelectedProject(project)
+  }
+
+  function selectDraftProject(project: ProjectTarget) {
+    draftProjectState.value = selectProjectInState(draftProjectState.value, project)
+  }
+
+  function openSession(id: string, project?: ProjectTarget) {
+    draftProjectState.value = openSessionInState(draftProjectState.value, id, project)
+  }
+
+  function resolveSessionProject(id: string, project: ProjectTarget) {
+    draftProjectState.value = resolveSessionProjectInState(draftProjectState.value, id, project)
+  }
+
+  function leaveSession() {
+    draftProjectState.value = leaveSessionInState(draftProjectState.value)
+  }
+
+  async function createProject(name: string, signal: AbortSignal, filterSidebar = true) {
     const requestedFor = account
     const project = await sessionApi.createProject(name, signal)
     if (signal.aborted || requestedFor !== account) return false
     projectVersion++
     polling?.changed()
     projects.value = [...projects.value.filter(({ id }) => id !== project.id), project]
-    selectProject({ kind: 'project', id: project.id })
+    const target: ProjectTarget = { kind: 'project', id: project.id }
+    if (filterSidebar) selectProject(target)
+    else selectDraftProject(target)
     return true
   }
 
@@ -97,8 +125,9 @@ export const useSessionStore = defineStore('sessions', () => {
     version++
     polling?.changed()
     projects.value = projects.value.filter((entry) => entry.id !== id)
+    draftProjectState.value = removeProjectInState(draftProjectState.value, id)
     const selected = selectedProject.value
-    if (selected.kind === 'project' && selected.id === id) selectProject(allProjects)
+    if (selected.kind === 'project' && selected.id === id) setSelectedProject(allProjects)
     else recent.value = recent.value.map((item) => item.projectId === id ? { ...item, projectId: null } : item)
     return true
   }
@@ -116,8 +145,10 @@ export const useSessionStore = defineStore('sessions', () => {
     serverSnapshot = response
     if (requestedAt === version) recent.value = response.sessions
     if (requestedProjectVersion === projectVersion) {
+      const validIds = new Set(response.projects.map(({ id }) => id))
+      draftProjectState.value = retainProjectsInState(draftProjectState.value, validIds)
       projects.value = response.projects
-      if (selected.kind === 'project' && !response.projects.some(({ id }) => id === selected.id)) selectProject(allProjects)
+      if (selected.kind === 'project' && !validIds.has(selected.id)) setSelectedProject(allProjects)
     }
   }
 
@@ -152,7 +183,10 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   return {
-    recent, projects, projectNames, selectedProject, draftProject, composerSelection, chooseComposerOptions, moveDraftComposerOptions,
-    useAccount, refresh, selectProject, createProject, renameProject, removeProject, upsert, remove, markRead,
+    recent, projects, projectNames, selectedProject, draftProject,
+    composerSelection, chooseComposerOptions, moveDraftComposerOptions,
+    useAccount, refresh, selectProject, selectDraftProject,
+    openSession, resolveSessionProject, leaveSession,
+    createProject, renameProject, removeProject, upsert, remove, markRead,
   }
 })

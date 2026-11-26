@@ -6,10 +6,11 @@ import { HttpError } from '../../shared/http'
 import { t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
 import { RetryBackoff } from '../../shared/retryBackoff'
+import UiIcon from '../../shared/ui/UiIcon.vue'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
 import UiSearchField from '../../shared/ui/UiSearchField.vue'
 import UiSplitPanel from '../../shared/ui/UiSplitPanel.vue'
-import { UiBox, UiButton, UiNav } from '../../shared/ui/elements'
+import { UiBox, UiButton, UiInline, UiNav } from '../../shared/ui/elements'
 import SessionList from './SessionList.vue'
 import SessionProjectPicker from './SessionProjectPicker.vue'
 import type { SessionAction } from './presentation'
@@ -22,7 +23,7 @@ const props = defineProps<{
   sessions: SessionSummary[]
   now: number
 }>()
-const emit = defineEmits<{ select: []; action: [action: SessionAction, entry: SessionSummary] }>()
+const emit = defineEmits<{ select: []; newSession: []; action: [action: SessionAction, entry: SessionSummary] }>()
 const store = useSessionStore()
 const router = useRouter()
 const query = defineModel<string>({ required: true })
@@ -102,6 +103,11 @@ function resumeOnFocus() {
   if (refreshPaused.value) restart()
 }
 
+function startNewSession() {
+  if (!props.selectedId) return
+  emit('newSession')
+}
+
 watch(() => store.selectedProject, restart)
 onMounted(() => {
   document.addEventListener('visibilitychange', restart)
@@ -120,6 +126,17 @@ onUnmounted(() => {
 
 <template>
   <UiNav class="session-nav" :aria-label="t('sessions.heading')">
+    <UiBox class="session-nav-header">
+      <UiButton
+        class="session-nav-new"
+        :disabled="!selectedId"
+        :aria-current="!selectedId ? 'page' : undefined"
+        @click="startNewSession"
+      >
+        <UiIcon name="add-line" />
+        <UiInline>{{ t('sessions.new') }}</UiInline>
+      </UiButton>
+    </UiBox>
     <UiBox class="session-nav-tools">
       <UiBox class="session-nav-controls" :inert="searchOpen">
         <SessionProjectPicker compact />

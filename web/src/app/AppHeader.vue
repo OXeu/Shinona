@@ -81,13 +81,6 @@ function signOut(close: () => void) {
     <UiBox class="app-header-center">
       <UiHeading v-if="workbenchPage" class="app-header-title" :title="title">{{ title }}</UiHeading>
       <UiInline v-else class="app-header-title" :title="title">{{ title }}</UiInline>
-      <UiIconButton
-        v-if="workbenchPage"
-        icon="add-line"
-        :label="t('sessions.new')"
-        :disabled="!sessionHeader || sessionHeader.creating.value"
-        @click="sessionHeader?.create()"
-      />
     </UiBox>
     <UiBox class="app-header-end">
       <UiIconButton

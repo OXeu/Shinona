@@ -168,7 +168,6 @@
   "sessions.renamed": "已重新命名對話。",
   "sessions.updateFailed": "未能更新對話。",
   "sessions.notFound": "找不到對話。",
-  "sessions.createFailed": "未能建立對話。",
   "sessions.show": "顯示對話",
   "sessions.hide": "隱藏對話",
   "sessions.invalidTitle": "請輸入 1 至 80 個字元的標題。",

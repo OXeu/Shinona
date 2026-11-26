@@ -10,6 +10,7 @@ import RightSidePanel from './RightSidePanel.vue'
 import SessionActionDialog from './SessionActionDialog.vue'
 import SessionNavPanel from './SessionNavPanel.vue'
 import { sessionTitle } from './presentation'
+import { projectTargetFromId } from './projectScope'
 import { useSessionStore } from './sessionStore'
 import { useComposerCatalog } from './useComposerCatalog'
 import { useSessionTranscript } from './useSessionTranscript'
@@ -48,16 +49,22 @@ const transcript = useSessionTranscript(sessionId, {
   loadError: (message) => setChatError('load', message),
 })
 const { session, summary, chatSession, hasOlder, loadingOlder, refreshPaused, resume: resumeSession, updateSummary: updated } = transcript
-const { prompt, images, submitting, creating, reverting, revertOpen,
-  submit, retryTurn, stop, changePending, askRevert, revertMessage, create } = useTurnActions(sessionId, transcript, setChatError)
+const {
+  prompt, images, submitting, reverting, revertOpen,
+  submit, retryTurn, stop, changePending, askRevert, revertMessage,
+} = useTurnActions(sessionId, transcript, setChatError)
 const { catalog, savingDefaults, saveComposerDefaults, resume: resumeCatalog } = useComposerCatalog(returnToLogin)
 const runningTurnId = computed(() => session.value?.turns.find((turn) => turn.status === 'RUNNING')?.id)
+const activeSessionProjectId = computed(() => {
+  const current = session.value
+  return current && current.id === props.id ? current.projectId : summary.value?.projectId
+})
 const title = computed(() => {
   const entry = summary.value ?? session.value
   return entry ? sessionTitle(entry) : t('nav.agent')
 })
 
-setHeader({ title, creating, create })
+setHeader({ title })
 
 const sessionQuery = ref('')
 const matchingSessions = computed(() => {
@@ -75,9 +82,27 @@ const matchingSessions = computed(() => {
 const sessionSize = ref(22)
 const chatSize = ref(60)
 
-watch(sessionId, () => {
+watch(sessionId, (id) => {
   chatErrors.value = {}
+  if (!id) {
+    store.leaveSession()
+    return
+  }
+  const known = activeSessionProjectId.value
+  store.openSession(id, known === undefined ? undefined : projectTargetFromId(known))
+}, { immediate: true })
+
+watch(activeSessionProjectId, (projectId) => {
+  if (props.id && projectId !== undefined) {
+    store.resolveSessionProject(props.id, projectTargetFromId(projectId))
+  }
 })
+
+function startNewSession() {
+  if (!props.id) return
+  sessionSelected()
+  void router.push({ name: 'sessions' })
+}
 
 function loadOlder() {
   if (!reverting.value) void transcript.loadOlder()
@@ -128,6 +153,7 @@ onUnmounted(() => {
         :sessions="matchingSessions"
         :now="now"
         @select="sessionSelected"
+        @new-session="startNewSession"
         @action="(action, entry) => sessionActions?.perform(action, entry)"
       />
     </template>
@@ -151,7 +177,7 @@ onUnmounted(() => {
             :recent-sessions="matchingSessions"
             :now="now"
             :has-selection="!!id"
-            :busy="submitting || creating || reverting"
+            :busy="submitting || reverting"
             :reverting="reverting"
             :catalog="catalog"
             :saving-defaults="savingDefaults"
@@ -172,7 +198,7 @@ onUnmounted(() => {
           <RightSidePanel
             :key="id"
             :session-id="id"
-            :project-id="session ? session.projectId : summary?.projectId"
+            :project-id="activeSessionProjectId"
             :active="session?.active ?? summary?.active ?? false"
             :running-turn-id="runningTurnId"
             @unauthorized="returnToLogin"

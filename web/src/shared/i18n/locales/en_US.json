@@ -168,7 +168,6 @@
   "sessions.renamed": "Session renamed.",
   "sessions.updateFailed": "Could not update the session.",
   "sessions.notFound": "Session not found.",
-  "sessions.createFailed": "Could not create a session.",
   "sessions.show": "Show sessions",
   "sessions.hide": "Hide sessions",
   "sessions.invalidTitle": "Enter a title between 1 and 80 characters.",

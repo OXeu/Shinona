@@ -9,8 +9,6 @@ export type WorkspaceView = RepositoryView | 'terminal'
 
 interface HeaderContext {
   title: Readonly<Ref<string>>
-  creating: Readonly<Ref<boolean>>
-  create: () => Promise<void>
 }
 
 function createWorkbench(active: () => boolean, sessionId: () => string | undefined) {
