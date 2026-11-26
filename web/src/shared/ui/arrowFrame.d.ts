@@ -1,4 +1,4 @@
 declare module 'virtual:arrow-frame' {
-  const runtime: string
-  export default runtime
+  const assets: { runtime: string; document: string; wasm: string }
+  export default assets
 }

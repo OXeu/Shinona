@@ -1,86 +1,105 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import runtime from 'virtual:arrow-frame'
 import { languageTag } from '../i18n'
+import { borrowArrowFrame } from './arrowFramePool'
 
 const props = defineProps<{ source: Record<string, string>; summary: string }>()
+const container = ref<HTMLDivElement>()
+const slot = ref<HTMLDivElement>()
 const height = ref(0)
 const failed = ref(false)
-const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
-const csp = `default-src 'none'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'`
-const documentSource = `<!doctype html>
-<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">
-<style>
-  html { color-scheme: light dark; overflow-y: hidden }
-  body { margin: 0; color: var(--foreground); font: var(--widget-font); overflow-wrap: anywhere }
-  arrow-sandbox { display: flow-root }
-</style>
-</head><body><script nonce="${nonce}" type="module">${runtime}</${'script'}></body></html>`
 const tokens = ['--background', '--surface', '--sidebar-bg', '--foreground', '--muted', '--primary', '--on-primary', '--accent',
   '--border', '--success', '--warning', '--danger', '--radius-sm', '--radius-md', '--radius-lg']
+
+let observer: IntersectionObserver | undefined
+let activity: AbortController | undefined
+let current: Awaited<ReturnType<typeof borrowArrowFrame>>
 let port: MessagePort | undefined
-const timeout = window.setTimeout(fail, 10_000)
+let timeout: number | undefined
+
+function release(reuse = true) {
+  window.clearTimeout(timeout)
+  port?.close()
+  activity?.abort()
+  activity = undefined
+  current?.release(reuse)
+  current = undefined
+}
 
 function fail() {
-  window.clearTimeout(timeout)
-  port?.close()
   failed.value = true
+  height.value = 0
+  release(false)
 }
 
-function connect(event: Event) {
-  const target = event.currentTarget as HTMLIFrameElement
-  const child = target?.contentWindow
-  if (!target || !child || failed.value) return
-  if (port) {
-    fail()
-    return
-  }
-  const channel = new MessageChannel()
-  port = channel.port1
-  port.onmessage = (event: MessageEvent<{ type: string; height?: number }>) => {
-    if (event.data.type === 'error') {
-      fail()
+async function show() {
+  if (activity || failed.value || !slot.value) return
+  const { signal } = activity = new AbortController()
+  try {
+    const lease = await borrowArrowFrame(slot.value, props.summary, signal)
+    if (signal.aborted) {
+      lease?.release(false)
       return
     }
-    const size = event.data.height
-    if (event.data.type !== 'resize' || typeof size !== 'number' || !Number.isFinite(size)) return
-    window.clearTimeout(timeout)
-    height.value = Math.max(1, Math.ceil(size))
+    if (!lease) return
+    current = lease
+    lease.element.height = String(height.value)
+    lease.element.dataset.ready = 'false'
+    timeout = window.setTimeout(fail, 10_000)
+    await lease.ready
+    if (signal.aborted) return
+    const style = getComputedStyle(lease.element)
+    const theme = Object.fromEntries(tokens.map(name => [name, style.getPropertyValue(name)]))
+    theme['--widget-font'] = `0.875rem/1.5 ${style.fontFamily}`
+    const channel = new MessageChannel()
+    port = channel.port1
+    port.onmessage = (event: MessageEvent<{ type: string; height?: number }>) => {
+      if (signal.aborted) return
+      if (event.data.type === 'error') {
+        fail()
+        return
+      }
+      const size = event.data.height
+      if (event.data.type !== 'resize' || typeof size !== 'number' || !Number.isFinite(size)) return
+      window.clearTimeout(timeout)
+      height.value = Math.max(1, Math.ceil(size))
+      lease.element.height = String(height.value)
+      lease.element.dataset.ready = 'true'
+    }
+    lease.render({ source: { ...props.source }, theme, lang: languageTag() }, channel.port2)
+  } catch {
+    if (!signal.aborted) fail()
   }
-  const style = getComputedStyle(target)
-  const theme = Object.fromEntries(tokens.map(name => [name, style.getPropertyValue(name)]))
-  theme['--widget-font'] = `0.875rem/1.5 ${style.fontFamily}`
-  child.postMessage({ source: { ...props.source }, theme, lang: languageTag() }, '*', [channel.port2])
 }
 
-onUnmounted(() => {
-  window.clearTimeout(timeout)
-  port?.close()
+onMounted(() => {
+  if (!container.value) return
+  observer = new IntersectionObserver(entries => {
+    if (entries.at(-1)?.isIntersecting) void show()
+    else release()
+  })
+  observer.observe(container.value)
+})
+
+onBeforeUnmount(() => {
+  observer?.disconnect()
+  release()
 })
 </script>
 
 <template>
-  <iframe
-    v-for="(content, index) in failed ? [] : [documentSource]"
-    :key="index"
-    class="arrow-view"
-    :title="summary"
-    :srcdoc.prop="content"
-    sandbox="allow-scripts"
-    referrerpolicy="no-referrer"
-    :height="height"
-    :data-ready="height > 0"
-    @load="connect"
-  />
-  <span :hidden="!failed && height > 0">{{ summary }}</span>
+  <div ref="container">
+    <div ref="slot" class="arrow-slot" :style="{ height: height ? height + 'px' : undefined }" />
+    <span :hidden="!failed && height > 0">{{ summary }}</span>
+  </div>
 </template>
 
 <style scoped lang="less">
-.arrow-view {
+.arrow-slot :deep(.arrow-view) {
   display: block;
   width: 100%;
   border: 0;
 }
-.arrow-view[data-ready='false'] { visibility: hidden; }
+.arrow-slot :deep(.arrow-view[data-ready='false']) { visibility: hidden; }
 </style>
