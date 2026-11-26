@@ -35,7 +35,7 @@ Coordinate GraphQL schema changes with the hand-written operations and types in 
 
 ## Performance benchmarks
 
-The [Benchmarks workflow](.github/workflows/benchmarks.yml) runs the core API and live SSH/Docker benchmarks on pushes to `main`, pull requests targeting `main`, and manual runs. The `go-bench` artifact contains the Go output. Benchmarks use one authenticated client over loopback and report mean latency in ns/op. Request timing includes reading and decoding the response. Account setup, fixture creation, and state reset between iterations are outside the timer.
+The [Benchmarks workflow](.github/workflows/benchmarks.yml) runs the core API baselines, core read load variants, and live SSH/Docker benchmarks on pushes to `main`, pull requests targeting `main`, and manual runs. The `go-bench` artifact contains the baseline and sandbox Go output. These benchmarks use one authenticated client over loopback and report mean latency in ns/op. Request timing includes reading and decoding the response. Account setup, fixture creation, and state reset between iterations are outside the timer.
 
 | Benchmark | API and fixture |
 | --- | --- |
@@ -55,6 +55,20 @@ mkdir -p .tmp
 export TMPDIR="$PWD/.tmp" TMP="$PWD/.tmp" TEMP="$PWD/.tmp" GOTMPDIR="$PWD/.tmp"
 go test -p 1 -cpu 2 -run '^$' -bench '^BenchmarkCoreAPI$' \
   -benchmem -benchtime=500ms -count=1 ./cmd/shinona
+```
+
+Core read load uses the same authenticated APIs. Each client issues its next request as soon as its previous response has been read and decoded. Clients warm up before the five-second measurement window and finish outstanding requests after it. Each recent-list client uses its own WebSocket. Transcript clients cycle through four sessions. The load generator and server share a Go process with `GOMAXPROCS=2` in CI.
+
+| Benchmark | Bencher variant parameters |
+| --- | --- |
+| `CoreAPI/SessionsList` | `concurrency` of 1, 4, 16, or 64 crossed with `sessions` of 256 or 2,000. Each poll still returns the latest 30 sessions. |
+| `CoreAPI/Transcript` | The same `concurrency` levels crossed with `page` of `latest` or `full`, with `turns` fixed at 200. The latest page returns 30 turns. The full response returns all 200. |
+
+Load results include mean, p50, and p99 latency in nanoseconds, plus throughput in completed requests per second. CI saves the raw BMF v1 report and test log in the `core-read-load` artifact. The load report selects BMF v1 explicitly so Bencher can filter variants by parameters and plot both latency percentiles on the latency measure.
+
+```sh
+GOMAXPROCS=2 SHINONA_BENCH_LOAD_OUTPUT="$PWD/.tmp/core-read-load.json" \
+  go test -p 1 -count=1 -run '^TestCoreReadLoad$' -v ./cmd/shinona
 ```
 
 The SSH fixture runs a dedicated loopback OpenSSH server with a generated key and a Docker image containing Bash and Git. It needs `sshd`, `sudo -n`, and access to Docker. On Ubuntu and Debian, initialize the system OpenSSH runtime directory with `sudo install -d -o root -g root -m 0755 /run/sshd` if it is missing. Alternatively, use a dedicated SSH/Docker host by setting `SHINONA_BENCH_SSH_ADDRESS`, `SHINONA_BENCH_SSH_USER`, `SHINONA_BENCH_SSH_KEY_PATH`, `SHINONA_BENCH_SSH_HOST_FINGERPRINT`, and `SHINONA_BENCH_SSH_IMAGE`, then run the same Go command without the SSH fixture script.

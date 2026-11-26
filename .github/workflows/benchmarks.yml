@@ -64,6 +64,24 @@ jobs:
           path: .tmp/go-bench.txt
           include-hidden-files: true
           if-no-files-found: error
+      - name: Run core read load variants
+        id: core-read-load
+        env:
+          GOMAXPROCS: '2'
+        run: |
+          set -o pipefail
+          echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+          SHINONA_BENCH_LOAD_OUTPUT="$GITHUB_WORKSPACE/.tmp/core-read-load.json" \
+            go test -p 1 -count=1 -run '^TestCoreReadLoad$' -v ./cmd/shinona | tee .tmp/core-read-load.txt
+          echo "ended_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: core-read-load
+          path: |
+            .tmp/core-read-load.json
+            .tmp/core-read-load.txt
+          include-hidden-files: true
+          if-no-files-found: error
       - uses: bencherdev/bencher@b2484bc6734c8e6da4fad141bd13527a11da3988 # v0.6.17
         if: github.repository == 'OXeu/Shinona' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       - name: Publish to Bencher
@@ -89,6 +107,49 @@ jobs:
           bencher run --project shinona --branch "$branch" --hash "$BENCHMARK_SHA" \
             --testbed github-ubuntu-24.04-x64 --adapter go_bench --file .tmp/go-bench.txt \
             --github-actions "$GITHUB_TOKEN" "${options[@]}"
+      - name: Publish core read load variants to Bencher
+        if: github.repository == 'OXeu/Shinona' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
+          BENCHMARK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          STARTED_AT: ${{ steps.core-read-load.outputs.started_at }}
+          ENDED_AT: ${{ steps.core-read-load.outputs.ended_at }}
+        run: |
+          set -o pipefail
+          if [[ -z "$BENCHER_API_KEY" ]]; then
+            echo "::warning::Set the BENCHER_API_KEY repository secret to publish load variants."
+            exit 0
+          fi
+
+          branch="$GITHUB_REF_NAME"
+          base=""
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            branch="pr-$PR_NUMBER"
+            base="$GITHUB_BASE_REF"
+          fi
+
+          # The REST API can select BMF v1 per report on a project whose default is v0.
+          if ! report=$(jq -n --arg branch "$branch" --arg base "$base" --arg hash "$BENCHMARK_SHA" \
+            --arg start "$STARTED_AT" --arg end "$ENDED_AT" --rawfile results .tmp/core-read-load.json '
+              {bmf_version: 1, branch: $branch, hash: $hash, testbed: "github-ubuntu-24.04-x64",
+               start_time: $start, end_time: $end, settings: {adapter: "json_v1"}, results: [$results]}
+              + (if $base == "" then {} else {start_point: {branch: $base}} end)
+            ' | curl --silent --show-error --fail-with-body --max-time 60 \
+              -H "Authorization: Bearer $BENCHER_API_KEY" -H 'Content-Type: application/json' \
+              --data-binary @- https://api.bencher.dev/v0/projects/shinona/reports); then
+            printf '%s\n' "$report" >&2
+            exit 1
+          fi
+          expected=$(jq '[.[] | length] | add' .tmp/core-read-load.json)
+          report_uuid=$(jq -er --argjson expected "$expected" '
+            if .bmf_version == 1 and .parse_outcome == "parsed" and $expected > 0
+              and (.results[0] | length) == $expected
+              and all(.results[0][]; .variant.parameters.concurrency > 0 and (.measures | length) == 2)
+            then .uuid // error("The read load report has no UUID")
+            else error("Bencher did not parse all read load variants") end
+          ' <<< "$report")
+          echo "Benchmarked $expected read variants: https://bencher.dev/console/projects/shinona/reports/$report_uuid"
       - name: Run live E2B sandbox API benchmarks
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.e2b
         env:

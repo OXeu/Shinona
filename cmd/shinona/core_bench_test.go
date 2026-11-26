@@ -67,7 +67,7 @@ type benchmarkAPI struct {
 	owner    string
 }
 
-func benchmarkRepository(b *testing.B) *sqlite.Repository {
+func benchmarkRepository(b testing.TB) *sqlite.Repository {
 	b.Helper()
 	repo, err := sqlite.Open(b.Context(), filepath.Join(b.TempDir(), "benchmark.db"))
 	if err != nil {
@@ -81,7 +81,7 @@ func benchmarkRepository(b *testing.B) *sqlite.Repository {
 	return repo
 }
 
-func newBenchmarkAPI(b *testing.B, repo *sqlite.Repository, target run.Target) *benchmarkAPI {
+func newBenchmarkAPI(b testing.TB, repo *sqlite.Repository, target run.Target) *benchmarkAPI {
 	b.Helper()
 	ctx := b.Context()
 	logger := slog.New(slog.DiscardHandler)
@@ -125,7 +125,7 @@ func newBenchmarkAPI(b *testing.B, repo *sqlite.Repository, target run.Target) *
 	return fixture
 }
 
-func newCoreBenchmarkAPI(b *testing.B, agent run.Agent) *benchmarkAPI {
+func newCoreBenchmarkAPI(b testing.TB, agent run.Agent) *benchmarkAPI {
 	b.Helper()
 	return newBenchmarkAPI(b, benchmarkRepository(b), benchmarkTarget("demo", demo.Provider{}, agent))
 }
@@ -137,7 +137,7 @@ func benchmarkTarget(name string, provider sandbox.Provider, agent run.Agent) ru
 	}
 }
 
-func (*benchmarkAPI) requestBody(b *testing.B, value any) []byte {
+func (*benchmarkAPI) requestBody(b testing.TB, value any) []byte {
 	b.Helper()
 	body, err := json.Marshal(value)
 	if err != nil {
@@ -146,29 +146,37 @@ func (*benchmarkAPI) requestBody(b *testing.B, value any) []byte {
 	return body
 }
 
-func (a *benchmarkAPI) post(b *testing.B, path string, body []byte, status int) ([]byte, http.Header) {
+func (a *benchmarkAPI) post(b testing.TB, path string, body []byte, status int) ([]byte, http.Header) {
 	b.Helper()
 	ctx, cancel := context.WithTimeout(b.Context(), run.ProjectSandboxTimeout+5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.URL+path, bytes.NewReader(body))
+	data, headers, err := a.postRequest(ctx, a.Client(), path, body, status)
 	if err != nil {
 		b.Fatal(err)
 	}
+	return data, headers
+}
+
+func (a *benchmarkAPI) postRequest(ctx context.Context, client *http.Client, path string, body []byte, status int) ([]byte, http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.URL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", a.URL)
-	response, err := a.Client().Do(req)
+	response, err := client.Do(req)
 	if err != nil {
-		b.Fatal(err)
+		return nil, nil, err
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
-		b.Fatal(err)
+		return nil, nil, err
 	}
 	if response.StatusCode != status {
-		b.Fatalf("%s returned %d, want %d: %s", path, response.StatusCode, status, data)
+		return nil, nil, fmt.Errorf("%s returned %d, want %d: %s", path, response.StatusCode, status, data)
 	}
-	return data, response.Header
+	return data, response.Header, nil
 }
 
 func (a *benchmarkAPI) operation(b *testing.B, query string, variables any) []byte {
@@ -198,7 +206,7 @@ func (a *benchmarkAPI) graphql(b *testing.B, body []byte, field string, result a
 	}
 }
 
-func (a *benchmarkAPI) websocket(b *testing.B, path string) *websocket.Conn {
+func (a *benchmarkAPI) websocket(b testing.TB, path string) *websocket.Conn {
 	b.Helper()
 	endpoint, err := url.Parse(a.URL)
 	if err != nil {
@@ -230,7 +238,7 @@ func benchmarkSocketWrite(b *testing.B, conn *websocket.Conn, payload []byte) {
 	}
 }
 
-func (a *benchmarkAPI) session(b *testing.B, project string) string {
+func (a *benchmarkAPI) session(b testing.TB, project string) string {
 	b.Helper()
 	session, err := a.service.CreateSession(b.Context(), a.owner, project)
 	if err != nil {
@@ -239,7 +247,7 @@ func (a *benchmarkAPI) session(b *testing.B, project string) string {
 	return session.ID
 }
 
-func (a *benchmarkAPI) completedTurn(b *testing.B, session, prompt string, result run.Result) run.Run {
+func (a *benchmarkAPI) completedTurn(b testing.TB, session, prompt string, result run.Result) run.Run {
 	b.Helper()
 	ctx := b.Context()
 	queued, err := a.service.Submit(ctx, a.owner, session, prompt, run.Payload{}, false)
@@ -258,6 +266,20 @@ func (a *benchmarkAPI) completedTurn(b *testing.B, session, prompt string, resul
 
 func benchmarkSessionsList(b *testing.B) {
 	a := newCoreBenchmarkAPI(b, demo.Agent{})
+	projectCount := a.seedBenchmarkSessions(b, 256)
+	request := a.recentBenchmarkClient(b, projectCount)
+	if err := request(b.Context()); err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		if err := request(b.Context()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func (a *benchmarkAPI) seedBenchmarkSessions(b testing.TB, count int) int {
+	b.Helper()
 	projects := make([]run.Project, 4)
 	for i := range projects {
 		project, err := a.service.CreateProject(b.Context(), a.owner, fmt.Sprintf("Fixture project %d", i+1))
@@ -266,49 +288,76 @@ func benchmarkSessionsList(b *testing.B) {
 		}
 		projects[i] = project
 	}
-	for i := range 256 {
+	for i := range count {
 		session := a.session(b, projects[i%len(projects)].ID)
 		a.completedTurn(b, session, fmt.Sprintf("Review workspace changes in feature %03d", i), run.Result{Output: "Reviewed the workspace."})
 	}
+	return len(projects)
+}
+
+type benchmarkRead func(context.Context) error
+
+func (a *benchmarkAPI) recentBenchmarkClient(b testing.TB, projectCount int) benchmarkRead {
+	b.Helper()
 	conn := a.websocket(b, sessiontransfer.RecentPath)
 	payload, err := proto.Marshal(&sessionpb.RecentRequest{})
 	if err != nil {
 		b.Fatal(err)
 	}
 	var page sessionpb.RecentPage
-	request := func() {
-		benchmarkSocketWrite(b, conn, payload)
-		if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
-			b.Fatal(err)
+	return func(context.Context) error {
+		deadline := time.Now().Add(15 * time.Second)
+		if err := conn.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			return err
+		}
+		if err := conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+			return err
 		}
 		kind, data, err := conn.ReadMessage()
-		if err != nil || kind != websocket.BinaryMessage {
-			b.Fatalf("receive recent sessions: message type %d, %v", kind, err)
+		if err != nil {
+			return fmt.Errorf("receive recent sessions: %w", err)
+		}
+		if kind != websocket.BinaryMessage {
+			return fmt.Errorf("unexpected recent sessions message type: %d", kind)
 		}
 		decoded, err := io.ReadAll(brotli.NewReader(bytes.NewReader(data)))
 		if err != nil {
-			b.Fatal(err)
+			return err
 		}
 		if err := proto.Unmarshal(decoded, &page); err != nil {
-			b.Fatal(err)
+			return err
 		}
-		if len(page.Projects) != len(projects) || len(page.Sessions) != 30 || page.Sessions[0].TurnCount != 1 {
-			b.Fatalf("unexpected recent response: %d projects, %d sessions", len(page.Projects), len(page.Sessions))
+		if len(page.Projects) != projectCount || len(page.Sessions) != 30 || page.Sessions[0].TurnCount != 1 {
+			return fmt.Errorf("unexpected recent response: %d projects, %d sessions", len(page.Projects), len(page.Sessions))
 		}
-	}
-	request()
-	for b.Loop() {
-		request()
+		return nil
 	}
 }
 
 func benchmarkTranscript(b *testing.B) {
 	a := newCoreBenchmarkAPI(b, demo.Agent{})
-	session := a.session(b, "")
 	const turnCount = 120
+	session := a.seedBenchmarkTranscript(b, turnCount, 48)
+	request := a.transcriptBenchmarkClient(b, a.Client(), session, turnCount, true)
+	if err := request(b.Context()); err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		if err := request(b.Context()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func (a *benchmarkAPI) seedBenchmarkTranscript(b testing.TB, turnCount, logLines int) string {
+	b.Helper()
+	session := a.session(b, "")
 	for i := range turnCount {
 		var log strings.Builder
-		for line := range 48 {
+		for line := range logLines {
 			fmt.Fprintf(&log, "ok workspace/component-%02d test case %03d in batch %d\n", line%7, line, i+1)
 		}
 		a.completedTurn(b, session, benchmarkPrompt, run.Result{
@@ -320,17 +369,36 @@ func benchmarkTranscript(b *testing.B) {
 			},
 		})
 	}
+	return session
+}
 
+func (a *benchmarkAPI) transcriptBenchmarkClient(b testing.TB, client *http.Client, session string, turnCount int, paged bool) benchmarkRead {
+	b.Helper()
 	decoder, err := zstd.NewReader(nil)
 	if err != nil {
 		b.Fatal(err)
 	}
 	b.Cleanup(decoder.Close)
-	body := a.requestBody(b, map[string]string{"id": session})
-	request := func() {
-		data, headers := a.post(b, sessiontransfer.TranscriptPath, body, http.StatusOK)
+	request := struct {
+		ID    string `json:"id"`
+		Paged *bool  `json:"paged,omitempty"`
+	}{ID: session}
+	wantCount, wantCursor := turnCount, 0
+	if !paged {
+		request.Paged = new(false)
+	} else if turnCount > run.TranscriptPageSize {
+		wantCount, wantCursor = run.TranscriptPageSize, turnCount-run.TranscriptPageSize+1
+	}
+	body := a.requestBody(b, request)
+	return func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		data, headers, err := a.postRequest(ctx, client, sessiontransfer.TranscriptPath, body, http.StatusOK)
+		if err != nil {
+			return err
+		}
 		if headers.Get("Content-Type") != "application/vnd.shinona.transcript.v1+protobuf" {
-			b.Fatal("unexpected transcript content type")
+			return fmt.Errorf("unexpected transcript content type: %s", headers.Get("Content-Type"))
 		}
 		var count int
 		var header *sessionpb.TranscriptHeader
@@ -339,15 +407,15 @@ func benchmarkTranscript(b *testing.B) {
 			frameSize := int(binary.BigEndian.Uint32(data))
 			data = data[4:]
 			if frameSize <= 0 || frameSize > len(data) {
-				b.Fatal("invalid transcript frame size")
+				return fmt.Errorf("invalid transcript frame size: %d", frameSize)
 			}
 			frame, err := decoder.DecodeAll(data[:frameSize], nil)
 			if err != nil {
-				b.Fatal(err)
+				return err
 			}
 			var chunk sessionpb.TranscriptChunk
 			if err := proto.Unmarshal(frame, &chunk); err != nil {
-				b.Fatal(err)
+				return err
 			}
 			if chunk.GetHeader() != nil {
 				header = chunk.GetHeader()
@@ -356,14 +424,11 @@ func benchmarkTranscript(b *testing.B) {
 			done = chunk.GetDone()
 			data = data[frameSize:]
 		}
-		if !done || len(data) != 0 || count != run.TranscriptPageSize || header.GetSession().GetId() != session ||
-			header.GetSession().GetTurnCount() != turnCount || header.GetNextBeforeSequence() != turnCount-run.TranscriptPageSize+1 {
-			b.Fatalf("unexpected default transcript page: turns=%d, complete=%t", count, done)
+		if !done || len(data) != 0 || count != wantCount || header.GetSession().GetId() != session ||
+			header.GetSession().GetTurnCount() != int32(turnCount) || header.GetNextBeforeSequence() != int32(wantCursor) {
+			return fmt.Errorf("unexpected transcript page: turns=%d, cursor=%d, complete=%t", count, header.GetNextBeforeSequence(), done)
 		}
-	}
-	request()
-	for b.Loop() {
-		request()
+		return nil
 	}
 }
 
