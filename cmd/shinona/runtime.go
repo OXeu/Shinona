@@ -45,6 +45,7 @@ type runtime struct {
 	accountHTTP  *http.Client
 	sshMu        sync.Mutex
 	sshProjects  sshsandbox.ProjectConnections
+	sshContainer sshsandbox.ContainerConfig
 	sshProviders personalSSHProviders
 	trustedSSH   map[string]bool
 	mu           sync.Mutex
@@ -74,12 +75,17 @@ func newRuntime(ctx context.Context, repo runtimeRepository, environment environ
 	if err != nil {
 		return nil, err
 	}
+	sshContainer, err := sshContainerConfig(environment)
+	if err != nil {
+		return nil, fmt.Errorf("SSH container configuration: %w", err)
+	}
 	config := &runtime{
 		repo: repo, defaults: settings.Defaults(environment.lookup), origin: origin,
-		mcpOAuth:    mcp.NewOAuth(repo, origin.String()),
-		models:      newModelRuntime(repo, modelHTTP),
-		accountHTTP: accountHTTP,
-		trustedSSH:  trustedSSH,
+		mcpOAuth:     mcp.NewOAuth(repo, origin.String()),
+		models:       newModelRuntime(repo, modelHTTP),
+		accountHTTP:  accountHTTP,
+		trustedSSH:   trustedSSH,
+		sshContainer: sshContainer,
 		client: &http.Client{
 			Timeout:       35 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -126,7 +132,8 @@ func (r *runtime) prepare(ctx context.Context, overrides settings.Values, previo
 	sshTarget := run.Target{Name: sandbox.ProviderSSH, ResolveAgent: r.resolveAgent,
 		Defaults: run.ProjectSandboxConfig{Template: values[settings.SSHTemplate]}}
 	if previous != nil && sameSettings(previous.values, values, settings.E2BAPIKey, settings.E2BTemplate,
-		settings.E2BBaseURL, settings.E2BProxyURL, settings.E2BDomain, settings.E2BTimeout, settings.E2BOnTimeout) {
+		settings.E2BBaseURL, settings.E2BProxyURL, settings.E2BDomain, settings.E2BTimeout, settings.E2BOnTimeout,
+		settings.E2BAPIVersion, settings.E2BWorkspaceUser, settings.E2BWorkDirectory) {
 		e2bTarget.Provider = previous.e2b.Provider
 	} else {
 		e2bTarget.Provider, err = e2bSandboxProvider(values, e2bDefaults, r.client, r.repo)
@@ -138,7 +145,7 @@ func (r *runtime) prepare(ctx context.Context, overrides settings.Values, previo
 		settings.SSHKeyPath, settings.SSHHostFingerprint, settings.SSHTemplate) {
 		sshTarget.Provider = previous.ssh.Provider
 	} else {
-		sshTarget.Provider, err = sshSandboxProvider(values)
+		sshTarget.Provider, err = r.sshSandboxProvider(values)
 		if err != nil {
 			return nil, err
 		}

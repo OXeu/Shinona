@@ -112,6 +112,21 @@ type Workspace interface {
 type Command struct {
 	Program string
 	Args    []string
+	// StdoutLimit overrides the default capture size up to MaxFileBytes.
+	StdoutLimit int
+}
+
+func (c Command) OutputLimit() int {
+	if c.StdoutLimit <= 0 {
+		return DefaultOutputLimit
+	}
+	return min(c.StdoutLimit, MaxFileBytes)
+}
+
+// Shell uses Bash when the template provides it, with a POSIX shell fallback.
+func Shell(args ...string) Command {
+	const preferBash = `if command -v bash >/dev/null 2>&1; then exec bash "$@"; fi; exec sh "$@"`
+	return Command{Program: "sh", Args: append([]string{"-c", preferBash, "sh"}, args...)}
 }
 
 // Result contains process output. A successful Exec includes the exit code,

@@ -98,6 +98,8 @@ func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfi
 		APIKey: key, Template: defaults.Template, BaseURL: values[settings.E2BBaseURL],
 		ProxyURL: values[settings.E2BProxyURL], Domain: values[settings.E2BDomain],
 		Timeout: time.Duration(defaults.TimeoutSeconds) * time.Second, OnTimeout: defaults.OnTimeout,
+		APIVersion: values[settings.E2BAPIVersion], WorkspaceUser: values[settings.E2BWorkspaceUser],
+		WorkDirectory: values[settings.E2BWorkDirectory],
 	}, client, store)
 	if err != nil {
 		return nil, settings.Invalid("INVALID_E2B_CONFIG", err.Error())
@@ -107,9 +109,9 @@ func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfi
 
 func e2bSandboxDefaults(values settings.Values) (run.ProjectSandboxConfig, error) {
 	config := run.ProjectSandboxConfig{Template: values[settings.E2BTemplate],
-		TimeoutSeconds: 300, OnTimeout: sandbox.TimeoutPause}
+		TimeoutSeconds: settings.DefaultE2BTimeoutSeconds, OnTimeout: sandbox.TimeoutPause}
 	if config.Template == "" {
-		config.Template = "base"
+		config.Template = settings.DefaultE2BTemplate
 	}
 	if value := values[settings.E2BTimeout]; value != "" {
 		seconds, err := strconv.Atoi(value)
@@ -127,14 +129,38 @@ func e2bSandboxDefaults(values settings.Values) (run.ProjectSandboxConfig, error
 	return config, nil
 }
 
-func sshSandboxProvider(values settings.Values) (sandbox.Provider, error) {
+func sshContainerConfig(e environment) (sshsandbox.ContainerConfig, error) {
+	config := sshsandbox.DefaultContainerConfig()
+	for _, option := range []struct {
+		key   string
+		value *int
+		limit int
+	}{
+		{"SHINONA_SSH_CONTAINER_UID", &config.UID, 1<<31 - 1},
+		{"SHINONA_SSH_CONTAINER_GID", &config.GID, 1<<31 - 1},
+		{"SHINONA_SSH_CONTAINER_CPUS", &config.CPUs, 1024},
+		{"SHINONA_SSH_CONTAINER_MEMORY_MIB", &config.MemoryMiB, 1 << 20},
+		{"SHINONA_SSH_CONTAINER_PIDS", &config.Pids, 1 << 20},
+	} {
+		value, err := e.boundedInt(option.key, *option.value, 1, option.limit)
+		if err != nil {
+			return config, err
+		}
+		*option.value = value
+	}
+	config.WorkDirectory = e.value("SHINONA_SSH_CONTAINER_WORKDIR", config.WorkDirectory)
+	return config, config.Validate()
+}
+
+func (r *runtime) sshSandboxProvider(values settings.Values) (sandbox.Provider, error) {
 	if values[settings.SSHAddress] == "" {
 		return nil, nil
 	}
 	provider, err := sshsandbox.New(sshsandbox.Config{
 		Address: values[settings.SSHAddress], User: values[settings.SSHUser],
 		KeyPath: values[settings.SSHKeyPath], HostFingerprint: values[settings.SSHHostFingerprint],
-		Template: values[settings.SSHTemplate],
+		Template:  values[settings.SSHTemplate],
+		Container: r.sshContainer, ProjectConnections: &r.sshProjects,
 	})
 	if err != nil {
 		return nil, settings.Invalid("INVALID_SSH_CONFIG", err.Error())

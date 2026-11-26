@@ -3,7 +3,6 @@ module github.com/OXeu/shinona
 go 1.26.2
 
 require (
-	connectrpc.com/connect v1.21.1
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/eric642/e2b-go-sdk v0.1.5
 	github.com/gin-gonic/gin v1.12.0
@@ -26,6 +25,7 @@ require (
 )
 
 require (
+	connectrpc.com/connect v1.21.1 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect

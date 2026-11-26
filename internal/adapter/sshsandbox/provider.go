@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/OXeu/shinona/internal/keylock"
+	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -26,9 +27,6 @@ import (
 const (
 	connectTimeout   = 10 * time.Second
 	provisionTimeout = 2 * time.Minute
-	workDirectory    = "/workspace"
-	maxFileBytes     = 64 << 10
-	maxOutputBytes   = 16 << 10
 )
 
 var (
@@ -49,17 +47,20 @@ type Config struct {
 	Template        string
 	PrivateKey      string
 	DialContext     func(context.Context, string, string) (net.Conn, error)
+	Container       ContainerConfig
 	// Providers sharing ProjectConnections must use the same dial policy.
 	ProjectConnections *ProjectConnections
 }
 
 type Provider struct {
-	address  string
-	client   *ssh.ClientConfig
-	template string
-	dial     func(context.Context, string, string) (net.Conn, error)
-	projects *ProjectConnections
-	identity [sha256.Size]byte
+	address      string
+	client       *ssh.ClientConfig
+	template     string
+	dial         func(context.Context, string, string) (net.Conn, error)
+	projects     *ProjectConnections
+	identity     [sha256.Size]byte
+	container    ContainerConfig
+	legacyLimits *responsecache.Cache[string, struct{}]
 }
 
 var provisionGates keylock.Locks[sandbox.ProjectKey]
@@ -76,6 +77,13 @@ func New(config Config) (*Provider, error) {
 	}
 	if config.User == "" || config.Template == "" {
 		return nil, errors.New("SSH requires a user and default Docker image")
+	}
+	container := config.Container
+	if container == (ContainerConfig{}) {
+		container = DefaultContainerConfig()
+	}
+	if err := container.Validate(); err != nil {
+		return nil, err
 	}
 	fingerprint := config.HostFingerprint
 	decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(fingerprint, "SHA256:"))
@@ -115,19 +123,20 @@ func New(config Config) (*Provider, error) {
 	}{config.Address, config.User, fingerprint, string(signer.PublicKey().Marshal())}))
 	return &Provider{
 		address: config.Address, client: client, template: config.Template, dial: dial,
-		projects: projects, identity: identity,
+		projects: projects, identity: identity, container: container,
+		legacyLimits: responsecache.New[string, struct{}](256, 16<<10),
 	}, nil
 }
 
 func privateKey(config Config) ([]byte, error) {
 	if config.KeyPath == "" {
-		if config.PrivateKey == "" || len(config.PrivateKey) > maxFileBytes {
+		if config.PrivateKey == "" || len(config.PrivateKey) > sandbox.MaxFileBytes {
 			return nil, ErrInvalidPrivateKey
 		}
 		return []byte(config.PrivateKey), nil
 	}
 	file, err := os.Stat(config.KeyPath)
-	if err != nil || !file.Mode().IsRegular() || file.Size() > maxFileBytes {
+	if err != nil || !file.Mode().IsRegular() || file.Size() > sandbox.MaxFileBytes {
 		return nil, errors.New("SSH private key path must point to a readable key file")
 	}
 	key, err := os.ReadFile(config.KeyPath)
@@ -256,35 +265,6 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	}
 	ws.shared = true
 	return ws, nil
-}
-
-func (p *Provider) ensureRunning(ctx context.Context, ws *workspace, spec sandbox.Spec) error {
-	status, err := ws.status(ctx)
-	if err != nil {
-		return err
-	}
-	switch status.State {
-	case sandbox.ProjectRunning:
-		return nil
-	case sandbox.ProjectPaused:
-		return ws.docker(ctx, "unpause", ws.name)
-	case sandbox.ProjectStopped:
-		return ws.docker(ctx, "start", ws.name)
-	}
-	template := spec.Template
-	if template == "" {
-		template = p.template
-	}
-	err = ws.docker(ctx, "run", "--detach", "--init", "--security-opt", "no-new-privileges",
-		"--name", ws.name, "--user", "0:0", "--workdir", workDirectory,
-		"--entrypoint", "/bin/sh", "--", template, "-c", "exec sleep infinity")
-	if err == nil {
-		status, err = ws.status(ctx)
-		if err == nil && status.State != sandbox.ProjectRunning {
-			err = errors.New("SSH sandbox image did not keep its container running")
-		}
-	}
-	return err
 }
 
 func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {

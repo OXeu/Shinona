@@ -2,6 +2,7 @@ package sshsandbox
 
 import (
 	"crypto/sha256"
+	"errors"
 	"sync"
 	"time"
 
@@ -17,8 +18,9 @@ const (
 // ProjectConnections holds idle SSH transports for retained workspace requests.
 // Each transport belongs to one lease at a time. The zero value is ready to use.
 type ProjectConnections struct {
-	mu   sync.Mutex
-	idle map[projectConnectionKey]*idleProjectConnection
+	mu     sync.Mutex
+	idle   map[projectConnectionKey]*idleProjectConnection
+	closed bool
 }
 
 type projectConnectionKey struct {
@@ -54,7 +56,7 @@ func (p *ProjectConnections) take(key projectConnectionKey) *projectConnection {
 func (p *ProjectConnections) put(key projectConnectionKey, conn *projectConnection) error {
 	lifetime := min(projectIdleTimeout, projectConnectionAge-time.Since(conn.opened))
 	p.mu.Lock()
-	if lifetime <= 0 || len(p.idle) >= maxIdleProjectConnections || p.idle[key] != nil {
+	if p.closed || lifetime <= 0 || len(p.idle) >= maxIdleProjectConnections || p.idle[key] != nil {
 		p.mu.Unlock()
 		return conn.client.Close()
 	}
@@ -75,4 +77,20 @@ func (p *ProjectConnections) put(key projectConnectionKey, conn *projectConnecti
 	p.idle[key] = entry
 	p.mu.Unlock()
 	return nil
+}
+
+// Close releases idle transports and closes outstanding transports when their
+// leases are returned.
+func (p *ProjectConnections) Close() error {
+	p.mu.Lock()
+	p.closed = true
+	idle := p.idle
+	p.idle = nil
+	p.mu.Unlock()
+	var err error
+	for _, entry := range idle {
+		entry.timer.Stop()
+		err = errors.Join(err, entry.conn.client.Close())
+	}
+	return err
 }

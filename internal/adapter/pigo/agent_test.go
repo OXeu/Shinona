@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -217,7 +218,8 @@ func (w *recordingWorkspace) WriteFile(_ context.Context, path string, data []by
 }
 
 func (w *recordingWorkspace) Exec(_ context.Context, command sandbox.Command) (sandbox.Result, error) {
-	if command.Program != "/bin/bash" || len(command.Args) != 2 || command.Args[0] != "-c" || command.Args[1] != "cat example.txt" {
+	expected := sandbox.Shell("-c", "cat example.txt")
+	if command.Program != expected.Program || !slices.Equal(command.Args, expected.Args) {
 		return sandbox.Result{}, errors.New("unexpected command")
 	}
 	w.executed = true

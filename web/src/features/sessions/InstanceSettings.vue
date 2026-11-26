@@ -38,6 +38,9 @@ const e2bFields: Record<string, MessageKey> = {
 }
 const connectionFields: Record<string, MessageKey> = {
   e2bProxyUrl: 'settings.e2bProxy', e2bDomain: 'settings.e2bDomain',
+  e2bApiVersion: 'settings.e2bApiVersion',
+  e2bWorkspaceUser: 'settings.e2bWorkspaceUser',
+  e2bWorkDirectory: 'settings.e2bWorkDirectory',
 }
 const group = computed(() => groups[props.section])
 const drafts = reactive<Record<string, string | null>>({})

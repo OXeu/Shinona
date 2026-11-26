@@ -32,7 +32,7 @@ func (p *Provider) recoverProject(ctx context.Context, spec sandbox.Spec, previo
 				continue
 			}
 			attempted[id] = true
-			workspace, err := p.createProject(ctx, spec, previous.id, id)
+			workspace, err := p.createProject(ctx, spec, previous, id)
 			if !errors.Is(err, errSnapshotMissing) {
 				return workspace, err
 			}
@@ -42,12 +42,12 @@ func (p *Provider) recoverProject(ctx context.Context, spec sandbox.Spec, previo
 		}
 	}
 	if id := previous.tokens.RecoverySnapshot; id != "" && !attempted[id] {
-		workspace, err := p.createProject(ctx, spec, previous.id, id)
+		workspace, err := p.createProject(ctx, spec, previous, id)
 		if !errors.Is(err, errSnapshotMissing) {
 			return workspace, err
 		}
 	}
-	return p.createProject(ctx, spec, previous.id, "")
+	return p.createProject(ctx, spec, previous, "")
 }
 
 func snapshotKey(runID, snapshot string) string {

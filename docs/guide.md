@@ -135,7 +135,7 @@ Each account can configure up to 16 MCP servers. Server URLs must omit embedded 
 
 ### E2B Cloud and self-hosted E2B
 
-Configure the E2B API key in **Settings → Sandbox**. The E2B template defaults to `base`. The template must contain the `user` account and `/home/user`. Outbound access follows the E2B project or self-hosted network configuration. Shinona requests private ingress to obtain a traffic access token on self-hosted runtimes that issue credentials for private sandbox URLs. [E2B network controls](https://e2b.dev/resources/run-ai-generated-code-safely)
+Configure the E2B API key in **Settings → Sandbox**. The E2B template defaults to `base`. New workspaces use the template's default user and directory. Set **Workspace user** or **Workspace directory** to override them. These settings also accept startup values from `SHINONA_E2B_WORKSPACE_USER` and `SHINONA_E2B_WORK_DIRECTORY`. Existing workspaces keep their recorded directory, including older workspaces originally opened in `/root`, until you configure an override or recreate the sandbox. Outbound access follows the E2B project or self-hosted network configuration. Shinona requests private ingress to obtain a traffic access token on self-hosted runtimes that issue credentials for private sandbox URLs. [E2B network controls](https://e2b.dev/resources/run-ai-generated-code-safely)
 
 Shinona saves the sandbox ID and its private data-plane tokens in SQLite for each account, project, and E2B control plane. Sessions without a named project use the account's default workspace. Configure the fallback active window and expiration action under **Settings → Sandbox** with **Timeout in seconds** and **On timeout**. Their startup values are `SHINONA_E2B_TIMEOUT` (300 seconds) and `SHINONA_E2B_ON_TIMEOUT` (`pause`). Each project can override either value. Shinona requests this window when connecting or creating a sandbox and renews it during turns and active terminal sessions. E2B runtime limits still apply. On expiration, **Pause** preserves the filesystem and memory, and **Kill** terminates the sandbox. The action is set when the sandbox is created. [E2B sandbox persistence](https://e2b.dev/docs/sandbox/persistence)
 
@@ -143,7 +143,8 @@ Self-hosted deployments need to support the sandbox connect endpoint and auto-pa
 
 For a self-hosted deployment, configure the endpoints as follows.
 
-- Set **E2B base URL** (`SHINONA_E2B_BASE_URL`) to the control plane. Typical values are `https://api.<cluster-domain>` and `http://127.0.0.1:3000` for local development. This selects the self-hosted sandbox creation endpoint.
+- Set **E2B base URL** (`SHINONA_E2B_BASE_URL`) to the control plane. Typical values are `https://api.<cluster-domain>` and `http://127.0.0.1:3000` for local development.
+- **E2B API version** (`SHINONA_E2B_API_VERSION`) defaults to `auto`. It tries v2 first and can switch to v1 when the route is unavailable. Set `v1` or `v2` to use a specific version.
 - Set the cluster domain separately for wildcard sandbox hosts. The adapter uses the sandbox domain returned by E2B and falls back to `SHINONA_E2B_DOMAIN` when configured.
 - For a separate header-routed envd proxy, set `SHINONA_E2B_PROXY_URL`, for example `http://127.0.0.1:3002`.
 
@@ -155,7 +156,11 @@ Use a Linux SSH host with Docker and a user that can run the Docker CLI there. I
 
 User-configured SSH hosts use public network addresses by default. An operator can allow exact private addresses through `SHINONA_TRUSTED_SSH_ADDRESSES`. An operator can also supply an optional shared SSH provider with the startup values in [.env.example](../.env.example).
 
-The SSH provider creates one container per account and project and starts commands in `/workspace`. It keeps the container when a run or SSH connection ends. The default Docker image is `buildpack-deps:bookworm-scm`. Custom images need `/bin/sh`, `sleep`, `setsid`, and standard file utilities. Install Bash for terminals and Bash tools, and Git for the repository panel.
+The SSH provider keeps one container per account and project across runs and SSH connections. It creates new containers with UID and GID 65534, an owned home and workspace, all Linux capabilities dropped, and no-new-privileges enabled. The default limits are 2 CPUs, 4 GiB of memory with no additional swap, and 512 processes. Operators can override these settings for shared and personal SSH providers using the `SHINONA_SSH_CONTAINER_*` startup variables.
+
+The default Docker image is `buildpack-deps:bookworm-scm` and the default working directory is `/workspace`. Custom images need `sh`, `sleep`, `setsid`, and standard file utilities. They should contain a user entry for the configured UID if tools need to resolve its name. Terminals use Bash when installed and fall back to `sh`. The repository panel requires Git.
+
+Shinona applies resource limits to existing containers when they next run. Their original user and capabilities remain in effect until the project sandbox is recreated. Export any workspace files you want to retain before using **Recreate sandbox**.
 
 ## Session transfer
 

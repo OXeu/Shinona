@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strconv"
 	"strings"
 )
 
@@ -28,11 +29,20 @@ const (
 	E2BDomain          Key = "e2bDomain"
 	E2BTimeout         Key = "e2bTimeout"
 	E2BOnTimeout       Key = "e2bOnTimeout"
+	E2BAPIVersion      Key = "e2bApiVersion"
+	E2BWorkspaceUser   Key = "e2bWorkspaceUser"
+	E2BWorkDirectory   Key = "e2bWorkDirectory"
 	SSHAddress         Key = "sshAddress"
 	SSHUser            Key = "sshUser"
 	SSHKeyPath         Key = "sshKeyPath"
 	SSHHostFingerprint Key = "sshHostFingerprint"
 	SSHTemplate        Key = "sshTemplate"
+)
+
+const (
+	DefaultE2BTemplate       = "base"
+	DefaultE2BTimeoutSeconds = 300
+	DefaultSSHImage          = "buildpack-deps:bookworm-scm"
 )
 
 type definition struct {
@@ -55,17 +65,20 @@ var definitions = []definition{
 	{key: ModelID, model: true},
 	{key: ModelAPIKey, model: true, secret: true},
 	{key: E2BAPIKey, env: "E2B_API_KEY", secret: true},
-	{key: E2BTemplate, env: "SHINONA_E2B_TEMPLATE", fallback: "base"},
+	{key: E2BTemplate, env: "SHINONA_E2B_TEMPLATE", fallback: DefaultE2BTemplate},
 	{key: E2BBaseURL, env: "SHINONA_E2B_BASE_URL", alias: "E2B_API_URL"},
 	{key: E2BProxyURL, env: "SHINONA_E2B_PROXY_URL", alias: "E2B_SANDBOX_URL"},
 	{key: E2BDomain, env: "SHINONA_E2B_DOMAIN", alias: "E2B_DOMAIN"},
-	{key: E2BTimeout, env: "SHINONA_E2B_TIMEOUT", fallback: "300"},
+	{key: E2BTimeout, env: "SHINONA_E2B_TIMEOUT", fallback: strconv.Itoa(DefaultE2BTimeoutSeconds)},
 	{key: E2BOnTimeout, env: "SHINONA_E2B_ON_TIMEOUT", fallback: "pause"},
+	{key: E2BAPIVersion, env: "SHINONA_E2B_API_VERSION", fallback: "auto"},
+	{key: E2BWorkspaceUser, env: "SHINONA_E2B_WORKSPACE_USER"},
+	{key: E2BWorkDirectory, env: "SHINONA_E2B_WORK_DIRECTORY"},
 	{key: SSHAddress, env: "SHINONA_SSH_ADDRESS"},
 	{key: SSHUser, env: "SHINONA_SSH_USER"},
 	{key: SSHKeyPath, env: "SHINONA_SSH_KEY_PATH"},
 	{key: SSHHostFingerprint, env: "SHINONA_SSH_HOST_FINGERPRINT"},
-	{key: SSHTemplate, env: "SHINONA_SSH_TEMPLATE", fallback: "buildpack-deps:bookworm-scm"},
+	{key: SSHTemplate, env: "SHINONA_SSH_TEMPLATE", fallback: DefaultSSHImage},
 }
 
 type Values map[Key]string

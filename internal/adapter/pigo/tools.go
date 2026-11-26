@@ -61,7 +61,7 @@ func tools(workspace sandbox.Workspace, writable bool) []agent.AgentTool {
 					return agent.AgentToolResult{}, errors.New("command must be nonempty")
 				}
 				start := time.Now()
-				result, err := workspace.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{"-c", command}})
+				result, err := workspace.Exec(ctx, sandbox.Shell("-c", command))
 				if err != nil {
 					text := fmt.Sprintf("Bash failed after %s without an exit code.\n%s%s",
 						time.Since(start).Round(time.Millisecond), clipPart(err.Error(), 1024), failedCommandOutput(result))

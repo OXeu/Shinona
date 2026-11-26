@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -125,7 +126,7 @@ func (r Repository) git(ctx context.Context, args ...string) (sandbox.Result, er
 	if r.root != "" {
 		options = append(options, "-C", r.root)
 	}
-	return r.workspace.Exec(ctx, sandbox.Command{Program: "/usr/bin/git", Args: append(options, args...)})
+	return r.workspace.Exec(ctx, sandbox.Command{Program: "git", Args: append(options, args...)})
 }
 
 func (r Repository) requireGit(ctx context.Context) error {
@@ -218,9 +219,12 @@ func (r Repository) History(ctx context.Context) (History, error) {
 // resolvePath follows symbolic links only within the workspace, using a fixed
 // script so input paths are passed as arguments and never evaluated as shell.
 const resolvePath = `set -eu
-root=$(pwd -P)
-target=$(realpath -e -- "$1") || exit 2
-case "$target" in "$root"|"$root"/*) ;; *) exit 2 ;; esac
+root=$(pwd -P && printf '.')
+root=${root%??}
+target=$(realpath "./$1" && printf '.') || exit 2
+target=${target%??}
+[ -e "$target" ] || exit 2
+case "$target" in "$root"|"${root%/}"/*) ;; *) exit 2 ;; esac
 case "$target" in */.git|*/.git/*) exit 2 ;; esac
 `
 
@@ -228,9 +232,19 @@ func (r Repository) Directory(ctx context.Context, folder string) (Directory, er
 	if folder != "." && !validPath(folder) {
 		return Directory{}, ErrPath
 	}
-	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{
-		"-c", resolvePath + `cd -- "$target"
-find . -mindepth 1 -maxdepth 1 ! -name .git \( -type d -o -type f \) -printf '%y\0%f\0'`, "shinona-list", folder,
+	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "sh", Args: []string{
+		"-c", resolvePath + `cd "$target"
+for entry in ./* ./.[!.]* ./..?*; do
+  if [ "$entry" = "./.git" ] || [ -L "$entry" ]; then continue; fi
+  if [ -d "$entry" ]; then
+    kind=d
+  elif [ -f "$entry" ]; then
+    kind=f
+  else
+    continue
+  fi
+  printf '%s\000%s\000' "$kind" "${entry#./}"
+done`, "shinona-list", folder,
 	}})
 	if err != nil {
 		return Directory{}, err
@@ -268,7 +282,7 @@ func (r Repository) ResolveRoot(ctx context.Context, root string) error {
 	if !validPath(root) {
 		return ErrPath
 	}
-	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{
+	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "sh", Args: []string{
 		"-c", resolvePath + `[ -d "$target" ]`, "shinona-root", root,
 	}})
 	if err != nil {
@@ -290,9 +304,15 @@ func (r Repository) File(ctx context.Context, name string) (Preview, error) {
 }
 
 func (r Repository) file(ctx context.Context, name string) (Preview, error) {
-	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{
-		"-c", resolvePath + `[ -f "$target" ] && head -c 16385 -- "$target"`, "shinona-file", name,
+	const previewBytes = 16 << 10
+	// Read one byte past the preview boundary to distinguish an exact fit.
+	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "sh", StdoutLimit: previewBytes + 1, Args: []string{
+		"-c", resolvePath + `[ -f "$target" ] && dd if="$target" bs="$2" count=1 2>/dev/null`, "shinona-file", name, strconv.Itoa(previewBytes + 1),
 	}})
+	if len(result.Stdout) > previewBytes {
+		result.Stdout = result.Stdout[:previewBytes]
+		result.Truncated = true
+	}
 	return preview(result, err, ErrPath)
 }
 

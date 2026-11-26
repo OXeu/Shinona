@@ -50,6 +50,7 @@ func TestProjectLifecycleUsesProjectTemplateAndTimeout(t *testing.T) {
 	provider, err := New(Config{
 		APIKey: "fixture", BaseURL: server.URL, ProxyURL: server.URL,
 		Template: "instance-template", Timeout: 480 * time.Second, OnTimeout: sandbox.TimeoutPause,
+		WorkDirectory: "/workspace",
 	}, server.Client(), store)
 	if err != nil {
 		t.Fatal(err)

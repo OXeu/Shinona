@@ -141,10 +141,11 @@ func TestProjectSandboxRecovery(t *testing.T) {
 			defer server.Close()
 
 			store := openStore(t, filepath.Join(t.TempDir(), "shinona.db"))
-			config := Config{APIKey: "test-key", Template: "base", BaseURL: server.URL, ProxyURL: server.URL}
+			config := Config{APIKey: "test-key", Template: "base", BaseURL: server.URL, ProxyURL: server.URL, APIVersion: "v1", WorkDirectory: "/workspace"}
 			client := server.Client()
 			if tc.cloud {
 				config.BaseURL = ""
+				config.APIVersion = "v2"
 				client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 					req := r.Clone(r.Context())
 					req.URL.Scheme, req.URL.Host = "http", server.Listener.Addr().String()

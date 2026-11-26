@@ -31,7 +31,8 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	command, err := dockerCommand([]string{"exec", "-it", w.name, "/bin/bash", "-i"})
+	shell := sandbox.Shell("-i")
+	command, err := dockerCommand(append([]string{"exec", "-it", w.name, shell.Program}, shell.Args...))
 	if err != nil {
 		return nil, err
 	}
@@ -76,6 +77,8 @@ func (t *terminal) Input(ctx context.Context, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	stop := context.AfterFunc(ctx, func() { _ = t.session.Close() })
+	defer stop()
 	_, err := t.input.Write(data)
 	return err
 }
@@ -87,6 +90,8 @@ func (t *terminal) Resize(ctx context.Context, size sandbox.TerminalSize) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	stop := context.AfterFunc(ctx, func() { _ = t.session.Close() })
+	defer stop()
 	return t.session.WindowChange(int(size.Rows), int(size.Cols))
 }
 

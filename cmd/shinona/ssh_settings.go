@@ -23,8 +23,6 @@ import (
 	"github.com/OXeu/shinona/internal/settings"
 )
 
-const defaultSSHImage = "buildpack-deps:bookworm-scm"
-
 var sshImageName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,254}$`)
 
 type personalSSHKey struct{ owner, server string }
@@ -105,6 +103,7 @@ func (r *runtime) personalSSH(server settings.SSHServer) (*sshsandbox.Provider, 
 	config := sshsandbox.Config{
 		Address: server.Address, User: server.User, HostFingerprint: server.HostFingerprint,
 		Template: server.Template, PrivateKey: server.PrivateKey,
+		Container:          r.sshContainer,
 		ProjectConnections: &r.sshProjects,
 	}
 	if !r.trustedSSH[server.Address] {
@@ -167,7 +166,7 @@ func (r *runtime) ResolveForAccount(ctx context.Context, owner, name string) (ru
 
 func (r *runtime) ProjectTargets(ctx context.Context, owner string) ([]run.Target, error) {
 	targets := make([]run.Target, 0, 2)
-	for _, name := range []string{"e2b", "ssh"} {
+	for _, name := range []string{sandbox.ProviderE2B, sandbox.ProviderSSH} {
 		target := r.Resolve(name)
 		if _, ok := target.Provider.(sandbox.ManagedProjectProvider); ok {
 			targets = append(targets, target)
@@ -198,7 +197,7 @@ func (r *runtime) sshConnectionSettings(ctx context.Context, owner string, serve
 	server.HostFingerprint = strings.TrimSpace(server.HostFingerprint)
 	server.PrivateKey = strings.TrimSpace(server.PrivateKey)
 	if server.Template == "" {
-		server.Template = defaultSSHImage
+		server.Template = settings.DefaultSSHImage
 	}
 	if server.User == "" || len(server.User) > 255 || strings.ContainsAny(server.User, "\x00\r\n") {
 		return settings.SSHServer{}, settings.Invalid("SSH_INVALID_USER", "enter a valid SSH user")
@@ -250,7 +249,7 @@ func (r *runtime) SaveSSHServer(ctx context.Context, server settings.SSHServer) 
 
 func (r *runtime) TestSSHServer(ctx context.Context, server settings.SSHServer) error {
 	// The connection test uses only the SSH fields, including the saved key when omitted.
-	server.Template = defaultSSHImage
+	server.Template = settings.DefaultSSHImage
 	server, err := r.sshConnectionSettings(ctx, auth.CurrentUser(ctx).ID, server)
 	if err != nil {
 		return err

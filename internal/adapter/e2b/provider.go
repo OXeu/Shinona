@@ -9,13 +9,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
+	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	sdk "github.com/eric642/e2b-go-sdk"
 
-	"github.com/OXeu/shinona/internal/adapter/envd"
 	"github.com/OXeu/shinona/internal/keylock"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
@@ -27,23 +27,27 @@ const (
 )
 
 type Config struct {
-	APIKey    string
-	Template  string
-	BaseURL   string
-	ProxyURL  string
-	Domain    string
-	Timeout   time.Duration
-	OnTimeout string
+	APIKey        string
+	Template      string
+	BaseURL       string
+	ProxyURL      string
+	Domain        string
+	Timeout       time.Duration
+	OnTimeout     string
+	APIVersion    string
+	WorkspaceUser string
+	WorkDirectory string
 }
 
 type Provider struct {
-	api        *sdk.Client
-	data       *http.Client
-	config     Config
-	dataScheme string
-	endpoint   string
-	store      WorkspaceStore
-	provision  keylock.Locks[sandbox.ProjectKey]
+	api         *sdk.Client
+	config      Config
+	dataScheme  string
+	sdkProxyURL string
+	endpoint    string
+	apiVersion  atomic.Int32
+	store       WorkspaceStore
+	provision   keylock.Locks[sandbox.ProjectKey]
 }
 
 // WorkspaceStore persists sandbox IDs and private data-plane credentials.
@@ -60,6 +64,8 @@ type credentials struct {
 	EnvdToken        string
 	TrafficToken     string
 	RecoverySnapshot string `json:",omitempty"`
+	WorkspaceUser    string `json:",omitempty"`
+	WorkDirectory    string `json:",omitempty"`
 }
 
 type projectSandbox struct {
@@ -76,6 +82,17 @@ func New(config Config, data *http.Client, store WorkspaceStore) (*Provider, err
 	}
 	if store == nil {
 		return nil, errors.New("E2B requires a project workspace store")
+	}
+	switch config.APIVersion {
+	case "", "auto", "v1", "v2":
+	default:
+		return nil, errors.New("E2B API version must be auto, v1, or v2")
+	}
+	if !validWorkspaceUser(config.WorkspaceUser) {
+		return nil, errors.New("E2B workspace user must be a user name")
+	}
+	if config.WorkDirectory != "" && (!path.IsAbs(config.WorkDirectory) || strings.ContainsRune(config.WorkDirectory, 0)) {
+		return nil, errors.New("E2B work directory must be an absolute path")
 	}
 	if config.Timeout == 0 {
 		config.Timeout = awakeWindow
@@ -110,22 +127,27 @@ func New(config Config, data *http.Client, store WorkspaceStore) (*Provider, err
 			return nil, errors.New("E2B domain must be a hostname")
 		}
 	}
-	api, err := sdk.NewClient(sdk.Config{
+	sdkConfig := (sdk.Config{
 		APIKey: config.APIKey, APIURL: apiURL, SandboxURL: config.ProxyURL,
-		Domain: config.Domain, RequestTimeout: apiTimeout, HTTPClient: data,
-	})
+		Domain: config.Domain, RequestTimeout: apiTimeout, HTTPClient: sdkHTTPClient(data),
+	}).Resolve()
+	api, err := sdk.NewClient(sdkConfig)
 	if err != nil {
 		return nil, err
 	}
 	return &Provider{
-		api: api, data: data, config: config, dataScheme: scheme,
+		api: api, config: config, dataScheme: scheme, sdkProxyURL: sdkConfig.SandboxURL,
 		endpoint: strings.TrimRight(apiURL, "/"), store: store,
 	}, nil
 }
 
+func validWorkspaceUser(user string) bool {
+	return len(user) <= 255 && !strings.ContainsAny(user, ":/ \t\r\n\x00")
+}
+
 func parseEndpoint(value string) (*url.URL, error) {
 	endpoint, err := url.Parse(value)
-	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" ||
+	if err != nil || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery ||
 		endpoint.Fragment != "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
 		return nil, errors.New("E2B endpoints must be HTTP(S) base URLs without credentials, query, or fragment")
 	}
@@ -158,14 +180,14 @@ func (p *Provider) acquireProject(ctx context.Context, spec sandbox.Spec) (*proj
 		return nil, err
 	}
 	if previous.id == "" {
-		return p.createProject(ctx, spec, "", "")
+		return p.createProject(ctx, spec, projectSandbox{}, "")
 	}
 	workspace, err := p.reconnectProject(ctx, spec, previous)
 	if !errors.Is(err, sandbox.ErrWorkspaceMissing) {
 		return workspace, err
 	}
 	if p.onTimeout(spec) == sandbox.TimeoutKill {
-		return p.createProject(ctx, spec, previous.id, "")
+		return p.createProject(ctx, spec, previous, "")
 	}
 	return p.recoverProject(ctx, spec, previous)
 }
@@ -215,11 +237,13 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 	if id == "" {
 		return nil, sandbox.ErrWorkspaceMissing
 	}
-	connect := p.api.Connect
-	if p.config.BaseURL != "" {
-		connect = p.api.ConnectV1
-	}
-	box, err := connect(ctx, id, sdk.ConnectOptions{Timeout: p.timeout(spec)})
+	options := sdk.ConnectOptions{Timeout: p.timeout(spec)}
+	box, err := p.requestSandbox(ctx, func(ctx context.Context, legacy bool) (*sdk.Sandbox, error) {
+		if legacy {
+			return p.api.ConnectV1(ctx, id, options)
+		}
+		return p.api.Connect(ctx, id, options)
+	})
 	if err != nil {
 		if isGone(err) {
 			return nil, fmt.Errorf("%w: %w", sandbox.ErrWorkspaceMissing, err)
@@ -230,7 +254,7 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 		return nil, fmt.Errorf("E2B returned an unexpected sandbox while reconnecting %s", id)
 	}
 	tokens := boxCredentials(box, project.tokens)
-	workspace, err := p.dataPlane(box, tokens)
+	workspace, tokens, err := p.dataPlane(ctx, box, tokens, true)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +272,7 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 	return workspace, nil
 }
 
-func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previousID, snapshot string) (*projectWorkspace, error) {
+func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previous projectSandbox, snapshot string) (*projectWorkspace, error) {
 	options := sdk.CreateOptions{
 		Template:               p.config.Template,
 		Timeout:                p.timeout(spec),
@@ -266,11 +290,12 @@ func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previou
 		options.Template = snapshot
 		options.IdempotencyKey = snapshotKey(spec.RunID, snapshot)
 	}
-	create := p.api.Create
-	if p.config.BaseURL != "" {
-		create = p.api.CreateV1
-	}
-	box, err := create(ctx, options)
+	box, err := p.requestSandbox(ctx, func(ctx context.Context, legacy bool) (*sdk.Sandbox, error) {
+		if legacy {
+			return p.api.CreateV1(ctx, options)
+		}
+		return p.api.Create(ctx, options)
+	})
 	if err != nil {
 		if snapshot != "" && isGone(err) {
 			return nil, fmt.Errorf("%w: %w", errSnapshotMissing, err)
@@ -278,12 +303,15 @@ func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previou
 		return nil, err
 	}
 
-	tokens := boxCredentials(box, credentials{RecoverySnapshot: snapshot})
-	workspace, err := p.dataPlane(box, tokens)
+	tokens := credentials{RecoverySnapshot: snapshot}
+	if snapshot != "" {
+		tokens.WorkspaceUser, tokens.WorkDirectory = previous.tokens.WorkspaceUser, previous.tokens.WorkDirectory
+	}
+	workspace, tokens, err := p.dataPlane(ctx, box, boxCredentials(box, tokens), snapshot != "")
 	if err != nil {
 		return nil, p.discard(ctx, box, err)
 	}
-	saved, err := p.saveProject(ctx, spec, previousID, box.ID, tokens)
+	saved, err := p.saveProject(ctx, spec, previous.id, box.ID, tokens)
 	if err != nil {
 		return nil, p.discard(ctx, box, err)
 	}
@@ -291,6 +319,41 @@ func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previou
 		return workspace, nil
 	}
 	return p.useConcurrentProject(ctx, spec, box)
+}
+
+// An explicitly selected version never probes another API. Auto starts with
+// v2 and remembers the last working version for this endpoint.
+func (p *Provider) requestSandbox(ctx context.Context, request func(context.Context, bool) (*sdk.Sandbox, error)) (*sdk.Sandbox, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
+	switch p.config.APIVersion {
+	case "v1":
+		return request(ctx, true)
+	case "v2":
+		return request(ctx, false)
+	}
+	first := p.apiVersion.Load() == 1
+	box, err := request(ctx, first)
+	if err == nil || !routeUnavailable(err) {
+		return box, err
+	}
+	box, fallback := request(ctx, !first)
+	if fallback == nil {
+		if first {
+			p.apiVersion.Store(2)
+		} else {
+			p.apiVersion.Store(1)
+		}
+		return box, nil
+	}
+	if !routeUnavailable(fallback) || (isGone(fallback) && !isGone(err)) {
+		return nil, fallback
+	}
+	return nil, err
+}
+
+func routeUnavailable(err error) bool {
+	return hasStatus(err, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented)
 }
 
 func (p *Provider) useConcurrentProject(ctx context.Context, spec sandbox.Spec, box *sdk.Sandbox) (*projectWorkspace, error) {
@@ -333,33 +396,6 @@ func boxCredentials(box *sdk.Sandbox, previous credentials) credentials {
 		previous.TrafficToken = token
 	}
 	return previous
-}
-
-func (p *Provider) dataPlane(box *sdk.Sandbox, tokens credentials) (*projectWorkspace, error) {
-	if tokens.EnvdToken == "" && tokens.TrafficToken == "" {
-		return nil, errors.New("E2B returned neither an envd access token nor a private traffic token")
-	}
-	headers := make(http.Header)
-	headers.Set("E2b-Sandbox-Id", box.ID)
-	headers.Set("E2b-Sandbox-Port", strconv.Itoa(envdPort))
-	if tokens.TrafficToken != "" {
-		headers.Set("E2b-Traffic-Access-Token", tokens.TrafficToken)
-	}
-	endpoint := p.config.ProxyURL
-	if endpoint == "" {
-		endpoint = p.dataScheme + "://" + box.GetHost(envdPort)
-	}
-	workspace, err := envd.New(p.data, envd.Config{
-		URL:       endpoint,
-		Token:     tokens.EnvdToken,
-		Directory: "/root",
-		User:      "root",
-		Headers:   headers,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &projectWorkspace{Workspace: workspace, terminal: workspace, sandboxID: box.ID, refresh: box.RefreshTimeout}, nil
 }
 
 var _ sandbox.ManagedProjectProvider = (*Provider)(nil)

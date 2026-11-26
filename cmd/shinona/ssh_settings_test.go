@@ -243,7 +243,7 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 					if current == "" {
 						return "", 0, true
 					}
-					return "container-id " + current + "\n", 0, true
+					return "container-id " + current + " hardened\n", 0, true
 				case strings.HasPrefix(command, "exec docker 'exec' ") && strings.Contains(command, " 'shinona-list' "):
 					listCalls.Add(1)
 					if current != "running" || strings.HasSuffix(command, " 'missing'") {

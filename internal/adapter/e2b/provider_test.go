@@ -17,6 +17,7 @@ import (
 
 func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 	var created, connected atomic.Int32
+	var discovered atomic.Int32
 	var temporaryFailure atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v2/sandboxes", func(w http.ResponseWriter, r *http.Request) {
@@ -61,16 +62,25 @@ func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 		if connected.Load() > 0 {
 			token = "resumed-token"
 		}
-		user, password, ok := r.BasicAuth()
-		if !ok || user != "root" || password != "" || r.URL.Query().Get("username") != "root" {
-			t.Error("envd must run workspace operations as root")
+		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("username") != "" {
+			t.Error("new workspaces must inherit the template user")
 		}
 		if r.Header.Get("X-Access-Token") != token || r.Header.Get("E2b-Traffic-Access-Token") != "traffic-token" ||
 			r.Header.Get("X-API-Key") != "" ||
-			r.Header.Get("E2b-Sandbox-Id") != "test-box" || r.URL.Query().Get("path") != "/root/hello.txt" {
+			r.Header.Get("E2b-Sandbox-Id") != "test-box" || r.URL.Query().Get("path") != "/home/workbench/hello.txt" {
 			t.Error("unexpected envd data-plane request")
 		}
 		_, _ = io.WriteString(w, "hello")
+	})
+	mux.HandleFunc("POST /process.Process/Start", func(w http.ResponseWriter, r *http.Request) {
+		request := readStart(t, r)
+		if request.Process.Cmd != "sh" || request.Process.Cwd != "" || r.Header.Get("Authorization") != "" {
+			t.Error("directory discovery must use the template user and directory")
+		}
+		discovered.Add(1)
+		beginProcess(t, w)
+		processOutput(t, w, "stdout", "/home/workbench\n")
+		finishProcess(t, w, 0)
 	})
 	mux.HandleFunc("DELETE /sandboxes/test-box", func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("the retained sandbox was deleted")
@@ -97,7 +107,7 @@ func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 	ctx := t.Context()
 	database := filepath.Join(t.TempDir(), "shinona.db")
 	repo := openStore(t, database)
-	config := Config{APIKey: "cloud-key", Template: "base"}
+	config := Config{APIKey: "cloud-key", Template: "base", BaseURL: "https://api.e2b.app"}
 	provider, err := New(config, dataClient, repo)
 	if err != nil {
 		t.Fatal(err)
@@ -141,8 +151,8 @@ func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 	if err := workspace.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if created.Load() != 1 || connected.Load() != 1 {
-		t.Fatalf("created %d, reconnected %d", created.Load(), connected.Load())
+	if created.Load() != 1 || connected.Load() != 1 || discovered.Load() != 1 {
+		t.Fatalf("created %d, reconnected %d, resolved directory %d", created.Load(), connected.Load(), discovered.Load())
 	}
 }
 
@@ -162,11 +172,15 @@ func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 func TestSelfHostedUsesReturnedTrafficToken(t *testing.T) {
 	var created, connected atomic.Bool
+	var probes atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-API-Key") != "self-hosted-key" {
 			t.Error("missing self-hosted API key")
 		}
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/sandboxes":
+			probes.Add(1)
+			http.NotFound(w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/sandboxes":
 			var body struct {
 				Secure              *bool
@@ -201,12 +215,17 @@ func TestSelfHostedUsesReturnedTrafficToken(t *testing.T) {
 			r.Header.Get("X-Access-Token") != "" || r.Header.Get("X-API-Key") != "" {
 			t.Error("incorrect self-hosted data plane headers")
 		}
+		user, _, _ := r.BasicAuth()
+		if user != "developer" || r.URL.Query().Get("path") != "/work/test.txt" {
+			t.Error("custom workspace user or directory not used")
+		}
 		_, _ = io.WriteString(w, "self-hosted")
 	}))
 	defer proxy.Close()
 	t.Setenv("E2B_DEBUG", "")
 
-	provider, err := New(Config{APIKey: "self-hosted-key", BaseURL: api.URL, ProxyURL: proxy.URL}, proxy.Client(), openStore(t, ":memory:"))
+	provider, err := New(Config{APIKey: "self-hosted-key", BaseURL: api.URL, ProxyURL: proxy.URL,
+		WorkspaceUser: "developer", WorkDirectory: "/work"}, proxy.Client(), openStore(t, ":memory:"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +247,7 @@ func TestSelfHostedUsesReturnedTrafficToken(t *testing.T) {
 	if data, err := box.ReadFile(t.Context(), "test.txt"); err != nil || string(data) != "self-hosted" {
 		t.Fatalf("read resumed workspace via proxy: %q, %v", data, err)
 	}
-	if !created.Load() || !connected.Load() {
+	if !created.Load() || !connected.Load() || probes.Load() != 1 {
 		t.Fatal("configured control plane did not receive create and connect")
 	}
 }
