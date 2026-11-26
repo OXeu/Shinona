@@ -44,11 +44,12 @@ type Reader interface {
 }
 
 type Handler struct {
-	reader              Reader
-	logger              *slog.Logger
-	brotli              sync.Pool
-	zstd                *zstd.Encoder
-	fullTranscriptSlots *semaphore.Weighted
+	reader               Reader
+	logger               *slog.Logger
+	brotli               sync.Pool
+	zstd                 *zstd.Encoder
+	fullTranscriptSlots  *semaphore.Weighted
+	pagedTranscriptSlots *semaphore.Weighted
 }
 
 func New(reader Reader, logger *slog.Logger) (*Handler, error) {
@@ -56,12 +57,14 @@ func New(reader Reader, logger *slog.Logger) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	fullSlots := int64(min(max(runtime.GOMAXPROCS(0), 4), 16))
 	return &Handler{
-		reader:              reader,
-		logger:              logger,
-		zstd:                encoder,
-		brotli:              sync.Pool{New: func() any { return brotli.NewWriterLevel(io.Discard, 4) }},
-		fullTranscriptSlots: semaphore.NewWeighted(int64(min(max(runtime.GOMAXPROCS(0), 4), 16))),
+		reader:               reader,
+		logger:               logger,
+		zstd:                 encoder,
+		brotli:               sync.Pool{New: func() any { return brotli.NewWriterLevel(io.Discard, 4) }},
+		fullTranscriptSlots:  semaphore.NewWeighted(fullSlots),
+		pagedTranscriptSlots: semaphore.NewWeighted(2 * fullSlots),
 	}, nil
 }
 
@@ -220,17 +223,19 @@ func (h *Handler) Transcript(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid transcript request.", http.StatusBadRequest)
 		return
 	}
-	// Queue full downloads before loading turns so only a bounded number can
-	// hold transcripts and compete for SQLite and Zstd at once.
-	if !paged {
-		wait := timing.Start(ctx, "transcript_wait")
-		err := h.fullTranscriptSlots.Acquire(ctx, 1)
-		wait()
-		if err != nil {
-			return
-		}
-		defer h.fullTranscriptSlots.Release(1)
+	// Queue each class before loading turns. The page pool stays available
+	// while full downloads hold their slots.
+	slots := h.fullTranscriptSlots
+	if paged {
+		slots = h.pagedTranscriptSlots
 	}
+	wait := timing.Start(ctx, "transcript_wait")
+	waitErr := slots.Acquire(ctx, 1)
+	wait()
+	if waitErr != nil {
+		return
+	}
+	defer slots.Release(1)
 	load := timing.Start(ctx, "transcript_load")
 	var transcript *run.Transcript
 	var err error

@@ -258,49 +258,66 @@ func TestTranscriptFramesAndOwnership(t *testing.T) {
 	}
 }
 
-func TestFullTranscriptWaitAllowsPagedReadsAndCancellation(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		handler := fixtureHandler(t)
-		handler.fullTranscriptSlots = semaphore.NewWeighted(1)
-		if !handler.fullTranscriptSlots.TryAcquire(1) {
-			t.Fatal("reserve the full transcript slot")
-		}
-		owner := auth.WithUser(t.Context(), auth.User{ID: "owner"})
-		full, cancel := context.WithCancel(owner)
-		defer cancel()
-		request := func(ctx context.Context, body string) *http.Request {
-			return httptest.NewRequestWithContext(ctx, http.MethodPost, TranscriptPath, strings.NewReader(body))
-		}
-		response := httptest.NewRecorder()
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			handler.Transcript(response, request(full, `{"id":"owner","paged":false}`))
-		}()
-		synctest.Wait()
-		select {
-		case <-done:
-			t.Fatal("full transcript did not wait for a slot")
-		default:
-		}
+func TestTranscriptQueuesAreIndependentAndCancelable(t *testing.T) {
+	const paged, full = `{"id":"owner"}`, `{"id":"owner","paged":false}`
+	for _, tc := range []struct {
+		name, queuedBody, readyBody string
+		blockFull                   bool
+	}{
+		{name: "full", queuedBody: full, readyBody: paged, blockFull: true},
+		{name: "paged", queuedBody: paged, readyBody: full},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				handler := fixtureHandler(t)
+				handler.fullTranscriptSlots = semaphore.NewWeighted(1)
+				handler.pagedTranscriptSlots = semaphore.NewWeighted(1)
+				slots := handler.pagedTranscriptSlots
+				if tc.blockFull {
+					slots = handler.fullTranscriptSlots
+				}
+				if !slots.TryAcquire(1) {
+					t.Fatal("reserve the transcript slot")
+				}
 
-		paged := httptest.NewRecorder()
-		handler.Transcript(paged, request(owner, `{"id":"owner"}`))
-		if !paged.Flushed || paged.Header().Get("Content-Type") != transcriptType {
-			t.Fatal("paged transcript did not stream while the full slot was busy")
-		}
+				owner := auth.WithUser(t.Context(), auth.User{ID: "owner"})
+				queued, cancel := context.WithCancel(owner)
+				defer cancel()
+				request := func(ctx context.Context, body string) *http.Request {
+					return httptest.NewRequestWithContext(ctx, http.MethodPost, TranscriptPath, strings.NewReader(body))
+				}
+				waiting := httptest.NewRecorder()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					handler.Transcript(waiting, request(queued, tc.queuedBody))
+				}()
+				synctest.Wait()
+				select {
+				case <-done:
+					t.Fatal("transcript did not wait for a slot")
+				default:
+				}
 
-		cancel()
-		<-done
-		if response.Body.Len() != 0 {
-			t.Fatal("canceled full transcript wrote a response")
-		}
-		handler.fullTranscriptSlots.Release(1)
-		if !handler.fullTranscriptSlots.TryAcquire(1) {
-			t.Fatal("full transcript slot was lost after cancellation")
-		}
-		handler.fullTranscriptSlots.Release(1)
-	})
+				ready := httptest.NewRecorder()
+				handler.Transcript(ready, request(owner, tc.readyBody))
+				if !ready.Flushed || ready.Header().Get("Content-Type") != transcriptType {
+					t.Fatal("transcript did not stream while the other queue was busy")
+				}
+
+				cancel()
+				<-done
+				if waiting.Body.Len() != 0 {
+					t.Fatal("canceled transcript wrote a response")
+				}
+				slots.Release(1)
+				if !slots.TryAcquire(1) {
+					t.Fatal("transcript slot was lost after cancellation")
+				}
+				slots.Release(1)
+			})
+		})
+	}
 }
 
 func TestTranscriptPublishesServerTiming(t *testing.T) {
@@ -322,7 +339,7 @@ func TestTranscriptPublishesServerTiming(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected transcript status: %d", response.StatusCode)
 	}
-	for _, phase := range []string{"app", "transcript_decode", "transcript_load", "sandbox_settings", "transcript_first_frame"} {
+	for _, phase := range []string{"app", "transcript_decode", "transcript_wait", "transcript_load", "sandbox_settings", "transcript_first_frame"} {
 		if !strings.Contains(strings.Join(response.Header.Values("Server-Timing"), ","), phase+";dur=") {
 			t.Errorf("transcript response is missing %s", phase)
 		}
