@@ -29,6 +29,14 @@ import (
 
 type fixtureApplication struct{ Application }
 
+type transcriptResponse struct {
+	Session *struct {
+		transcriptMetadata
+		Turns []turnResponse `json:"turns"`
+	}
+	SandboxSettings sandboxSettings
+}
+
 func (fixtureApplication) ComposerOptions(context.Context) (ComposerOptions, error) {
 	return ComposerOptions{Models: []ModelInfo{}, MCPServers: []string{}}, nil
 }
@@ -137,6 +145,15 @@ func TestConversationLifecycleAndOwnership(t *testing.T) {
 	named := decode[sessionSummary](t, perform(t, router, "alice", "PATCH", path, map[string]string{"title": "Named session"}, 200))
 	if named.DefaultTitle || named.Title != "Named session" {
 		t.Fatalf("rename session: %+v", named)
+	}
+	renamed := decode[transcriptResponse](t, perform(t, router, "alice", "GET", path+"/transcript", nil, 200)).Session
+	if renamed == nil || renamed.Title != "Named session" || len(renamed.Turns) != 1 {
+		t.Fatalf("transcript reused an old session summary: %+v", renamed)
+	}
+	perform(t, router, "alice", "POST", path+"/turns/"+first.ID+"/revert", map[string]string{"expectedHeadId": first.ID}, 200)
+	reverted := decode[transcriptResponse](t, perform(t, router, "alice", "GET", path+"/transcript", nil, 200)).Session
+	if reverted == nil || len(reverted.Turns) != 0 || reverted.TurnCount != 0 {
+		t.Fatalf("encoded cache retained a reverted turn: %+v", reverted)
 	}
 	perform(t, router, "alice", "DELETE", path, nil, 204)
 }

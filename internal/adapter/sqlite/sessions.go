@@ -129,15 +129,37 @@ func (r *Repository) SessionProject(ctx context.Context, ownerID, sessionID stri
 }
 
 func (r *Repository) Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*run.Transcript, error) {
-	return r.transcript(ctx, ownerID, sessionID, transcriptWindow{limit: limit})
+	page, err := r.transcript(ctx, ownerID, sessionID, transcriptWindow{limit: limit})
+	if page == nil {
+		return nil, err
+	}
+	return &page.Transcript, err
 }
 
 func (r *Repository) TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*run.Transcript, error) {
-	window := transcriptWindow{limit: run.TranscriptPageSize, before: beforeSequence, paged: true}
-	if beforeSequence != 0 {
+	page, err := r.transcriptPage(ctx, ownerID, sessionID, transcriptWindow{
+		limit: run.TranscriptPageSize, before: beforeSequence, paged: true,
+	})
+	if page == nil {
+		return nil, err
+	}
+	return &page.Transcript, err
+}
+
+func (r *Repository) TranscriptSnapshot(ctx context.Context, ownerID, sessionID string, paged bool, beforeSequence int) (*run.TranscriptSnapshot, error) {
+	window := transcriptWindow{paged: paged, before: beforeSequence, retainJSON: true}
+	if !paged {
 		return r.transcript(ctx, ownerID, sessionID, window)
 	}
-	key := latestTranscriptKey{ownerID, sessionID}
+	window.limit = run.TranscriptPageSize
+	return r.transcriptPage(ctx, ownerID, sessionID, window)
+}
+
+func (r *Repository) transcriptPage(ctx context.Context, ownerID, sessionID string, window transcriptWindow) (*run.TranscriptSnapshot, error) {
+	if window.before != 0 {
+		return r.transcript(ctx, ownerID, sessionID, window)
+	}
+	key := latestTranscriptKey{owner: ownerID, session: sessionID, retainJSON: window.retainJSON}
 	if cached := r.latest.get(key); cached != nil {
 		if page, hit, err := r.validateCachedTranscript(ctx, key, cached); hit || err != nil {
 			return page, err
@@ -151,10 +173,11 @@ func (r *Repository) TranscriptPage(ctx context.Context, ownerID, sessionID stri
 }
 
 type transcriptWindow struct {
-	limit  int
-	offset int
-	before int
-	paged  bool
+	limit      int
+	offset     int
+	before     int
+	paged      bool
+	retainJSON bool
 }
 
 // Keep JSON as bytes until the read transaction has released its connection.
@@ -166,16 +189,20 @@ type transcriptRow struct {
 	TokenUsage []byte
 }
 
-func (record *transcriptRow) turn() (run.Run, error) {
+func (record *transcriptRow) turn(retainJSON bool) (run.Run, error) {
 	turn := run.Run(record.Run)
+	parts, usage := record.Parts, record.TokenUsage
+	if retainJSON {
+		parts, usage = nil, nil
+	}
 	for _, field := range []struct {
 		data []byte
 		dest any
 	}{
 		{record.Payload, &turn.Payload},
 		{record.Steering, &turn.Steering},
-		{record.Parts, &turn.Parts},
-		{record.TokenUsage, &turn.TokenUsage},
+		{parts, &turn.Parts},
+		{usage, &turn.TokenUsage},
 	} {
 		if len(field.data) != 0 {
 			if err := json.Unmarshal(field.data, field.dest); err != nil {
@@ -186,8 +213,8 @@ func (record *transcriptRow) turn() (run.Run, error) {
 	return turn, nil
 }
 
-func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, window transcriptWindow) (*run.Transcript, error) {
-	var result *run.Transcript
+func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, window transcriptWindow) (*run.TranscriptSnapshot, error) {
+	var result *run.TranscriptSnapshot
 	var turns []transcriptRow
 	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
@@ -225,7 +252,7 @@ func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, 
 		if err := query.Find(&turns).Error; err != nil {
 			return err
 		}
-		result = &run.Transcript{Session: describeSession(session)}
+		result = &run.TranscriptSnapshot{Transcript: run.Transcript{Session: describeSession(session)}}
 		if window.paged && len(turns) == window.limit {
 			before := turns[len(turns)-1].Run.Sequence
 			var earlier []int
@@ -244,15 +271,24 @@ func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, 
 	}
 	defer timing.Start(ctx, "transcript_json")()
 	result.Turns = make([]run.Run, len(turns))
+	if window.retainJSON {
+		result.StoredTurns = make([]run.StoredTurnJSON, len(turns))
+	}
 	for i := range turns {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		turn, err := turns[i].turn()
+		record := &turns[i]
+		index := len(turns) - 1 - i
+		retain := window.retainJSON && record.Run.Status.Completed()
+		turn, err := record.turn(retain)
 		if err != nil {
 			return nil, err
 		}
-		result.Turns[len(turns)-1-i] = turn
+		result.Turns[index] = turn
+		if retain {
+			result.StoredTurns[index] = run.StoredTurnJSON{Parts: string(record.Parts), TokenUsage: string(record.TokenUsage)}
+		}
 	}
 	return result, nil
 }

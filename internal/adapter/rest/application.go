@@ -34,4 +34,5 @@ type handler struct {
 	logger          *slog.Logger
 	fullTranscript  *semaphore.Weighted
 	pagedTranscript *semaphore.Weighted
+	transcriptTurns encodedTranscriptTurns
 }

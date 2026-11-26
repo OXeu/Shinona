@@ -135,17 +135,30 @@ func (s *Service) TranscriptPage(ctx context.Context, owner, id string, beforeSe
 	return s.withTranscriptProgress(s.repo.TranscriptPage(ctx, owner, id, beforeSequence))
 }
 
+func (s *Service) TranscriptSnapshot(ctx context.Context, owner, id string, paged bool, beforeSequence int) (*TranscriptSnapshot, error) {
+	snapshot, err := s.repo.TranscriptSnapshot(ctx, owner, id, paged, beforeSequence)
+	if err != nil || snapshot == nil {
+		return snapshot, err
+	}
+	s.addTranscriptProgress(snapshot.Turns)
+	return snapshot, nil
+}
+
 func (s *Service) withTranscriptProgress(transcript *Transcript, err error) (*Transcript, error) {
 	if err != nil || transcript == nil {
 		return transcript, err
 	}
-	for i := range transcript.Turns {
-		turn := &transcript.Turns[i]
+	s.addTranscriptProgress(transcript.Turns)
+	return transcript, nil
+}
+
+func (s *Service) addTranscriptProgress(turns []Run) {
+	for i := range turns {
+		turn := &turns[i]
 		if turn.Status == Running {
 			s.controls.addProgress(turn)
 		}
 	}
-	return transcript, nil
 }
 
 func (s *Service) Attachment(ctx context.Context, owner, sessionID, turnID string, index int) (*Image, error) {

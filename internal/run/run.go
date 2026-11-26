@@ -19,6 +19,10 @@ const (
 	Stopped   Status = "STOPPED"
 )
 
+func (s Status) Completed() bool {
+	return s == Succeeded || s == Failed || s == Stopped
+}
+
 const (
 	MaxPromptCharacters = 8_000
 	DefaultSessionTitle = "New session"
@@ -63,6 +67,18 @@ type Transcript struct {
 	Session            Session
 	Turns              []Run
 	NextBeforeSequence int
+}
+
+// TranscriptSnapshot retains the stored JSON for completed turns in a read
+// snapshot. StoredTurns is indexed in the same order as Turns.
+type TranscriptSnapshot struct {
+	Transcript
+	StoredTurns []StoredTurnJSON
+}
+
+type StoredTurnJSON struct {
+	Parts      string
+	TokenUsage string
 }
 
 func (t Transcript) LastOptions() *Options {
@@ -160,6 +176,7 @@ type Repository interface {
 	RemoveProject(ctx context.Context, ownerID, id string) error
 	Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*Transcript, error)
 	TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*Transcript, error)
+	TranscriptSnapshot(ctx context.Context, ownerID, sessionID string, paged bool, beforeSequence int) (*TranscriptSnapshot, error)
 	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Image, error)
 	SessionProject(ctx context.Context, ownerID, sessionID string) (string, error)
 	WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error)

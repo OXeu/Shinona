@@ -2,8 +2,10 @@ package rest
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"slices"
 	"time"
@@ -143,16 +145,6 @@ type transcriptMetadata struct {
 	LastOptions        *lastRunOptions `json:"lastOptions"`
 }
 
-type transcriptSession struct {
-	transcriptMetadata
-	Turns []turnResponse `json:"turns"`
-}
-
-type transcriptResponse struct {
-	Session         *transcriptSession `json:"session"`
-	SandboxSettings sandboxSettings    `json:"sandboxSettings"`
-}
-
 type lastRunOptions struct {
 	Model      string   `json:"model"`
 	Permission string   `json:"permission"`
@@ -190,12 +182,7 @@ func (r *handler) transcript(c *gin.Context) {
 
 	owner := auth.CurrentUser(ctx).ID
 	load := timing.Start(ctx, "transcript_load")
-	var transcript *run.Transcript
-	if paged {
-		transcript, err = r.service.TranscriptPage(ctx, owner, args.ID, before)
-	} else {
-		transcript, err = r.service.FullTranscript(ctx, owner, args.ID)
-	}
+	transcript, err := r.service.TranscriptSnapshot(ctx, owner, args.ID, paged, before)
 	load()
 	if err != nil {
 		writeError(c, r.apiError(err))
@@ -207,89 +194,100 @@ func (r *handler) transcript(c *gin.Context) {
 		return
 	}
 
-	response := transcriptResponse{SandboxSettings: settings}
-	if transcript != nil {
-		meta := transcriptMetadata{
-			sessionSummary:     publicSession(transcript.Session),
-			NextBeforeSequence: transcript.NextBeforeSequence,
-		}
-		if options := transcript.LastOptions(); options != nil {
-			meta.LastOptions = &lastRunOptions{
-				Model: options.Model, Permission: options.Permission, Thinking: options.Thinking,
-				MCPServers: nonNil(options.SelectedMCPServers()), ArrowJS: options.ArrowJS,
+	if !paged && transcript != nil && len(transcript.Turns) > run.TranscriptPageSize {
+		if err := r.streamTranscript(c, transcript, settings); err != nil && ctx.Err() == nil {
+			if !c.Writer.Written() {
+				writeError(c, r.apiError(err))
+			} else {
+				r.logger.Debug("write transcript response", "error", err)
 			}
 		}
-		if !paged && len(transcript.Turns) > run.TranscriptPageSize {
-			if err := streamTranscript(c, meta, settings, transcript.Turns); err != nil && ctx.Err() == nil {
-				if !c.Writer.Written() {
-					writeError(c, r.apiError(err))
-				} else {
-					r.logger.Debug("write transcript response", "error", err)
-				}
-			}
-			return
-		}
-		session := &transcriptSession{transcriptMetadata: meta, Turns: make([]turnResponse, len(transcript.Turns))}
-		for i, item := range transcript.Turns {
-			session.Turns[i] = publicTurn(item)
-		}
-		response.Session = session
+		return
 	}
+	var body bytes.Buffer
 	encode := timing.Start(ctx, "transcript_encode")
-	body, err := json.Marshal(response)
+	if transcript != nil {
+		size := 512 + len(transcript.Session.Title)
+		for i, turn := range transcript.Turns {
+			size += 512 + len(turn.Prompt) + len(turn.Output) + len(transcript.StoredTurns[i].Parts)
+		}
+		body.Grow(size)
+	}
+	err = r.writeTranscript(ctx, &body, transcript, settings)
 	encode()
 	if err != nil {
 		writeError(c, r.apiError(err))
 		return
 	}
-	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
+	c.Data(http.StatusOK, "application/json; charset=utf-8", body.Bytes())
 }
 
 // Stream large full transcripts as a regular JSON object, encoding one turn
 // at a time to keep response buffering independent of transcript length.
-func streamTranscript(c *gin.Context, meta transcriptMetadata, settings sandboxSettings, turns []run.Run) error {
+func (r *handler) streamTranscript(c *gin.Context, transcript *run.TranscriptSnapshot, settings sandboxSettings) error {
 	ctx, finish := httpserver.StreamTiming(c.Writer, c.Request.Context())
 	defer finish()
 	defer timing.Start(ctx, "transcript_write")()
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	buffer := bufio.NewWriterSize(c.Writer, 32<<10)
+	if err := r.writeTranscript(ctx, buffer, transcript, settings); err != nil {
+		return err
+	}
+	return buffer.Flush()
+}
+
+func (r *handler) writeTranscript(ctx context.Context, w io.Writer, transcript *run.TranscriptSnapshot, settings sandboxSettings) error {
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	if transcript == nil {
+		_, err = io.WriteString(w, `{"session":null,"sandboxSettings":`+string(settingsJSON)+"}")
+		return err
+	}
+
+	meta := transcriptMetadata{
+		sessionSummary:     publicSession(transcript.Session),
+		NextBeforeSequence: transcript.NextBeforeSequence,
+	}
+	if options := transcript.LastOptions(); options != nil {
+		meta.LastOptions = &lastRunOptions{
+			Model: options.Model, Permission: options.Permission, Thinking: options.Thinking,
+			MCPServers: nonNil(options.SelectedMCPServers()), ArrowJS: options.ArrowJS,
+		}
+	}
 	header, err := json.Marshal(meta)
 	if err != nil {
 		return err
 	}
-	c.Header("Content-Type", "application/json; charset=utf-8")
-	buffer := bufio.NewWriterSize(c.Writer, 32<<10)
-	if _, err := buffer.WriteString(`{"session":`); err != nil {
+	if _, err := io.WriteString(w, `{"session":`); err != nil {
 		return err
 	}
-	if _, err := buffer.Write(header[:len(header)-1]); err != nil {
+	if _, err := w.Write(header[:len(header)-1]); err != nil {
 		return err
 	}
-	if _, err := buffer.WriteString(`,"turns":[`); err != nil {
+	if _, err := io.WriteString(w, `,"turns":[`); err != nil {
 		return err
 	}
-	encoder := json.NewEncoder(buffer)
-	for i, turn := range turns {
+	for i, turn := range transcript.Turns {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		body, err := r.transcriptTurns.encode(ctx, turn, transcript.StoredTurns[i])
+		if err != nil {
+			return err
+		}
 		if i != 0 {
-			if err := buffer.WriteByte(','); err != nil {
+			if _, err := io.WriteString(w, ","); err != nil {
 				return err
 			}
 		}
-		if err := encoder.Encode(publicTurn(turn)); err != nil {
+		if _, err := w.Write(body); err != nil {
 			return err
 		}
 	}
-	if _, err := buffer.WriteString(`]},"sandboxSettings":`); err != nil {
-		return err
-	}
-	if err := encoder.Encode(settings); err != nil {
-		return err
-	}
-	if err := buffer.WriteByte('}'); err != nil {
-		return err
-	}
-	return buffer.Flush()
+	_, err = io.WriteString(w, `]},"sandboxSettings":`+string(settingsJSON)+"}")
+	return err
 }
 
 func (r *handler) createSession(ctx context.Context, args struct {
