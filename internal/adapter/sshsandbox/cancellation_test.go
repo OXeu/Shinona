@@ -2,8 +2,6 @@ package sshsandbox
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"net"
 	"sync"
@@ -174,55 +172,20 @@ func (c *stalledSSHTransport) Close() error {
 
 func sshCancellationWorkspace(t *testing.T, ctx context.Context, cleanup time.Duration) (*workspace, *stalledSSHTransport, <-chan struct{}) {
 	t.Helper()
-	_, key, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	signer, err := ssh.NewSignerFromKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := &ssh.ServerConfig{PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) { return nil, nil }}
-	server.AddHostKey(signer)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
 	started := make(chan struct{})
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		_, channels, requests, err := ssh.NewServerConn(conn, server)
-		if err != nil {
-			return
-		}
-		go ssh.DiscardRequests(requests)
-		for incoming := range channels {
-			channel, requests, err := incoming.Accept()
-			if err != nil {
-				return
+	provider := sshFixtureProvider(t, cleanup, func(_ ssh.Channel, requests <-chan *ssh.Request) {
+		for request := range requests {
+			switch request.Type {
+			case "pty-req":
+				_ = request.Reply(true, nil)
+			case "exec":
+				_ = request.Reply(true, nil)
+				close(started)
+			default:
+				_ = request.Reply(false, nil)
 			}
-			for request := range requests {
-				switch request.Type {
-				case "pty-req":
-					_ = request.Reply(true, nil)
-				case "exec":
-					_ = request.Reply(true, nil)
-					close(started)
-				default:
-					_ = request.Reply(false, nil)
-				}
-			}
-			_ = channel.Close()
 		}
-	}()
-	provider := &Provider{address: listener.Addr().String(), cleanup: cleanup, client: &ssh.ClientConfig{
-		User: "fixture", Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: ssh.FixedHostKey(signer.PublicKey()),
-	}}
+	})
 	var transport *stalledSSHTransport
 	provider.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)

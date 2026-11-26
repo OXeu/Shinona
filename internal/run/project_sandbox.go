@@ -175,8 +175,6 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 }
 
 func (s *Service) cleanPreviousSandbox(ctx context.Context, name string, spec sandbox.Spec) error {
-	ctx, cancel := context.WithTimeout(ctx, s.workspace.Operation)
-	defer cancel()
 	previous, err := s.resolve(ctx, spec.OwnerID, name)
 	if err != nil {
 		return err

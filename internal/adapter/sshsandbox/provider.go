@@ -355,12 +355,18 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error 
 	if err != nil || status.State == sandbox.ProjectNone {
 		return err
 	}
-	if err := ws.docker(ctx, "rm", "--force", "--volumes", ws.name); err != nil {
-		if status, checkErr := ws.status(ctx); checkErr != nil || status.State != sandbox.ProjectNone {
-			return err
-		}
+	removeErr := ws.docker(ctx, "rm", "--force", "--volumes", "--", status.ID)
+	remaining, checkErr := ws.status(ctx)
+	if checkErr != nil {
+		return errors.Join(removeErr, checkErr)
 	}
-	return nil
+	if remaining.State == sandbox.ProjectNone {
+		return nil
+	}
+	if removeErr != nil {
+		return removeErr
+	}
+	return errors.New("project sandbox is still present after container removal")
 }
 
 var _ sandbox.ManagedProjectProvider = (*Provider)(nil)

@@ -73,6 +73,70 @@ func TestProjectSandboxUsesConfiguredLifecycleTimeout(t *testing.T) {
 	})
 }
 
+func TestRemovingProjectAndSwitchingProviderAllowFullSandboxLifecycle(t *testing.T) {
+	for _, operation := range []string{"remove project", "switch provider"} {
+		t.Run(operation, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				limits := WorkspaceTimeouts{Operation: time.Second, Lifecycle: 3 * time.Second}
+				const destroyDuration = 2 * time.Second
+				repo := &projectCleanupRepository{provider: sandbox.ProviderSSH}
+				previous := timedWorkspaceProvider{destroy: func(ctx context.Context) error {
+					timer := time.NewTimer(destroyDuration)
+					defer timer.Stop()
+					select {
+					case <-timer.C:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}}
+				resolve := func(_ context.Context, _, name string) (Target, error) {
+					if name == sandbox.ProviderSSH {
+						return Target{Name: name, Provider: previous}, nil
+					}
+					return Target{Name: name, Provider: timedWorkspaceProvider{}}, nil
+				}
+				service := NewService(ServiceStores{Projects: repo}, resolve, func() string { return "operation" }, &Controls{}, nil, limits)
+				start := time.Now()
+				var err error
+				wantProvider := sandbox.ProviderE2B
+				if operation == "remove project" {
+					wantProvider = ""
+					err = service.RemoveProject(t.Context(), "owner", "project")
+				} else {
+					err = service.SaveProjectSandbox(t.Context(), "owner", "project", ProjectSandboxConfig{Provider: wantProvider}, "")
+				}
+				if err != nil || time.Since(start) != destroyDuration || repo.provider != wantProvider {
+					t.Fatalf("%s finished after %v with provider %q and error %v", operation, time.Since(start), repo.provider, err)
+				}
+			})
+		})
+	}
+}
+
+type projectCleanupRepository struct {
+	ProjectRepository
+	provider string
+}
+
+func (r *projectCleanupRepository) Project(_ context.Context, owner, id string) (Project, error) {
+	return Project{OwnerID: owner, ID: id}, nil
+}
+
+func (r *projectCleanupRepository) ProjectSandboxConfig(context.Context, string, string) (*ProjectSandboxConfig, error) {
+	return &ProjectSandboxConfig{Provider: r.provider}, nil
+}
+
+func (r *projectCleanupRepository) SaveProjectSandboxConfig(_ context.Context, _, _ string, config ProjectSandboxConfig) error {
+	r.provider = config.Provider
+	return nil
+}
+
+func (r *projectCleanupRepository) RemoveProject(context.Context, string, string) error {
+	r.provider = ""
+	return nil
+}
+
 func TestProjectTargetUsesTheBindingThatWonConcurrentProvisioning(t *testing.T) {
 	candidate, retained := &timedWorkspaceProvider{}, &timedWorkspaceProvider{}
 	repo := concurrentProjectBinding{saved: ProjectSandboxConfig{Provider: sandbox.ProviderE2B, Template: "retained-template"}}
