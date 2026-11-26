@@ -27,6 +27,10 @@ const changes = ref<WorkspaceChanges | null>(null)
 const history = ref<WorkspaceList<GitCommit> | null>(null)
 const files = ref<WorkspaceList<WorkspaceEntry> | null>(null)
 const folder = ref('.')
+const root = ref('')
+// The saved root only changes from this panel, so one read per session suffices.
+const rootSession = ref('')
+const settingRoot = ref(false)
 const filter = ref('')
 const loading = ref(false)
 const mutating = ref(false)
@@ -40,6 +44,7 @@ const previewLoading = ref(false)
 let reading: AbortController | undefined
 let retry: ReturnType<typeof setTimeout> | undefined
 let writing: AbortController | undefined
+let settingRootRequest: AbortController | undefined
 let readingPreview: AbortController | undefined
 const visibleCommits = computed(() => {
   const query = filter.value.trim().toLocaleLowerCase(languageTag())
@@ -48,6 +53,11 @@ const visibleCommits = computed(() => {
 })
 const previewLines = computed(() => preview.value?.text.split('\n') ?? [])
 const parentFolder = computed(() => folder.value.includes('/') ? folder.value.slice(0, folder.value.lastIndexOf('/')) : '.')
+// The files panel doubles as the picker, so the button acts on the open folder.
+const currentRoot = computed(() => root.value === '' ? '.' : root.value)
+const rootLabel = computed(() => root.value === '' ? t('workspace.name') : root.value)
+// Hovering the path reveals the working directory that scopes the Git panels.
+const folderTitle = computed(() => root.value === '' ? folder.value : `${root.value} · ${t('repository.currentRoot', { path: rootLabel.value })}`)
 const state = computed(() => {
   if (!props.sessionId) return t('repository.selectSession')
   if (loading.value) return t('repository.loading')
@@ -70,6 +80,12 @@ async function load() {
   const { signal } = reading
   loading.value = true
   try {
+    if (rootSession.value !== session) {
+      const savedRoot = await workspaceApi.root(session, signal)
+      if (signal.aborted) return
+      root.value = savedRoot.workspaceRoot
+      rootSession.value = session
+    }
     switch (tab.value) {
       case 'changes': {
         const result = await workspaceApi.changes(session, signal)
@@ -128,6 +144,28 @@ function openEntry(entry: WorkspaceEntry) {
   else void openPreview(entry.path, entry.path, false)
 }
 
+async function setAsWorkspace() {
+  const session = props.sessionId
+  if (!session || props.active || mutating.value || loading.value || settingRoot.value) return
+  const target = folder.value === '.' ? '' : folder.value
+  settingRootRequest?.abort()
+  settingRootRequest = new AbortController()
+  const { signal } = settingRootRequest
+  settingRoot.value = true
+  try {
+    const result = await workspaceApi.setRoot(session, target, signal)
+    if (signal.aborted) return
+    root.value = result.setWorkspaceRoot
+    rootSession.value = session
+    notify.success(t('repository.rootSet', { path: rootLabel.value }))
+    await load()
+  } catch (error) {
+    if (!signal.aborted) notify.error(messageFor(error, 'repository.rootFailed'))
+  } finally {
+    if (!signal.aborted) settingRoot.value = false
+  }
+}
+
 async function commit(message: string, paths: string[]) {
   const session = props.sessionId
   if (!session || props.active || mutating.value || loading.value || !paths.length || !message.trim()) return
@@ -149,6 +187,8 @@ async function commit(message: string, paths: string[]) {
 
 watch(() => props.sessionId, () => {
   writing?.abort()
+  settingRootRequest?.abort()
+  settingRoot.value = false
   readingPreview?.abort()
   previewOpen.value = false
   mutating.value = false
@@ -156,6 +196,8 @@ watch(() => props.sessionId, () => {
   history.value = null
   files.value = null
   folder.value = '.'
+  root.value = ''
+  rootSession.value = ''
   filter.value = ''
 })
 watch([() => props.sessionId, () => props.active, () => props.runningTurnId, () => props.visible, tab, folder], load, { immediate: true })
@@ -166,6 +208,7 @@ onUnmounted(() => {
   clearTimeout(retry)
   reading?.abort()
   writing?.abort()
+  settingRootRequest?.abort()
   readingPreview?.abort()
 })
 </script>
@@ -179,7 +222,7 @@ onUnmounted(() => {
           :key="item.id"
           class="repo-tab"
           :aria-pressed="tab === item.id"
-          :disabled="mutating"
+          :disabled="mutating || settingRoot"
           @click="selectTab(item.id)"
         >
           <UiIcon :name="item.icon" /> {{ item.label }}
@@ -237,7 +280,16 @@ onUnmounted(() => {
             :disabled="folder === '.'"
             @click="folder = parentFolder"
           />
-          <UiInline class="repo-path" :title="folder">{{ folder === '.' ? t('workspace.name') : folder }}</UiInline>
+          <UiInline class="repo-path" :title="folderTitle">{{ folder === '.' ? t('workspace.name') : folder }}</UiInline>
+          <UiButton
+            class="repo-set-root"
+            :hidden="folder === currentRoot"
+            :disabled="active || loading || mutating || settingRoot"
+            :title="t('repository.setRootHint')"
+            @click="setAsWorkspace"
+          >
+            {{ t('repository.setRoot') }}
+          </UiButton>
         </UiHeader>
         <UiBox class="repo-card-scroll">
           <UiInline class="repo-note" :hidden="!!files?.entries.length">{{ t('repository.noFiles') }}</UiInline>

@@ -14,6 +14,7 @@ type Query {
   sessions(projectId: ID): [SessionSummary!]!
   session(id: ID!): AgentSession
   sandboxSettings: SandboxSettings!
+  workspaceRoot(sessionId: ID!): String!
   workspaceChanges(sessionId: ID!): WorkspaceChanges!
   workspaceHistory(sessionId: ID!): WorkspaceHistory!
   workspaceDirectory(sessionId: ID!, path: String!): WorkspaceDirectory!
@@ -41,6 +42,7 @@ type Mutation {
   fetchModels(baseUrl: String, apiKey: String): [ModelInfo!]!
   setSandboxPolicy(policy: SandboxPolicy!): SandboxSettings!
   setComposerDefaults(input: ComposerDefaultsInput!): ComposerDefaults!
+  setWorkspaceRoot(sessionId: ID!, root: String!): String!
   commitWorkspace(sessionId: ID!, message: String!, paths: [String!]!): String!
 }
 

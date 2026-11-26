@@ -64,13 +64,54 @@ type Preview struct {
 	Truncated bool
 }
 
-type Repository struct{ workspace sandbox.Workspace }
+// Repository reads and commits content under a working directory. The root is
+// a workspace-relative directory that scopes changes, history, and paths to the
+// directory the user selected as their workspace.
+type Repository struct {
+	workspace sandbox.Workspace
+	root      string
+}
 
 func New(ws sandbox.Workspace) Repository { return Repository{workspace: ws} }
+
+// At scopes the repository to a workspace-relative directory. An empty root
+// keeps the workspace root.
+func (r Repository) At(root string) Repository {
+	r.root = root
+	return r
+}
+
+// Workspace returns the underlying workspace so callers can inspect the whole
+// workspace, such as the files panel browsing to choose a directory.
+func (r Repository) Workspace() sandbox.Workspace { return r.workspace }
+
+// scoped joins a path relative to the scoped directory.
+func (r Repository) scoped(name string) string { return path.Join(r.root, name) }
+
+// prefix is Git's --show-prefix for the scoped directory.
+func (r Repository) prefix() string {
+	if r.root == "" {
+		return ""
+	}
+	return r.root + "/"
+}
+
+// relative converts a repository-root path to the scoped directory. The second
+// result is false when the path falls outside the scope.
+func (r Repository) relative(name string) (string, bool) {
+	prefix := r.prefix()
+	if prefix == "" {
+		return name, true
+	}
+	return strings.CutPrefix(name, prefix)
+}
 
 func (r Repository) git(ctx context.Context, args ...string) (sandbox.Result, error) {
 	options := []string{"--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
 		"-c", "commit.gpgSign=false", "-c", "color.ui=false"}
+	if r.root != "" {
+		options = append(options, "-C", r.root)
+	}
 	return r.workspace.Exec(ctx, sandbox.Command{Program: "/usr/bin/git", Args: append(options, args...)})
 }
 
@@ -79,7 +120,7 @@ func (r Repository) requireGit(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if result.ExitCode != 0 || strings.TrimSpace(result.Stdout) != "" {
+	if result.ExitCode != 0 || strings.TrimSpace(result.Stdout) != r.prefix() {
 		return ErrRepository
 	}
 	return nil
@@ -93,7 +134,9 @@ func (r Repository) Changes(ctx context.Context) (Changes, error) {
 	if err != nil {
 		return Changes{}, err
 	}
-	status, err := r.git(ctx, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	// The pathspec limits status to the scoped directory, so renames that cross
+	// its boundary report as an addition or deletion on this side only.
+	status, err := r.git(ctx, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".")
 	if err != nil {
 		return Changes{}, err
 	}
@@ -117,6 +160,17 @@ func (r Repository) Changes(ctx context.Context) (Changes, error) {
 				entry.Original = fields[i]
 			}
 		}
+		// Status reports paths from the repository root. Convert them to the
+		// scoped directory and drop anything the pathspec let through anyway.
+		var ok bool
+		if entry.Path, ok = r.relative(entry.Path); !ok {
+			continue
+		}
+		if entry.Original != "" {
+			if entry.Original, ok = r.relative(entry.Original); !ok {
+				entry.Original = ""
+			}
+		}
 		if validPath(entry.Path) {
 			result.Entries = append(result.Entries, entry)
 		}
@@ -136,7 +190,7 @@ func (r Repository) History(ctx context.Context) (History, error) {
 	if head.ExitCode != 0 {
 		return result, nil
 	}
-	log, err := r.git(ctx, "log", "-z", "-n", "40", "--format=%H%x00%h%x00%an%x00%aI%x00%s")
+	log, err := r.git(ctx, "log", "-z", "-n", "40", "--format=%H%x00%h%x00%an%x00%aI%x00%s", "--", ".")
 	if err != nil {
 		return History{}, err
 	}
@@ -197,10 +251,37 @@ find . -mindepth 1 -maxdepth 1 ! -name .git \( -type d -o -type f \) -printf '%y
 	return list, nil
 }
 
+// ResolveRoot verifies that a workspace-relative directory exists, stays inside
+// the workspace, and is not the Git metadata directory.
+func (r Repository) ResolveRoot(ctx context.Context, root string) error {
+	if root == "" || root == "." {
+		return nil
+	}
+	if !validPath(root) {
+		return ErrPath
+	}
+	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{
+		"-c", resolvePath + `[ -d "$target" ]`, "shinona-root", root,
+	}})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return ErrPath
+	}
+	return nil
+}
+
+// File previews a workspace-relative file, so the files panel can browse the
+// whole workspace and choose a directory.
 func (r Repository) File(ctx context.Context, name string) (Preview, error) {
 	if !validPath(name) {
 		return Preview{}, ErrPath
 	}
+	return r.file(ctx, name)
+}
+
+func (r Repository) file(ctx context.Context, name string) (Preview, error) {
 	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{
 		"-c", resolvePath + `[ -f "$target" ] && head -c 16385 -- "$target"`, "shinona-file", name,
 	}})
@@ -215,7 +296,7 @@ func (r Repository) Diff(ctx context.Context, name, revision string) (Preview, e
 		if !objectID(revision) {
 			return Preview{}, ErrPath
 		}
-		result, err := r.git(ctx, "show", "--format=", "--no-ext-diff", "--no-textconv", revision, "--")
+		result, err := r.git(ctx, "show", "--format=", "--no-ext-diff", "--no-textconv", revision, "--", ".")
 		return preview(result, err, ErrPath)
 	}
 	if !validPath(name) {
@@ -226,7 +307,7 @@ func (r Repository) Diff(ctx context.Context, name, revision string) (Preview, e
 		result, err = r.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--cached", "--", name)
 	}
 	if err == nil && result.ExitCode == 0 && result.Stdout == "" {
-		return r.File(ctx, name)
+		return r.file(ctx, r.scoped(name))
 	}
 	return preview(result, err, ErrPath)
 }

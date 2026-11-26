@@ -59,7 +59,9 @@ Use the project selector to add a project or filter sessions. **All projects** i
 
 Use the menu next to a saved project to rename or remove it. Removing a project moves its sessions into the default project.
 
-The workspace panel has **Changes & Commit**, **Git History**, and **Files**. Workspace inspection is available between turns. The agent or terminal provisions the project workspace on first use. Files supports folders and read-only UTF-8 previews. The Git panels use a repository at the workspace root and support diffs, the latest 40 commits, and a local commit of selected paths. Unrelated staged changes stay staged.
+The workspace panel has **Changes & Commit**, **Git History**, and **Files**. Workspace inspection is available between turns. The agent or terminal provisions the project workspace on first use. Files supports folders and read-only UTF-8 previews. The Git panels use a repository at the selected workspace folder and support diffs, the latest 40 commits, and a local commit of selected paths. Unrelated staged changes stay staged.
+
+In the **Files** tab, open a folder and choose **Set as working directory** at the end of the path to use that folder for **Changes & Commit** and **Git History**. The button hides while the open folder is already the working directory. The selection applies to the current conversation and is stored in SQLite. Changes, history, diffs, and commits then stay inside the selected folder; a rename that crosses its boundary shows as an addition or deletion on this side. **Files** continues to browse the whole workspace so any folder can be selected, and choosing the workspace root again restores the default behavior.
 
 Chat renders assistant Markdown in a virtualized transcript. Each activity group expands directly to its thinking and tool calls. On success, the last activity button displays the elapsed time. Tool calls start collapsed, including failures. Chat errors appear as system messages. The composer handles queue and running state.
 

@@ -3,6 +3,14 @@ run:
   timeout: 5m
 linters:
   default: standard
+  exclusions:
+    rules:
+      # Repository tests run the real git binary to verify directory scoping.
+      # The no-host-shell guard still applies to every production file.
+      - path: (^|/)internal/workspace/.*_test\.go$
+        linters:
+          - depguard
+        text: os/exec
   enable:
     - bodyclose
     - depguard
