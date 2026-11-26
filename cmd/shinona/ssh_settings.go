@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"net"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -23,6 +25,53 @@ import (
 const defaultSSHImage = "buildpack-deps:bookworm-scm"
 
 var sshImageName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,254}$`)
+
+type personalSSHKey struct{ owner, server string }
+
+type cachedSSHProvider struct {
+	version  [sha256.Size]byte
+	provider *sshsandbox.Provider
+}
+
+type personalSSHProviders struct {
+	mu      sync.Mutex
+	entries map[personalSSHKey]cachedSSHProvider
+}
+
+func (p *personalSSHProviders) forget(key personalSSHKey) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.entries, key)
+}
+
+func (r *runtime) resolvePersonalSSH(owner string, server settings.SSHServer) (*sshsandbox.Provider, error) {
+	key := personalSSHKey{owner, server.ID}
+	version := sha256.Sum256(ssh.Marshal(server))
+	p := &r.sshProviders
+	p.mu.Lock()
+	cached := p.entries[key]
+	p.mu.Unlock()
+	if cached.provider != nil && cached.version == version {
+		return cached.provider, nil
+	}
+	provider, err := r.personalSSH(server)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.entries == nil {
+		p.entries = make(map[personalSSHKey]cachedSSHProvider)
+	}
+	if _, exists := p.entries[key]; !exists && len(p.entries) >= 128 {
+		for oldest := range p.entries {
+			delete(p.entries, oldest)
+			break
+		}
+	}
+	p.entries[key] = cachedSSHProvider{version, provider}
+	return provider, nil
+}
 
 func canonicalSSHAddress(raw string) (string, error) {
 	host, port, err := net.SplitHostPort(raw)
@@ -91,6 +140,7 @@ func (r *runtime) ResolveForAccount(ctx context.Context, owner, name string) (ru
 	}
 	server, err := r.repo.SSHServer(ctx, owner, id)
 	if errors.Is(err, settings.ErrSSHServer) {
+		r.sshProviders.forget(personalSSHKey{owner, id})
 		return target, nil
 	}
 	if err != nil {
@@ -98,7 +148,7 @@ func (r *runtime) ResolveForAccount(ctx context.Context, owner, name string) (ru
 	}
 	target = sshTarget(server)
 	target.ResolveAgent = r.resolveAgent
-	provider, err := r.personalSSH(server)
+	provider, err := r.resolvePersonalSSH(owner, server)
 	if err != nil {
 		return target, err
 	}
@@ -184,6 +234,7 @@ func (r *runtime) SaveSSHServer(ctx context.Context, server settings.SSHServer) 
 	if err := r.repo.SaveSSHServer(ctx, owner, server, create); err != nil {
 		return settings.SSHServer{}, err
 	}
+	r.sshProviders.forget(personalSSHKey{owner, server.ID})
 	server.PrivateKey = ""
 	return server, nil
 }
@@ -249,5 +300,10 @@ func sshTestError(err error) error {
 func (r *runtime) RemoveSSHServer(ctx context.Context, id string) error {
 	r.sshMu.Lock()
 	defer r.sshMu.Unlock()
-	return r.repo.RemoveSSHServer(ctx, auth.CurrentUser(ctx).ID, id)
+	owner := auth.CurrentUser(ctx).ID
+	if err := r.repo.RemoveSSHServer(ctx, owner, id); err != nil {
+		return err
+	}
+	r.sshProviders.forget(personalSSHKey{owner, id})
+	return nil
 }

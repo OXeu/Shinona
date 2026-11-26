@@ -27,6 +27,7 @@ type workspace struct {
 	inUse   sync.RWMutex
 	closed  atomic.Bool
 	discard atomic.Bool
+	shared  bool
 }
 
 func (w *workspace) Close(context.Context) error {
@@ -222,7 +223,12 @@ func (w *workspace) command(ctx context.Context, input io.Reader, limit int, arg
 func (w *workspace) openSession(ctx context.Context) (*ssh.Session, error) {
 	// A retained transport belongs to this lease alone. Closing it bounds the
 	// channel-open wait even if a stale SSH server never acknowledges it.
-	if w.release != nil {
+	if w.shared {
+		// Live readers share the agent's transport. A reader canceling should
+		// only end its own channel unless the transport stops responding.
+		limit := time.AfterFunc(connectTimeout, func() { _ = w.client.Close() })
+		defer limit.Stop()
+	} else if w.release != nil {
 		stop := context.AfterFunc(ctx, func() { _ = w.client.Close() })
 		defer stop()
 	}

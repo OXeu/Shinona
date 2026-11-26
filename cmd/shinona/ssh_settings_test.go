@@ -302,6 +302,27 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	first := release("alice", true)
 	conn := nextConnection()
 	release("alice", false)
+	target, err := app.ResolveForAccount(t.Context(), "alice", settings.SSHProviderPrefix+server.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := app.ResolveForAccount(t.Context(), "alice", settings.SSHProviderPrefix+server.ID)
+	if err != nil || target.Provider != resolved.Provider {
+		t.Fatalf("unchanged SSH settings rebuilt the provider: %v", err)
+	}
+	for range 2 {
+		ctx, recorder := timing.WithRecorder(t.Context())
+		lease, err := target.Provider.Acquire(ctx, sandbox.Spec{OwnerID: "alice", Policy: sandbox.Shared})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := lease.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if slices.ContainsFunc(recorder.Metrics(), func(metric timing.Metric) bool { return metric.Name == "ssh_connect" }) {
+			t.Fatal("agent lease did not reuse the SSH transport")
+		}
+	}
 	if _, err := first.ReadFile(t.Context(), "file"); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("released workspace could still open a channel: %v", err)
 	}

@@ -8,15 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http/httptrace"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/sync/semaphore"
 
+	"github.com/OXeu/shinona/internal/keylock"
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -60,20 +62,10 @@ type Provider struct {
 	identity [sha256.Size]byte
 }
 
-var provisionGates = func() [64]*semaphore.Weighted {
-	var gates [64]*semaphore.Weighted
-	for i := range gates {
-		gates[i] = semaphore.NewWeighted(1)
-	}
-	return gates
-}()
+var provisionGates keylock.Locks[sandbox.ProjectKey]
 
 func projectHash(spec sandbox.Spec) [sha256.Size]byte {
 	return sha256.Sum256([]byte(spec.OwnerID + "\x00" + spec.ProjectID))
-}
-
-func provisionGate(spec sandbox.Spec) *semaphore.Weighted {
-	return provisionGates[int(projectHash(spec)[0])%len(provisionGates)]
 }
 
 func New(config Config) (*Provider, error) {
@@ -157,12 +149,16 @@ func (p *Provider) connectClient(ctx context.Context) (*ssh.Client, error) {
 	defer timing.Start(ctx, "ssh_connect")()
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
-	conn, err := p.dial(ctx, "tcp", p.address)
+	dialed := timing.Start(ctx, "ssh_dial")
+	conn, err := p.dial(sshDialTrace(ctx), "tcp", p.address)
+	dialed()
 	if err != nil {
 		return nil, fmt.Errorf("dial the sandbox SSH host: %w", err)
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	handshake := timing.Start(ctx, "ssh_handshake")
 	client, channels, requests, err := ssh.NewClientConn(conn, p.address, p.client)
+	handshake()
 	if !stop() || err != nil {
 		_ = conn.Close()
 		if ctx.Err() != nil {
@@ -171,6 +167,39 @@ func (p *Provider) connectClient(ctx context.Context) (*ssh.Client, error) {
 		return nil, fmt.Errorf("%w: %w", ErrHandshake, err)
 	}
 	return ssh.NewClient(client, channels, requests), nil
+}
+
+func sshDialTrace(ctx context.Context) context.Context {
+	var mu sync.Mutex
+	var dns time.Time
+	attempts := make(map[string]time.Time)
+	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) {
+			mu.Lock()
+			defer mu.Unlock()
+			dns = time.Now()
+		},
+		DNSDone: func(httptrace.DNSDoneInfo) {
+			mu.Lock()
+			defer mu.Unlock()
+			if !dns.IsZero() {
+				timing.Since(ctx, "ssh_dns", dns)
+			}
+		},
+		ConnectStart: func(_, address string) {
+			mu.Lock()
+			defer mu.Unlock()
+			attempts[address] = time.Now()
+		},
+		ConnectDone: func(_, address string, _ error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if start, ok := attempts[address]; ok {
+				timing.Since(ctx, "ssh_tcp", start)
+				delete(attempts, address)
+			}
+		},
+	})
 }
 
 func newWorkspace(client *ssh.Client, spec sandbox.Spec) *workspace {
@@ -212,19 +241,20 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	}
 	ctx, cancel := context.WithTimeout(ctx, provisionTimeout)
 	defer cancel()
-	gate := provisionGate(spec)
-	if err := gate.Acquire(ctx, 1); err != nil {
-		return nil, err
-	}
-	defer gate.Release(1)
-	ws, err := p.connect(ctx, spec)
+	release, err := provisionGates.Acquire(ctx, spec.ProjectKey(), false)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.ensureRunning(ctx, ws, spec); err != nil {
-		_ = ws.Close(ctx)
+	defer release()
+	ws, err := p.openProject(ctx, spec, func(ws *workspace) error {
+		stop := context.AfterFunc(ctx, func() { _ = ws.client.Close() })
+		defer stop()
+		return p.ensureRunning(ctx, ws, spec)
+	})
+	if err != nil {
 		return nil, err
 	}
+	ws.shared = true
 	return ws, nil
 }
 
@@ -292,7 +322,8 @@ func (p *Provider) openProject(ctx context.Context, spec sandbox.Spec, prepare f
 	key := projectConnectionKey{owner: spec.OwnerID, identity: p.identity}
 	ws, retry, err := p.tryProject(ctx, spec, key, p.projects.take(key), prepare)
 	if retry {
-		// Preparation only checks status or performs a read-only inspection.
+		// Preparation can be a read or a provisioning step that checks current
+		// state before changing the deterministically named container.
 		ws, _, err = p.tryProject(ctx, spec, key, nil, prepare)
 	}
 	return ws, err
@@ -349,11 +380,11 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 }
 
 func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error {
-	gate := provisionGate(spec)
-	if err := gate.Acquire(ctx, 1); err != nil {
+	release, err := provisionGates.Acquire(ctx, spec.ProjectKey(), false)
+	if err != nil {
 		return err
 	}
-	defer gate.Release(1)
+	defer release()
 	ws, err := p.connect(ctx, spec)
 	if err != nil {
 		return err

@@ -35,19 +35,20 @@ type runtimeRepository interface {
 
 // runtime publishes immutable configurations after validation and persistence.
 type runtime struct {
-	repo        runtimeRepository
-	defaults    settings.Values
-	origin      *url.URL
-	client      *http.Client
-	mcpOAuth    *mcp.OAuth
-	models      *modelRuntime
-	accountHTTP *http.Client
-	mcpMu       sync.Mutex
-	sshMu       sync.Mutex
-	sshProjects sshsandbox.ProjectConnections
-	trustedSSH  map[string]bool
-	mu          sync.Mutex
-	current     atomic.Pointer[runtimeConfig]
+	repo         runtimeRepository
+	defaults     settings.Values
+	origin       *url.URL
+	client       *http.Client
+	mcpOAuth     *mcp.OAuth
+	models       *modelRuntime
+	accountHTTP  *http.Client
+	mcpMu        sync.Mutex
+	sshMu        sync.Mutex
+	sshProjects  sshsandbox.ProjectConnections
+	sshProviders personalSSHProviders
+	trustedSSH   map[string]bool
+	mu           sync.Mutex
+	current      atomic.Pointer[runtimeConfig]
 }
 
 type runtimeConfig struct {
