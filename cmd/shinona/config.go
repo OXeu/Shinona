@@ -141,8 +141,8 @@ func oauthProvider(ctx context.Context, values settings.Values, origin *url.URL)
 	endpoint, err := url.Parse(issuer)
 	if err != nil || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" ||
 		endpoint.ForceQuery || endpoint.Fragment != "" ||
-		(endpoint.Scheme != "https" && (endpoint.Scheme != "http" || !isLoopback(endpoint.Hostname()))) {
-		return nil, settings.Invalid("INVALID_OAUTH_ISSUER", "OAuth issuer must be an HTTPS issuer or an HTTP loopback issuer")
+		endpoint.Scheme != "https" {
+		return nil, settings.Invalid("INVALID_OAUTH_ISSUER", "OAuth issuer must use HTTPS")
 	}
 	discovery, stop := context.WithTimeout(ctx, 8*time.Second)
 	defer stop()

@@ -12,6 +12,8 @@ func TestAccountEndpointsRejectPrivateDialAddresses(t *testing.T) {
 	for _, address := range []string{
 		"127.0.0.1:443", "10.0.0.1:443", "169.254.169.254:443", "100.64.0.1:443",
 		"[::ffff:127.0.0.1]:443", "[fd00::1]:443", "[64:ff9b::a00:1]:443",
+		"0.1.2.3:443", "192.0.2.1:443", "198.51.100.1:443", "[::10.0.0.1]:443",
+		"[fec0::1]:443", "[100::1]:443", "[2001:db8::1]:443", "[3fff::1]:443",
 	} {
 		if err := checkAddress(address, false); !errors.Is(err, ErrPrivateEndpoint) {
 			t.Errorf("private address %s returned %v", address, err)
@@ -24,6 +26,14 @@ func TestAccountEndpointsRejectPrivateDialAddresses(t *testing.T) {
 	}
 	if err := checkAddress("127.0.0.1:443", true); err != nil {
 		t.Errorf("loopback developer transport returned %v", err)
+	}
+}
+
+func TestEndpointMustHaveHTTPAuthority(t *testing.T) {
+	for _, raw := range []string{"", "/relative", "//example.com", "ssh://example.com", "https://user@example.com"} {
+		if err := CheckEndpoint(raw); !errors.Is(err, ErrInvalidEndpoint) {
+			t.Errorf("invalid endpoint %q returned %v", raw, err)
+		}
 	}
 }
 

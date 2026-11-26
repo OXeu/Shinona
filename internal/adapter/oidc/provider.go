@@ -13,6 +13,7 @@ import (
 	core "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
+	"github.com/OXeu/shinona/internal/adapter/httpclient"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -23,11 +24,26 @@ type Provider struct {
 	oauth    oauth2.Config
 	verifier atomic.Pointer[core.IDTokenVerifier]
 	client   *http.Client
+	validate func(string) error
 }
 
 func New(ctx context.Context, issuer, clientID, secret, redirect string) (*Provider, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	provider, err := core.NewProvider(core.ClientContext(ctx, client), issuer)
+	client := httpclient.Public()
+	client.Timeout = 10 * time.Second
+	return newProvider(ctx, issuer, clientID, secret, redirect, client, checkEndpoint)
+}
+
+// NewWithClient allows an explicit transport for deployments with a separate
+// network trust policy, or for tests with a local identity provider.
+func NewWithClient(ctx context.Context, issuer, clientID, secret, redirect string, client *http.Client) (*Provider, error) {
+	return newProvider(ctx, issuer, clientID, secret, redirect, client, func(string) error { return nil })
+}
+
+func newProvider(ctx context.Context, issuer, clientID, secret, redirect string, client *http.Client, validate func(string) error) (*Provider, error) {
+	if err := validate(issuer); err != nil {
+		return nil, err
+	}
+	provider, err := discover(ctx, issuer, client, validate)
 	if err != nil {
 		return nil, err
 	}
@@ -38,12 +54,51 @@ func New(ctx context.Context, issuer, clientID, secret, redirect string) (*Provi
 			ClientID: clientID, ClientSecret: secret, RedirectURL: redirect,
 			Endpoint: provider.Endpoint(), Scopes: []string{core.ScopeOpenID, "email", "profile"},
 		},
-		client: client,
+		client: client, validate: validate,
 	}
 	if err := p.cacheVerifier(provider); err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+func checkEndpoint(raw string) error {
+	if err := httpclient.CheckEndpoint(raw); err != nil {
+		return err
+	}
+	target, err := url.Parse(raw)
+	if err != nil || target.Scheme != "https" || target.Fragment != "" {
+		return errors.New("OIDC endpoints must use HTTPS")
+	}
+	return nil
+}
+
+func discover(ctx context.Context, issuer string, client *http.Client, validate func(string) error) (*core.Provider, error) {
+	provider, err := core.NewProvider(core.ClientContext(ctx, client), issuer)
+	if err != nil {
+		return nil, err
+	}
+	var metadata struct {
+		JWKSURI  string `json:"jwks_uri"`
+		UserInfo string `json:"userinfo_endpoint"`
+	}
+	if err := provider.Claims(&metadata); err != nil {
+		return nil, err
+	}
+	endpoint := provider.Endpoint()
+	for _, raw := range []string{endpoint.AuthURL, endpoint.TokenURL} {
+		if err := validate(raw); err != nil {
+			return nil, err
+		}
+	}
+	for _, raw := range []string{metadata.JWKSURI, metadata.UserInfo} {
+		if raw != "" {
+			if err := validate(raw); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return provider, nil
 }
 
 func (p *Provider) AuthorizationURL(state string, flow auth.Flow) string {
@@ -123,7 +178,7 @@ func (p *Provider) verifyToken(ctx context.Context, raw string) (*core.IDToken, 
 	verifier := p.verifier.Load()
 	if verifier == nil {
 		// An issuer can publish its signing keys after the initial discovery.
-		provider, err := core.NewProvider(ctx, p.issuer)
+		provider, err := discover(ctx, p.issuer, p.client, p.validate)
 		if err != nil {
 			return nil, err
 		}

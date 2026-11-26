@@ -324,7 +324,7 @@
   "settings.invalidE2B": "请检查 E2B API 密钥和端点，并关闭 E2B 调试模式。",
   "settings.missingModel": "实际运行需要 OpenAI 兼容基础网址、默认模型和 API 密钥。",
   "settings.missingOAuth": "OAuth 需要签发方、客户端 ID 和客户端密钥。",
-  "settings.invalidIssuer": "OAuth 签发方必须使用 HTTPS 或 HTTP 环回网址。",
+  "settings.invalidIssuer": "OAuth 签发方必须使用 HTTPS。",
   "settings.discoveryFailed": "无法获取 OAuth 签发方的配置。",
   "settings.singleSignOn": "单点登录",
   "auth.oauth": "Shinona 单点登录",

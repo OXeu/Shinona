@@ -14,14 +14,28 @@ import (
 	"time"
 )
 
-var nonPublicNetworks = []netip.Prefix{
-	netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("192.0.0.0/24"),
-	netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("240.0.0.0/4"),
-	netip.MustParsePrefix("64:ff9b::/96"), netip.MustParsePrefix("64:ff9b:1::/48"),
-	netip.MustParsePrefix("2001::/32"), netip.MustParsePrefix("2002::/16"),
+var globalIPv6 = netip.MustParsePrefix("2000::/3")
+
+// Skip special-purpose ranges even if Go considers them global unicast.
+// Translation and tunneling ranges can route to a different address family.
+var nonPublicNetworks = [...]netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("3fff::/20"),
 }
 
 var ErrPrivateEndpoint = errors.New("the endpoint must resolve to a public network address")
+var ErrInvalidEndpoint = errors.New("the endpoint must be an absolute HTTP or HTTPS URL without credentials")
 
 // CheckEndpoint rejects private literal addresses before persisting a URL.
 // The dialer also checks each resolved address before opening a connection.
@@ -30,7 +44,18 @@ func CheckEndpoint(raw string) error {
 	if err != nil {
 		return err
 	}
-	host := strings.ToLower(strings.TrimRight(target.Hostname(), "."))
+	if (target.Scheme != "https" && target.Scheme != "http") || target.User != nil || target.Hostname() == "" {
+		return ErrInvalidEndpoint
+	}
+	return CheckHost(target.Hostname())
+}
+
+// CheckHost applies the same literal and hostname rules to non-HTTP transports.
+func CheckHost(host string) error {
+	host = strings.ToLower(strings.TrimRight(host, "."))
+	if host == "" {
+		return ErrInvalidEndpoint
+	}
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return ErrPrivateEndpoint
 	}
@@ -135,7 +160,8 @@ func checkAddress(address string, loopback bool) error {
 
 func publicIP(ip netip.Addr) bool {
 	ip = ip.Unmap()
-	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !slices.ContainsFunc(nonPublicNetworks, func(network netip.Prefix) bool {
-		return network.Contains(ip)
-	})
+	return ip.IsGlobalUnicast() && !ip.IsPrivate() && (!ip.Is6() || globalIPv6.Contains(ip)) &&
+		!slices.ContainsFunc(nonPublicNetworks[:], func(network netip.Prefix) bool {
+			return network.Contains(ip)
+		})
 }

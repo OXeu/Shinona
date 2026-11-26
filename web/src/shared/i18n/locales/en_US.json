@@ -324,7 +324,7 @@
   "settings.invalidE2B": "Check the E2B API key and endpoints. E2B debug mode must be disabled.",
   "settings.missingModel": "Live runs require an OpenAI-compatible base URL, a default model, and an API key.",
   "settings.missingOAuth": "OAuth requires an issuer, client ID, and client secret.",
-  "settings.invalidIssuer": "The OAuth issuer must use HTTPS or an HTTP loopback URL.",
+  "settings.invalidIssuer": "The OAuth issuer must use HTTPS.",
   "settings.discoveryFailed": "Could not discover the OAuth issuer.",
   "settings.singleSignOn": "Single sign-on",
   "auth.oauth": "Shinona SSO",

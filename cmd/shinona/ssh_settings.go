@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"net"
 	"regexp"
@@ -46,7 +47,11 @@ func (p *personalSSHProviders) forget(key personalSSHKey) {
 
 func (r *runtime) resolvePersonalSSH(owner string, server settings.SSHServer) (*sshsandbox.Provider, error) {
 	key := personalSSHKey{owner, server.ID}
-	version := sha256.Sum256(ssh.Marshal(server))
+	config, err := json.Marshal(server)
+	if err != nil {
+		return nil, err
+	}
+	version := sha256.Sum256(config)
 	p := &r.sshProviders
 	p.mu.Lock()
 	cached := p.entries[key]
@@ -103,7 +108,11 @@ func (r *runtime) personalSSH(server settings.SSHServer) (*sshsandbox.Provider, 
 		ProjectConnections: &r.sshProjects,
 	}
 	if !r.trustedSSH[server.Address] {
-		if err := httpclient.CheckEndpoint("https://" + server.Address); err != nil {
+		host, _, err := net.SplitHostPort(server.Address)
+		if err != nil {
+			return nil, sshAddressError()
+		}
+		if err := httpclient.CheckHost(host); err != nil {
 			if errors.Is(err, httpclient.ErrPrivateEndpoint) {
 				return nil, sshPrivateAddressError()
 			}

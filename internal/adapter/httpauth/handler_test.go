@@ -35,7 +35,7 @@ const userInfoAvatar = "https://images.example.test/userinfo.webp"
 func TestPasswordAndOAuthSignIn(t *testing.T) {
 	var signingEnabled atomic.Bool
 	issuer, authorization := oidcFixture(t, &signingEnabled)
-	provider, err := oidc.New(t.Context(), issuer, "test-client", "test-secret", "https://shinona.example/auth/oauth/callback")
+	provider, err := oidc.NewWithClient(t.Context(), issuer, "test-client", "test-secret", "https://shinona.example/auth/oauth/callback", http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}

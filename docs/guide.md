@@ -80,7 +80,7 @@ Configure OpenID Connect in **Settings → Shinona SSO** and register the callba
 | Setting | Value |
 | --- | --- |
 | `SHINONA_WEB_ORIGIN` | Browser origin. The default is `http://127.0.0.1:5173`. |
-| `SHINONA_OAUTH_ISSUER` | The provider's discovery issuer, such as `https://accounts.google.com`. |
+| `SHINONA_OAUTH_ISSUER` | The provider's public HTTPS discovery issuer, such as `https://accounts.google.com`. |
 | `SHINONA_OAUTH_CLIENT_ID`, `SHINONA_OAUTH_CLIENT_SECRET` | The provider's confidential web client credentials. |
 | Callback URL | Append `/auth/oauth/callback` to `SHINONA_WEB_ORIGIN`. Open the app from that exact origin. |
 
