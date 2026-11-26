@@ -228,7 +228,10 @@ func benchmarkTranscriptFullStream(b *testing.B) {
 	a := newCoreBenchmarkAPI(b, demo.Agent{})
 	session := a.seedBenchmarkStream(b)
 	request := a.fullStreamBenchmarkClient(b, a.Client(), session)
-	monitor := startBenchmarkResources()
+	monitor, err := startBenchmarkResources(a.databasePath)
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer monitor.stop()
 	var wireBytes int64
 	for b.Loop() {
@@ -238,9 +241,13 @@ func benchmarkTranscriptFullStream(b *testing.B) {
 		}
 		wireBytes += int64(response.wireBytes)
 	}
-	metrics := monitor.finish(b.N)
+	metrics, err := monitor.finish(b.N)
+	if err != nil {
+		b.Fatal(err)
+	}
 	b.ReportMetric(float64(wireBytes)/float64(b.N), "wire-B/op")
 	b.ReportMetric(metrics["peak-heap"].Value, "peak-heap-B")
+	b.ReportMetric(metrics["peak-disk"].Value, "peak-disk-B")
 }
 
 func benchmarkAttachment(b *testing.B) {

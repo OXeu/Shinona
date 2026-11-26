@@ -71,19 +71,25 @@ func BenchmarkCoreAPI(b *testing.B) {
 
 type benchmarkAPI struct {
 	*httptest.Server
-	repo       *sqlite.Database
-	service    *run.Service
-	controls   *run.Controls
-	resolve    run.ResolveTarget
-	logger     *slog.Logger
-	owner      string
-	newHandler func() http.Handler
-	accounts   *auth.Service
+	repo         *sqlite.Database
+	databasePath string
+	service      *run.Service
+	controls     *run.Controls
+	resolve      run.ResolveTarget
+	logger       *slog.Logger
+	owner        string
+	newHandler   func() http.Handler
+	accounts     *auth.Service
 }
 
 func benchmarkRepository(b testing.TB) *sqlite.Database {
 	b.Helper()
-	repo, err := sqlite.Open(b.Context(), filepath.Join(b.TempDir(), "benchmark.db"))
+	return openBenchmarkDatabase(b, filepath.Join(b.TempDir(), "benchmark.db"))
+}
+
+func openBenchmarkDatabase(b testing.TB, path string) *sqlite.Database {
+	b.Helper()
+	repo, err := sqlite.Open(b.Context(), path)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -144,7 +150,10 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target) *be
 
 func newCoreBenchmarkAPI(b testing.TB, agent run.Agent) *benchmarkAPI {
 	b.Helper()
-	return newBenchmarkAPI(b, benchmarkRepository(b), benchmarkTarget("demo", demo.Provider{}, agent))
+	databasePath := filepath.Join(b.TempDir(), "benchmark.db")
+	api := newBenchmarkAPI(b, openBenchmarkDatabase(b, databasePath), benchmarkTarget("demo", demo.Provider{}, agent))
+	api.databasePath = databasePath
+	return api
 }
 
 func benchmarkTarget(name string, provider sandbox.Provider, agent run.Agent) run.Target {

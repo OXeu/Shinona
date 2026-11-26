@@ -20,11 +20,18 @@ GO_METRICS = {
     "p99-us/op": ("p99-latency", "microseconds (µs)"),
     "ttfb-us/op": ("time-to-running", "microseconds (µs)"),
     "peak-heap-B": ("peak-heap", "bytes (B)"),
+    "peak-disk-B": ("peak-disk", "bytes (B)"),
     "overlap-%": ("worker-overlap", "percent (%)"),
     "start-us/op": ("worker-start-latency", "microseconds (µs)"),
 }
 
+DISK_MEASURES = {
+    "disk-inuse", "peak-disk", "sqlite-db-disk", "peak-sqlite-wal-disk",
+    "data-files-disk", "peak-data-files-disk",
+}
+
 LOAD_METRICS = {
+    **dict.fromkeys(sorted(DISK_MEASURES), "bytes (B)"),
     "alloc-bytes-per-req": "bytes / request",
     "heap-inuse": "bytes (B)",
     "peak-heap": "bytes (B)",
@@ -101,7 +108,7 @@ def load_report(path, linux):
     keys = {}
     for benchmark, parameters in variants.items():
         required = {"latency", "throughput", "alloc-bytes-per-req", "peak-heap", "heap-inuse",
-                    "gc-pause", "wire-bytes-per-read"}
+                    "gc-pause", "wire-bytes-per-read"} | DISK_MEASURES
         if linux:
             required |= {"cpu-time", "peak-rss"}
         if benchmark != "CoreAPI/SessionsList":
@@ -132,6 +139,12 @@ def load_report(path, linux):
                       f"invalid numeric metric for {key} / {measure}")
                 if measure in LOAD_LATENCIES:
                     check(0 < metrics["p50"] <= metrics["p99"], f"invalid percentiles for {key} / {measure}")
+            disk = {name: measures[name]["value"] for name in DISK_MEASURES}
+            check(0 < disk["sqlite-db-disk"]
+                  and disk["sqlite-db-disk"] + disk["data-files-disk"] <= disk["disk-inuse"] <= disk["peak-disk"]
+                  and disk["peak-sqlite-wal-disk"] <= disk["peak-disk"]
+                  and disk["data-files-disk"] <= disk["peak-data-files-disk"] <= disk["peak-disk"],
+                  f"inconsistent disk usage for {key}")
             keys[key] = measures
         check(len(observed) == len(parameters) and all(p in observed for p in parameters),
               f"missing or unexpected parameters for {benchmark}")

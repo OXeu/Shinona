@@ -58,7 +58,7 @@ func TestCoreReadLoad(t *testing.T) {
 	}
 
 	report := make(map[string][]readLoadVariant)
-	run := func(t *testing.T, benchmark string, params readLoadParameters, clients func(testing.TB, int) benchmarkLoadClient,
+	run := func(t *testing.T, api *benchmarkAPI, benchmark string, params readLoadParameters, clients func(testing.TB, int) benchmarkLoadClient,
 		writers []benchmarkLoadClient,
 	) {
 		t.Helper()
@@ -68,7 +68,7 @@ func TestCoreReadLoad(t *testing.T) {
 				work[i] = clients(t, i)
 			}
 			work = append(work, writers...)
-			metrics, count, phases, err := measureReadLoad(t.Context(), work, duration)
+			metrics, count, phases, err := measureReadLoad(t.Context(), work, duration, api.databasePath)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -86,7 +86,7 @@ func TestCoreReadLoad(t *testing.T) {
 				projects := api.seedBenchmarkSessions(t, size)
 				benchmarkLoadTransport(t, api)
 				for _, concurrency := range readLoadConcurrency {
-					run(t, "CoreAPI/SessionsList", readLoadParameters{Concurrency: concurrency, Sessions: size},
+					run(t, api, "CoreAPI/SessionsList", readLoadParameters{Concurrency: concurrency, Sessions: size},
 						func(t testing.TB, _ int) benchmarkLoadClient {
 							return benchmarkLoadClient{request: api.recentBenchmarkClient(t, projects)}
 						}, nil)
@@ -105,7 +105,7 @@ func TestCoreReadLoad(t *testing.T) {
 		for _, page := range []string{"latest", "full"} {
 			t.Run("page="+page, func(t *testing.T) {
 				for _, concurrency := range readLoadConcurrency {
-					run(t, "CoreAPI/Transcript", readLoadParameters{Concurrency: concurrency, Turns: turns, Page: page},
+					run(t, api, "CoreAPI/Transcript", readLoadParameters{Concurrency: concurrency, Turns: turns, Page: page},
 						func(t testing.TB, i int) benchmarkLoadClient {
 							return benchmarkLoadClient{
 								request:    api.transcriptBenchmarkClient(t, api.Client(), sessions[i%len(sessions)], turns, page == "latest"),
@@ -127,7 +127,7 @@ func TestCoreReadLoad(t *testing.T) {
 		}
 		writers := api.mixedLoadWriters(t, duration, len(readLoadConcurrency)-1)
 		for _, concurrency := range readLoadConcurrency[1:] {
-			run(t, "CoreAPI/Mixed", readLoadParameters{Concurrency: concurrency, Sessions: sessions + len(transcripts) + len(writers), Turns: turns, Writers: len(writers)},
+			run(t, api, "CoreAPI/Mixed", readLoadParameters{Concurrency: concurrency, Sessions: sessions + len(transcripts) + len(writers), Turns: turns, Writers: len(writers)},
 				func(t testing.TB, i int) benchmarkLoadClient {
 					if i%2 == 0 {
 						return benchmarkLoadClient{request: api.recentBenchmarkClient(t, projects)}
@@ -145,7 +145,7 @@ func TestCoreReadLoad(t *testing.T) {
 		session := api.seedBenchmarkStream(t)
 		stream := api.fullStreamBenchmarkClient(t, api.Client(), session)
 		for _, concurrency := range []int{1, 64} {
-			run(t, "CoreAPI/TranscriptFullStream", readLoadParameters{Concurrency: concurrency, Turns: benchmarkStreamTurns},
+			run(t, api, "CoreAPI/TranscriptFullStream", readLoadParameters{Concurrency: concurrency, Turns: benchmarkStreamTurns},
 				func(testing.TB, int) benchmarkLoadClient {
 					return benchmarkLoadClient{request: stream, transcript: true}
 				}, nil)
@@ -223,7 +223,7 @@ func (p *phaseTotal) add(ms float64, count int) {
 	p.count += count
 }
 
-func measureReadLoad(ctx context.Context, clients []benchmarkLoadClient, duration time.Duration) (
+func measureReadLoad(ctx context.Context, clients []benchmarkLoadClient, duration time.Duration, databasePath string) (
 	map[string]readLoadMetric, int, benchmarkTiming, error,
 ) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -278,7 +278,13 @@ func measureReadLoad(ctx context.Context, clients []benchmarkLoadClient, duratio
 		})
 	}
 	ready.Wait()
-	monitor := startBenchmarkResources()
+	monitor, err := startBenchmarkResources(databasePath)
+	if err != nil {
+		cancel()
+		close(start)
+		workers.Wait()
+		return nil, 0, nil, err
+	}
 	defer monitor.stop()
 	started := time.Now()
 	deadline = started.Add(duration)
@@ -298,7 +304,10 @@ func measureReadLoad(ctx context.Context, clients []benchmarkLoadClient, duratio
 	if count == 0 {
 		return nil, 0, nil, fmt.Errorf("load completed no measured requests")
 	}
-	metrics := monitor.finish(count)
+	metrics, err := monitor.finish(count)
+	if err != nil {
+		return nil, 0, nil, err
+	}
 	var reads, writes, lists, transcripts []time.Duration
 	var bytes benchmarkPayloadSize
 	var cacheHits, transcriptCount int
