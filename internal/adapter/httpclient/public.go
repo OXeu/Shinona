@@ -21,7 +21,7 @@ var nonPublicNetworks = []netip.Prefix{
 	netip.MustParsePrefix("2001::/32"), netip.MustParsePrefix("2002::/16"),
 }
 
-var errPrivateEndpoint = errors.New("the endpoint must resolve to a public network address")
+var ErrPrivateEndpoint = errors.New("the endpoint must resolve to a public network address")
 
 // CheckEndpoint rejects private literal addresses before persisting a URL.
 // The dialer also checks each resolved address before opening a connection.
@@ -32,10 +32,10 @@ func CheckEndpoint(raw string) error {
 	}
 	host := strings.ToLower(strings.TrimRight(target.Hostname(), "."))
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return errPrivateEndpoint
+		return ErrPrivateEndpoint
 	}
 	if ip, err := netip.ParseAddr(host); err == nil && !publicIP(ip) {
-		return errPrivateEndpoint
+		return ErrPrivateEndpoint
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func checkAddress(address string, loopback bool) error {
 	if publicIP(ip) || (loopback && ip.Unmap().IsLoopback()) {
 		return nil
 	}
-	return errPrivateEndpoint
+	return ErrPrivateEndpoint
 }
 
 func publicIP(ip netip.Addr) bool {

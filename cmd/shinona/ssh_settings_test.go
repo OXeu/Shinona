@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"maps"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -135,10 +136,32 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	if response := query("bob", testConnection, vars); !strings.Contains(response, "SSH_SERVER_NOT_FOUND") {
 		t.Fatalf("test another account's SSH server: %s", response)
 	}
-	wrongHostKey, _ := sshTestKey(t)
-	input["hostFingerprint"] = ssh.FingerprintSHA256(wrongHostKey.PublicKey())
-	if response := query("alice", testConnection, vars); !strings.Contains(response, "SSH_CONNECTION_FAILED") {
-		t.Fatalf("test a mismatched host key: %s", response)
+	wrongHostKey, wrongKey := sshTestKey(t)
+	rawKey, err := ssh.ParseRawPrivateKey([]byte(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedKey, err := ssh.MarshalPrivateKeyWithPassphrase(rawKey, "", []byte("test passphrase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ field, value, code string }{
+		{"address", "missing-port.example.test", "SSH_INVALID_ADDRESS"},
+		{"address", "127.0.0.2:22", "SSH_PRIVATE_ADDRESS"},
+		{"user", " ", "SSH_INVALID_USER"},
+		{"hostFingerprint", "SHA256:short", "SSH_INVALID_FINGERPRINT"},
+		{"hostFingerprint", ssh.FingerprintSHA256(wrongHostKey.PublicKey()), "SSH_HOST_KEY_MISMATCH"},
+		{"privateKey", "ssh-ed25519 public-key-only", "SSH_INVALID_PRIVATE_KEY"},
+		{"privateKey", string(pem.EncodeToMemory(encryptedKey)), "SSH_ENCRYPTED_KEY"},
+		{"privateKey", wrongKey, "SSH_AUTHENTICATION_FAILED"},
+		{"user", "wrong-user", "SSH_AUTHENTICATION_FAILED"},
+	} {
+		draft := maps.Clone(input)
+		draft[tc.field] = tc.value
+		response := query("alice", testConnection, map[string]any{"input": draft})
+		if !strings.Contains(response, tc.code) || strings.Contains(response, "PRIVATE KEY-----") {
+			t.Fatalf("SSH test with invalid %s should report %s: %s", tc.field, tc.code, response)
+		}
 	}
 
 	const saveSandbox = `mutation ($provider: String!, $skip: String) {
@@ -150,6 +173,9 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	}
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if response := query("alice", testConnection, vars); !strings.Contains(response, "SSH_CONNECTION_REFUSED") {
+		t.Fatalf("test a closed SSH port: %s", response)
 	}
 	if response := query("alice", saveSandbox, map[string]any{"provider": "e2b"}); !strings.Contains(response, "PROJECT_SANDBOX_CLEANUP_FAILED") {
 		t.Fatalf("switch requires confirmation when previous sandbox cannot be reached: %s", response)

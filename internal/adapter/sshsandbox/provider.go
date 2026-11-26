@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +28,15 @@ const (
 	maxOutputBytes   = 16 << 10
 )
 
-var ErrDockerUnavailable = errors.New("the SSH user cannot access Docker")
+var (
+	ErrInvalidFingerprint = errors.New("SSH requires a SHA256 host key fingerprint")
+	ErrInvalidPrivateKey  = errors.New("SSH requires a valid private key of at most 64 KiB")
+	ErrEncryptedKey       = errors.New("the SSH private key is protected by a passphrase")
+	ErrHostKeyMismatch    = errors.New("the SSH host key fingerprint does not match")
+	ErrAuthentication     = errors.New("the SSH server did not accept public key authentication")
+	ErrHandshake          = errors.New("the SSH handshake failed")
+	ErrDockerUnavailable  = errors.New("the SSH user cannot access Docker")
+)
 
 type Config struct {
 	Address         string
@@ -74,7 +83,7 @@ func New(config Config) (*Provider, error) {
 	fingerprint := config.HostFingerprint
 	decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(fingerprint, "SHA256:"))
 	if err != nil || len(decoded) != sha256.Size || !strings.HasPrefix(fingerprint, "SHA256:") {
-		return nil, errors.New("SSH requires a SHA256 host key fingerprint")
+		return nil, ErrInvalidFingerprint
 	}
 	key, err := privateKey(config)
 	if err != nil {
@@ -82,13 +91,16 @@ func New(config Config) (*Provider, error) {
 	}
 	signer, err := ssh.ParsePrivateKey(key)
 	if err != nil {
-		return nil, errors.New("SSH requires a valid private key without a passphrase")
+		if _, encrypted := errors.AsType[*ssh.PassphraseMissingError](err); encrypted {
+			return nil, ErrEncryptedKey
+		}
+		return nil, ErrInvalidPrivateKey
 	}
 	client := &ssh.ClientConfig{
 		User: config.User, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
 			if ssh.FingerprintSHA256(key) != fingerprint {
-				return errors.New("SSH host key fingerprint does not match")
+				return ErrHostKeyMismatch
 			}
 			return nil
 		},
@@ -103,7 +115,7 @@ func New(config Config) (*Provider, error) {
 func privateKey(config Config) ([]byte, error) {
 	if config.KeyPath == "" {
 		if config.PrivateKey == "" || len(config.PrivateKey) > maxFileBytes {
-			return nil, errors.New("SSH requires a private key of at most 64 KiB")
+			return nil, ErrInvalidPrivateKey
 		}
 		return []byte(config.PrivateKey), nil
 	}
@@ -132,7 +144,7 @@ func (p *Provider) connect(ctx context.Context, spec sandbox.Spec) (*workspace, 
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("authenticate to the sandbox SSH host: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrHandshake, err)
 	}
 	return &workspace{
 		client: ssh.NewClient(client, channels, requests),
@@ -146,7 +158,17 @@ func (*Provider) Policies(string) []sandbox.Policy { return []sandbox.Policy{san
 func (p *Provider) TestConnection(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
-	ws, err := p.connect(ctx, sandbox.Spec{})
+	probe := *p
+	client := *p.client
+	client.AuthCallback = func(attempt *ssh.ClientAuthContext) (ssh.AuthMethod, error) {
+		if len(attempt.AllowedMethods) > 0 && (!slices.Contains(attempt.AllowedMethods, "publickey") ||
+			slices.Contains(attempt.TriedMethods, "publickey")) {
+			return nil, ErrAuthentication
+		}
+		return nil, nil
+	}
+	probe.client = &client
+	ws, err := probe.connect(ctx, sandbox.Spec{})
 	if err != nil {
 		return err
 	}
@@ -154,7 +176,7 @@ func (p *Provider) TestConnection(ctx context.Context) error {
 	stop := context.AfterFunc(ctx, func() { _ = ws.Close(ctx) })
 	defer stop()
 	if err := ws.docker(ctx, "info", "--format", "{{.ServerVersion}}"); err != nil {
-		return errors.Join(ErrDockerUnavailable, err)
+		return errors.Join(ErrDockerUnavailable, ctx.Err(), err)
 	}
 	return nil
 }

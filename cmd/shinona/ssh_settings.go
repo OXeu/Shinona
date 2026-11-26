@@ -7,8 +7,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/OXeu/shinona/internal/adapter/httpclient"
 	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
@@ -24,12 +26,13 @@ var sshImageName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,254}$`)
 
 func canonicalSSHAddress(raw string) (string, error) {
 	host, port, err := net.SplitHostPort(raw)
+	host = strings.TrimRight(host, ".")
 	number, portErr := strconv.Atoi(port)
 	if err != nil || portErr != nil || number < 1 || number > 65535 || host == "" ||
 		strings.ContainsAny(host, " /?#@%\r\n\t") {
 		return "", errors.New("SSH address must be a host and port")
 	}
-	return net.JoinHostPort(strings.ToLower(strings.TrimRight(host, ".")), strconv.Itoa(number)), nil
+	return net.JoinHostPort(strings.ToLower(host), strconv.Itoa(number)), nil
 }
 
 func trustedSSHAddresses(raw string) (map[string]bool, error) {
@@ -51,12 +54,22 @@ func (r *runtime) personalSSH(server settings.SSHServer) (*sshsandbox.Provider, 
 	}
 	if !r.trustedSSH[server.Address] {
 		if err := httpclient.CheckEndpoint("https://" + server.Address); err != nil {
-			return nil, settings.Invalid("PRIVATE_ENDPOINT", "the SSH host must use a public address")
+			if errors.Is(err, httpclient.ErrPrivateEndpoint) {
+				return nil, sshPrivateAddressError()
+			}
+			return nil, sshAddressError()
 		}
 		config.DialContext = httpclient.DialPublic
 	}
 	provider, err := sshsandbox.New(config)
-	if err != nil {
+	switch {
+	case errors.Is(err, sshsandbox.ErrInvalidFingerprint):
+		return nil, settings.Invalid("SSH_INVALID_FINGERPRINT", err.Error())
+	case errors.Is(err, sshsandbox.ErrInvalidPrivateKey):
+		return nil, settings.Invalid("SSH_INVALID_PRIVATE_KEY", err.Error())
+	case errors.Is(err, sshsandbox.ErrEncryptedKey):
+		return nil, settings.Invalid("SSH_ENCRYPTED_KEY", err.Error())
+	case err != nil:
 		return nil, settings.Invalid("INVALID_PERSONAL_SSH", err.Error())
 	}
 	return provider, nil
@@ -127,12 +140,12 @@ func (r *runtime) sshConnectionSettings(ctx context.Context, owner string, serve
 	if server.Template == "" {
 		server.Template = defaultSSHImage
 	}
-	if len(server.User) > 255 {
-		return settings.SSHServer{}, settings.Invalid("INVALID_PERSONAL_SSH", "enter a valid SSH user")
+	if server.User == "" || len(server.User) > 255 || strings.ContainsAny(server.User, "\x00\r\n") {
+		return settings.SSHServer{}, settings.Invalid("SSH_INVALID_USER", "enter a valid SSH user")
 	}
 	address, err := canonicalSSHAddress(strings.TrimSpace(server.Address))
 	if err != nil || len(server.Address) > 255 {
-		return settings.SSHServer{}, settings.Invalid("INVALID_PERSONAL_SSH", "SSH address must be a host and port")
+		return settings.SSHServer{}, sshAddressError()
 	}
 	server.Address = address
 	if server.ID != "" {
@@ -185,14 +198,51 @@ func (r *runtime) TestSSHServer(ctx context.Context, server settings.SSHServer) 
 	if err != nil {
 		return err
 	}
-	err = provider.TestConnection(ctx)
-	if errors.Is(err, sshsandbox.ErrDockerUnavailable) {
+	return sshTestError(provider.TestConnection(ctx))
+}
+
+func sshAddressError() error {
+	return settings.Invalid("SSH_INVALID_ADDRESS", "SSH address must be a host and port")
+}
+
+func sshPrivateAddressError() error {
+	return settings.Invalid("SSH_PRIVATE_ADDRESS", "the SSH address is private and has not been allowed by the operator")
+}
+
+func sshTestError(err error) error {
+	if err == nil {
+		return nil
+	}
+	network, _ := errors.AsType[net.Error](err)
+	timedOut := errors.Is(err, context.DeadlineExceeded) || network != nil && network.Timeout()
+	var dns *net.DNSError
+	var algorithms *ssh.AlgorithmNegotiationError
+	switch {
+	case errors.Is(err, sshsandbox.ErrDockerUnavailable) && timedOut:
+		return settings.Invalid("SSH_DOCKER_TIMEOUT", "SSH connected, but the Docker check timed out")
+	case errors.Is(err, sshsandbox.ErrDockerUnavailable):
 		return settings.Invalid("SSH_DOCKER_UNAVAILABLE", "SSH connected, but Docker is unavailable to the SSH user")
+	case errors.Is(err, sshsandbox.ErrHostKeyMismatch):
+		return settings.Invalid("SSH_HOST_KEY_MISMATCH", sshsandbox.ErrHostKeyMismatch.Error())
+	case errors.Is(err, sshsandbox.ErrAuthentication):
+		return settings.Invalid("SSH_AUTHENTICATION_FAILED", sshsandbox.ErrAuthentication.Error())
+	case errors.Is(err, httpclient.ErrPrivateEndpoint):
+		return sshPrivateAddressError()
+	case errors.As(err, &dns) && !timedOut:
+		return settings.Invalid("SSH_DNS_FAILED", "could not resolve the SSH hostname")
+	case timedOut:
+		return settings.Invalid("SSH_CONNECTION_TIMEOUT", "the SSH connection timed out")
+	case errors.As(err, &algorithms):
+		return settings.Invalid("SSH_ALGORITHM_MISMATCH", "the SSH client and server have no compatible algorithms")
+	case errors.Is(err, sshsandbox.ErrHandshake):
+		return settings.Invalid("SSH_HANDSHAKE_FAILED", "the server accepted TCP but the SSH handshake failed")
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return settings.Invalid("SSH_CONNECTION_REFUSED", "the SSH port refused the connection")
+	case errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH):
+		return settings.Invalid("SSH_HOST_UNREACHABLE", "the SSH host is unreachable from the application server")
+	default:
+		return settings.Invalid("SSH_CONNECTION_FAILED", "could not open a TCP connection to the SSH host")
 	}
-	if err != nil {
-		return settings.Invalid("SSH_CONNECTION_FAILED", "could not connect or authenticate to the SSH server")
-	}
-	return nil
 }
 
 func (r *runtime) RemoveSSHServer(ctx context.Context, id string) error {

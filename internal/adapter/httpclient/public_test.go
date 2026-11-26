@@ -13,7 +13,7 @@ func TestAccountEndpointsRejectPrivateDialAddresses(t *testing.T) {
 		"127.0.0.1:443", "10.0.0.1:443", "169.254.169.254:443", "100.64.0.1:443",
 		"[::ffff:127.0.0.1]:443", "[fd00::1]:443", "[64:ff9b::a00:1]:443",
 	} {
-		if err := checkAddress(address, false); !errors.Is(err, errPrivateEndpoint) {
+		if err := checkAddress(address, false); !errors.Is(err, ErrPrivateEndpoint) {
 			t.Errorf("private address %s returned %v", address, err)
 		}
 	}
@@ -54,7 +54,7 @@ func TestTrustedModelOriginAllowsOnlyMatchingHTTPS(t *testing.T) {
 		t.Fatalf("trusted endpoint status: %d", response.StatusCode)
 	}
 	for _, blocked := range []string{"https://127.0.0.1:1/v1", strings.Replace(server.URL, "https://", "http://", 1)} {
-		if err := CheckModelEndpoint(client, blocked); !errors.Is(err, errPrivateEndpoint) {
+		if err := CheckModelEndpoint(client, blocked); !errors.Is(err, ErrPrivateEndpoint) {
 			t.Errorf("different model origin %q returned %v", blocked, err)
 		}
 	}
