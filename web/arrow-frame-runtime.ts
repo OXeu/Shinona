@@ -4,6 +4,7 @@ import { HostRenderer } from 'virtual:arrow-renderer'
 import { createVmRunner } from 'virtual:arrow-vm'
 import type { VmRunner } from 'virtual:arrow-vm'
 
+import contract from '../internal/adapter/pigo/arrow-view.json'
 import { initializeArrowWasm } from './arrow-frame-quickjs'
 
 interface FrameInput {
@@ -51,7 +52,7 @@ async function render({ source, theme, lang, wasm }: FrameInput, port: MessagePo
   const host = document.createElement('arrow-sandbox')
   const surface = host.attachShadow({ mode: 'open' })
   const style = document.createElement('style')
-  style.textContent = ':where(table) { width: 100%; }\n' + (source['main.css'] ?? '')
+  style.textContent = ':where(table) { width: 100%; }\n' + (source[contract.styleFile] ?? '')
   const mountPoint = document.createElement('div')
   surface.append(style, mountPoint)
   root.append(host)
@@ -107,9 +108,9 @@ async function render({ source, theme, lang, wasm }: FrameInput, port: MessagePo
     }
   }
   try {
-    const script = source['main.js']
+    const script = source[contract.scriptFile]
     if (!script) throw new Error('Missing ArrowJS source.')
-    const entryPath = '/main.js'
+    const entryPath = '/' + contract.scriptFile
     const { code, descriptors } = preprocessModule(script, entryPath)
     const boot = await createVmRunner({
       compiled: {

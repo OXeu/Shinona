@@ -11,6 +11,7 @@ const id = 'virtual:arrow-frame'
 const entry = fileURLToPath(new URL('./arrow-frame-runtime.ts', import.meta.url))
 const quickJS = fileURLToPath(new URL('./arrow-frame-quickjs.ts', import.meta.url))
 const documentPath = fileURLToPath(new URL('./arrow-frame.html', import.meta.url))
+const contractPath = fileURLToPath(new URL('../internal/adapter/pigo/arrow-view.json', import.meta.url))
 const require = createRequire(import.meta.url)
 const wasmPath = require.resolve('@jitl/quickjs-wasmfile-release-asyncify/wasm')
 const sandbox = dirname(require.resolve('@arrow-js/sandbox'))
@@ -20,14 +21,15 @@ const vendorModules = new Map([
   ['virtual:arrow-renderer', join(sandbox, 'host/renderer.ts')],
   ['virtual:arrow-vm', vm],
 ])
-const watchFiles = [entry, quickJS, documentPath]
+const watchFiles = [entry, quickJS, documentPath, contractPath]
 const devPrefix = '/@shinona/arrow-frame/'
 
 export function arrowFrame(): Plugin {
   let serve = false
   let assets: Promise<{ runtime: Uint8Array; document: Buffer; wasm: Buffer }> | undefined
   function getAssets() {
-    return assets ??= Promise.all([
+    if (assets) return assets
+    const pending = Promise.all([
       bundleRuntime(),
       readFile(documentPath),
       readFile(wasmPath),
@@ -37,9 +39,11 @@ export function arrowFrame(): Plugin {
       if (size > arrowFrameGzipBudget) throw new Error(`ArrowJS frame requires ${size} compressed bytes. Budget is ${arrowFrameGzipBudget}.`)
       return { runtime, document, wasm: compressedWasm }
     }).catch((error: unknown) => {
-      assets = undefined
+      if (assets === pending) assets = undefined
       throw error
     })
+    assets = pending
+    return pending
   }
   return {
     name: 'shinona-arrow-frame',

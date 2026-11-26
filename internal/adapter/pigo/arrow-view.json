@@ -1,0 +1,14 @@
+{
+  "format": "arrow-js",
+  "scriptFile": "main.js",
+  "styleFile": "main.css",
+  "scriptBytes": 16384,
+  "styleBytes": 8192,
+  "summaryCharacters": 320,
+  "moduleName": "@arrow-js/core",
+  "example": "const state = reactive({ count: 0 }); export default html`<button type=\"button\" @click=\"${() => state.count++}\">Count ${() => state.count}</button>`.",
+  "themeTokens": [
+    "--background", "--surface", "--sidebar-bg", "--foreground", "--muted", "--primary", "--on-primary", "--accent",
+    "--border", "--success", "--warning", "--danger", "--radius-sm", "--radius-md", "--radius-lg"
+  ]
+}

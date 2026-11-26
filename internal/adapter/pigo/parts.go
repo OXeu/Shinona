@@ -137,7 +137,7 @@ func textPart(block ai.Content, streaming bool) (run.TurnPart, bool) {
 }
 
 func uiPart(display renderedUI) run.TurnPart {
-	return run.TurnPart{Kind: "ui", Tool: "arrow-js", Text: display.summary, Output: display.source}
+	return run.TurnPart{Kind: "ui", Tool: arrowView.Format, Text: display.summary, Output: display.source}
 }
 
 func toolPart(name string, args map[string]any, status run.Status) run.TurnPart {

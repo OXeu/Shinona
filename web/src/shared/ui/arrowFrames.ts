@@ -5,21 +5,37 @@ import { ArrowFrameSlots } from './arrowFrameSlots'
 const slots = new ArrowFrameSlots()
 let sources: Promise<[string, ArrayBuffer]> | undefined
 
+async function loadDocument(signal: AbortSignal) {
+  const response = await request(assets.document, undefined, signal)
+  const source = await response.text()
+  if (!source.includes('ARROW_FRAME_NONCE') || !source.includes('ARROW_FRAME_RUNTIME')) {
+    throw new Error('Invalid ArrowJS frame response.')
+  }
+  return source
+}
+
+async function loadWasm(signal: AbortSignal) {
+  const response = await request(assets.wasm, undefined, signal)
+  let bytes = await response.arrayBuffer()
+  const header = new Uint8Array(bytes, 0, Math.min(2, bytes.byteLength))
+  // Static servers may send the file as raw gzip or decode it at fetch.
+  if (header[0] === 0x1f && header[1] === 0x8b) {
+    const body = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))
+    bytes = await new Response(body).arrayBuffer()
+  }
+  const magic = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength))
+  if (magic[0] !== 0 || magic[1] !== 0x61 || magic[2] !== 0x73 || magic[3] !== 0x6d) {
+    throw new Error('Invalid ArrowJS WebAssembly response.')
+  }
+  return bytes
+}
+
 function loadSources() {
   if (sources) return sources
-  const signal = AbortSignal.timeout(10_000)
-  sources = Promise.all([
-    request(assets.document, undefined, signal).then(response => response.text()),
-    request(assets.wasm, undefined, signal).then(async response => {
-      const bytes = await response.arrayBuffer()
-      const header = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength))
-      // Static servers may send the asset as raw gzip or decode it at fetch.
-      if (header[0] === 0 && header[1] === 0x61 && header[2] === 0x73 && header[3] === 0x6d) return bytes
-      if (header[0] !== 0x1f || header[1] !== 0x8b) throw new Error('Invalid ArrowJS WebAssembly response.')
-      const body = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))
-      return new Response(body).arrayBuffer()
-    }),
-  ]).catch((error: unknown) => {
+  const attempt = new AbortController()
+  const signal = AbortSignal.any([attempt.signal, AbortSignal.timeout(10_000)])
+  sources = Promise.all([loadDocument(signal), loadWasm(signal)]).catch((error: unknown) => {
+    attempt.abort()
     sources = undefined
     throw error
   })

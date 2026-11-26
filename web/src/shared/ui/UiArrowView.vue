@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import contract from '../../../../internal/adapter/pigo/arrow-view.json'
 import { languageTag, t } from '../i18n'
 import { mountArrowFrame } from './arrowFrames'
 import { UiButton } from './elements'
@@ -12,8 +13,6 @@ const height = ref(0)
 const failed = ref(false)
 const inactive = ref(false)
 const maxHeight = 960
-const tokens = ['--background', '--surface', '--sidebar-bg', '--foreground', '--muted', '--primary', '--on-primary', '--accent',
-  '--border', '--success', '--warning', '--danger', '--radius-sm', '--radius-md', '--radius-lg']
 
 let observer: IntersectionObserver | undefined
 let activity: AbortController | undefined
@@ -50,6 +49,11 @@ function revoke() {
   if (visible) void show()
 }
 
+function activate() {
+  failed.value = false
+  void show(true)
+}
+
 async function show(priority = false) {
   if (!visible || failed.value || !slot.value) return
   if (activity) {
@@ -76,7 +80,7 @@ async function show(priority = false) {
     await lease.ready
     if (signal.aborted) return
     const style = getComputedStyle(lease.element)
-    const theme = Object.fromEntries(tokens.map(name => [name, style.getPropertyValue(name)]))
+    const theme = Object.fromEntries(contract.themeTokens.map(name => [name, style.getPropertyValue(name)]))
     theme['--widget-font'] = `0.875rem/1.5 ${style.fontFamily}`
     const channel = new MessageChannel()
     port = channel.port1
@@ -131,7 +135,9 @@ onBeforeUnmount(() => {
   <div ref="container">
     <div ref="slot" class="arrow-slot" :style="{ height: height ? height + 'px' : undefined }" />
     <span :hidden="!failed && !inactive && height > 0">{{ summary }}</span>
-    <UiButton :hidden="!inactive" @click="show(true)">{{ t('chat.activateRichContent') }}</UiButton>
+    <UiButton :hidden="!inactive && !failed" @click="activate">
+      {{ t(failed ? 'common.retry' : 'chat.activateRichContent') }}
+    </UiButton>
   </div>
 </template>
 

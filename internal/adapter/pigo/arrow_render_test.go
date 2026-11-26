@@ -40,11 +40,35 @@ func TestArrowJSOnlyRunsWhenSelected(t *testing.T) {
 	}
 }
 
-func TestArrowJSRejectsOversizedSource(t *testing.T) {
-	result, err := arrowRenderTool().Execute(t.Context(), "display", map[string]any{
-		"summary": "Preview", "source": strings.Repeat("x", (16<<10)+1),
-	}, nil)
-	if err != nil || !result.IsError {
-		t.Fatalf("expected oversized source to fail, got %+v, %v", result, err)
+func TestArrowJSLimits(t *testing.T) {
+	source := strings.Repeat("é", 8192)
+	css := strings.Repeat("é", 4096)
+	summary := strings.Repeat("文", 320)
+	for _, fixture := range []struct {
+		name, source, css, summary string
+		rejected                   bool
+	}{
+		{name: "exact limits", source: source, css: css, summary: summary},
+		{name: "script size", source: source + "x", css: css, summary: summary, rejected: true},
+		{name: "style size", source: source, css: css + "x", summary: summary, rejected: true},
+		{name: "summary length", source: source, css: css, summary: summary + "文", rejected: true},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			result, err := arrowRenderTool().Execute(t.Context(), "display", map[string]any{
+				"source": fixture.source, "css": fixture.css, "summary": fixture.summary,
+			}, nil)
+			if err != nil || result.IsError != fixture.rejected {
+				t.Fatalf("tool returned isError=%v and error=%v", result.IsError, err)
+			}
+			if fixture.rejected {
+				return
+			}
+			var files map[string]string
+			details, ok := result.Details.(renderedUI)
+			if !ok || details.summary != summary || json.Unmarshal([]byte(details.source), &files) != nil ||
+				files["main.js"] != source || files["main.css"] != css {
+				t.Fatal("the existing wire format did not preserve the full script, stylesheet, and summary")
+			}
+		})
 	}
 }
