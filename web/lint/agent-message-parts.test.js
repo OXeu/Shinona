@@ -1,7 +1,7 @@
 import { deepEqual } from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { messageChunks } from '../src/features/sessions/agentMessageParts.ts'
+import { activityCategories, messageChunks } from '../src/features/sessions/agentMessageParts.ts'
 
 const parts = [
   { kind: 'text', text: 'Earlier output' },
@@ -42,4 +42,24 @@ test('running, failed, and stopped turns keep body parts visible between process
       { kind: 'text', part: indexed[3] },
     ])
   }
+})
+
+test('current activity follows the executing tool while the completed process remains visible', () => {
+  const history = [
+    { kind: 'thinking', text: 'Check files' },
+    { kind: 'tool', tool: 'read', status: 'SUCCEEDED' },
+    { kind: 'text', text: 'The files look good.' },
+    { kind: 'thinking', text: 'Run the tests' },
+    { kind: 'tool', tool: 'bash', status: 'RUNNING' },
+    { kind: 'tool', tool: 'write', status: 'QUEUED' },
+  ]
+  const items = history.map((part, index) => ({ ...part, index }))
+  const chunks = messageChunks({ status: 'RUNNING', output: '', parts: history })
+  deepEqual(chunks, [
+    { kind: 'process', index: 0, parts: items.slice(0, 2) },
+    { kind: 'text', part: items[2] },
+    { kind: 'process', index: 3, parts: items.slice(3) },
+  ])
+  deepEqual(activityCategories(chunks[2].parts, true), ['command'])
+  deepEqual(activityCategories(chunks[0].parts, false), ['read'])
 })

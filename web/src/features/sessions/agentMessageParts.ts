@@ -54,7 +54,7 @@ export function hasSettled(turn: Turn) {
 export function activityCategories(parts: TurnPart[], active: boolean): ToolCategory[] {
   const tools = parts.filter((part) => part.kind === 'tool')
   if (active) {
-    const current = tools.findLast((part) => part.status === 'QUEUED' || part.status === 'RUNNING')
+    const current = tools.findLast((part) => part.status === 'RUNNING') ?? tools.find((part) => part.status === 'QUEUED')
     return [current ? toolCategory(current.tool) : 'thinking']
   }
   if (!tools.length) return ['thinking']

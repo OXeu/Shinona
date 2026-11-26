@@ -18,10 +18,15 @@ const (
 	argumentBytes = 4 << 10
 )
 
-// liveParts projects current activity and keeps assistant output visible as tools run.
+type partProjection struct {
+	parts     []run.TurnPart
+	toolCalls map[string]int
+}
+
+// liveParts adds finalized Pi messages in order and overlays the streaming response.
 func liveParts(report func([]run.TurnPart)) func(agent.AgentEvent) {
 	var lastReport time.Time
-	var output []run.TurnPart
+	view := partProjection{toolCalls: make(map[string]int)}
 	return func(event agent.AgentEvent) {
 		if report == nil {
 			return
@@ -34,78 +39,80 @@ func liveParts(report func([]run.TurnPart)) func(agent.AgentEvent) {
 			}
 		}
 		switch event.Type {
-		case agent.EvMessageUpdate, agent.EvMessageEnd:
+		case agent.EvMessageUpdate:
 			message := assistantMessage(event.Message)
 			if message == nil {
 				return
 			}
-			streaming := event.Type == agent.EvMessageUpdate
 			for _, block := range message.Content {
-				if part, ok := textPart(block, streaming); ok {
-					switch {
-					case streaming:
-						parts = append(parts, part)
-					case part.Kind == "text":
-						output = append(output, part)
-					}
+				if part, ok := textPart(block, true); ok {
+					parts = append(parts, part)
 				}
+			}
+		case agent.EvMessageEnd:
+			if !view.addMessage(event.Message, false) {
+				return
 			}
 		case agent.EvToolExecutionStart, agent.EvToolExecutionUpdate:
-			part := toolPart(event.ToolName, event.Args, run.Running)
+			index, ok := view.toolCalls[event.ToolCallID]
+			if !ok {
+				return
+			}
+			part := &view.parts[index]
+			part.Status = string(run.Running)
 			if result, ok := event.PartialResult.(agent.AgentToolResult); ok {
 				part.Output = toolOutput(result.Content)
-			}
-			parts = []run.TurnPart{part}
-		case agent.EvToolExecutionEnd:
-			if result, ok := event.Result.(agent.AgentToolResult); ok && !event.IsError {
-				if display, ok := result.Details.(renderedUI); ok {
-					output = append(output, uiPart(display))
-				}
 			}
 		default:
 			return
 		}
-		report(slices.Concat(output, parts))
+		report(slices.Concat(view.parts, parts))
 		lastReport = time.Now()
 	}
 }
 
 func transcriptParts(messages []agent.AgentMessage, omitFinalText bool) []run.TurnPart {
-	var parts []run.TurnPart
-	toolCalls := make(map[string]int)
+	view := partProjection{toolCalls: make(map[string]int)}
 	for index, entry := range messages {
-		if result, ok := entry.(ai.ToolResultMessage); ok {
-			if call, found := toolCalls[result.ToolCallID]; found {
-				part := &parts[call]
-				if result.IsError {
-					part.Status = string(run.Failed)
-				} else if display, ok := result.Details.(renderedUI); ok {
-					*part = uiPart(display)
-					continue
-				} else {
-					part.Status = string(run.Succeeded)
-				}
-				part.Output = toolOutput(result.Content)
-			}
+		view.addMessage(entry, omitFinalText && index == len(messages)-1)
+	}
+	return view.parts
+}
+
+func (p *partProjection) addMessage(entry agent.AgentMessage, omitText bool) bool {
+	if result, ok := entry.(ai.ToolResultMessage); ok {
+		index, found := p.toolCalls[result.ToolCallID]
+		if !found {
+			return false
+		}
+		part := &p.parts[index]
+		if result.IsError {
+			part.Status = string(run.Failed)
+		} else if display, ok := result.Details.(renderedUI); ok {
+			*part = uiPart(display)
+			return true
+		} else {
+			part.Status = string(run.Succeeded)
+		}
+		part.Output = toolOutput(result.Content)
+		return true
+	}
+	message := assistantMessage(entry)
+	if message == nil {
+		return false
+	}
+	clear(p.toolCalls)
+	for _, block := range message.Content {
+		if call, ok := block.(ai.ToolCall); ok && call.Name != "" {
+			p.toolCalls[call.ID] = len(p.parts)
+			p.parts = append(p.parts, toolPart(call.Name, call.Arguments, run.Queued))
 			continue
 		}
-		message := assistantMessage(entry)
-		if message == nil {
-			continue
-		}
-		clear(toolCalls)
-		for _, block := range message.Content {
-			if call, ok := block.(ai.ToolCall); ok && call.Name != "" {
-				toolCalls[call.ID] = len(parts)
-				parts = append(parts, toolPart(call.Name, call.Arguments, run.Queued))
-				continue
-			}
-			if part, ok := textPart(block, false); ok && (part.Kind != "text" || !omitFinalText || index != len(messages)-1) {
-				parts = append(parts, part)
-			}
+		if part, ok := textPart(block, false); ok && (part.Kind != "text" || !omitText) {
+			p.parts = append(p.parts, part)
 		}
 	}
-	return parts
+	return true
 }
 
 func textPart(block ai.Content, streaming bool) (run.TurnPart, bool) {

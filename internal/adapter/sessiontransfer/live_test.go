@@ -212,14 +212,33 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	if progress.TurnId != current.ID || len(progress.Parts) != 1 || progress.Parts[0].GetAppend().GetText() != " and delta" {
 		t.Fatalf("expected suffix-only progress: %v", progress)
 	}
+	agent.steps <- func(input run.Input) {
+		input.ReportParts([]run.TurnPart{
+			{Kind: "text", Text: "initial text and delta"},
+			{Kind: "thinking", Text: "Earlier thought"},
+			{Kind: "tool", Tool: "read", Status: string(run.Succeeded)},
+			{Kind: "thinking", Text: "Current thought", Status: string(run.Running)},
+		})
+	}
+	progress = waitFor(conn, &seq, func(msg *sessionpb.LiveMessage) bool { return msg.GetProgress().GetPartCount() == 4 }).GetProgress()
+	if len(progress.Parts) != 3 || progress.Parts[0].Index != 1 || progress.Parts[0].GetReplace().GetText() != "Earlier thought" ||
+		progress.Parts[1].Index != 2 || progress.Parts[1].GetReplace().GetStatus() != string(run.Succeeded) ||
+		progress.Parts[2].GetReplace().GetText() != "Current thought" {
+		t.Fatalf("expected the completed and current activity in the live delta: %v", progress)
+	}
 	_ = conn.Close()
 	waitForBootstrapAndDeltaTiming(t, ctx, logs)
 
 	resumed := dial(owner, "")
 	var resumedSeq uint32
 	resume := waitFor(resumed, &resumedSeq, func(msg *sessionpb.LiveMessage) bool { return msg.GetSync() != nil }).GetSync()
-	if len(resume.ChangedTurns) != 1 || resume.ChangedTurns[0].GetParts()[0].Text != "initial text and delta" {
+	if len(resume.ChangedTurns) != 1 {
 		t.Fatalf("reconnect did not reconcile current progress: %v", resume)
+	}
+	parts := resume.ChangedTurns[0].GetParts()
+	if len(parts) != 4 || parts[0].Text != "initial text and delta" || parts[1].Text != "Earlier thought" ||
+		parts[2].Tool != "read" || parts[2].Status != string(run.Succeeded) || parts[3].Text != "Current thought" {
+		t.Fatalf("reconnect did not restore the whole live process: %v", parts)
 	}
 	revocable := dial(owner, "revocable")
 	var revocableSeq uint32

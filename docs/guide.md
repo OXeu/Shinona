@@ -193,7 +193,7 @@ Firefox displays phase durations in the Network Timings panel in a secure contex
 
 The API uses one Go process and one worker. A turn begins with one user submission and can include multiple model requests and tool calls. Each conversation can have up to eight pending turns, including one running turn. A running turn can receive up to 16 steering messages. The queue survives restart and interrupted runs become failed.
 
-Shinona shows the current activity while a turn runs and displays the completed steps from Pi's messages after the turn ends. Preview text and tool output can use up to 8 KiB each, and tool input can use up to 4 KiB.
+Shinona shows current activity and completed steps as Pi runs. The completed steps remain available in the conversation. Preview text and tool output can use up to 8 KiB each, and tool input can use up to 4 KiB.
 
 Pi prepares the conversation for the selected model and compacts long histories when the model's context window is known. SQLite saves Pi's compacted context alongside the turn. Later requests resume from the latest applicable compacted context and replay the messages after it. Reverted turns and submissions cancelled before processing stay out of model history. The conversation list returns the newest 30 sessions.
 

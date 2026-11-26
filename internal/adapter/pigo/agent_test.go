@@ -128,7 +128,8 @@ func TestLongAgentLoopKeepsReportingNewToolActivity(t *testing.T) {
 	for index := range calls {
 		responses = append(responses, ai.AssistantMessage{
 			StopReason: ai.StopToolUse, Content: ai.ContentList{
-				ai.ToolCall{ID: fmt.Sprint(index), Name: "read", Arguments: map[string]any{"path": fmt.Sprintf("step-%d", index)}},
+				ai.ThinkingContent{Thinking: fmt.Sprintf("Inspect step %d.", index)},
+				ai.ToolCall{ID: "read-file", Name: "read", Arguments: map[string]any{"path": fmt.Sprintf("step-%d", index)}},
 			},
 		})
 	}
@@ -139,20 +140,33 @@ func TestLongAgentLoopKeepsReportingNewToolActivity(t *testing.T) {
 	result, err := fixture.Run(t.Context(), run.Input{
 		Prompt: "Run the inspection.",
 		ReportParts: func(parts []run.TurnPart) {
-			if len(parts) == 0 {
-				endedTools = liveTools
+			if len(parts) == 0 || parts[len(parts)-1].Kind != "tool" {
 				return
 			}
-			if parts[0].Kind == "tool" {
+			last := parts[len(parts)-1]
+			switch last.Status {
+			case string(run.Running):
 				want := fmt.Sprintf(`{"path":"step-%d"}`, liveTools)
-				if len(parts) != 1 || parts[0].Input != want || parts[0].Status != string(run.Running) || endedTools != liveTools {
-					t.Errorf("expected only the running tool after clearing the previous tool: %+v", parts)
+				if len(parts) != 2*(liveTools+1) || last.Input != want || endedTools != liveTools {
+					t.Errorf("step %d did not preserve its live history: %d parts, %d finished tools, current tool %+v", liveTools, len(parts), endedTools, last)
+					return
+				}
+				for index := 0; index <= liveTools; index++ {
+					thought, tool := parts[2*index], parts[2*index+1]
+					if thought.Kind != "thinking" || thought.Text != fmt.Sprintf("Inspect step %d.", index) || thought.Status != "" {
+						t.Fatalf("step %d lost a completed thought: %+v", index, thought)
+					}
+					if index < liveTools && (tool.Status != string(run.Succeeded) || tool.Input != fmt.Sprintf(`{"path":"step-%d"}`, index)) {
+						t.Fatalf("step %d lost its completed tool: %+v", index, tool)
+					}
 				}
 				liveTools++
+			case string(run.Succeeded):
+				endedTools++
 			}
 		},
 	}, &recordingWorkspace{path: fmt.Sprintf("step-%d", calls-1), text: "hello"})
-	if err != nil || result.Output != "Final answer." || liveTools != calls || endedTools != calls || len(result.Parts) != calls {
+	if err != nil || result.Output != "Final answer." || liveTools != calls || endedTools != calls || len(result.Parts) != 2*calls {
 		t.Fatalf("long turn did not preserve activity: output=%q, started=%d, ended=%d, saved=%d, error=%v", result.Output, liveTools, endedTools, len(result.Parts), err)
 	}
 	last := result.Parts[len(result.Parts)-1]
