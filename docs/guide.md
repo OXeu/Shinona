@@ -61,7 +61,7 @@ Use the project selector to add a project or filter sessions. **All projects** i
 
 Use the More menu beside a project to open **Manage sandbox**. The page shows the provider, the current status, and the sandbox ID when available. From there you can create, destroy, or recreate the workspace and set a provider and template for the project. E2B projects can also override their timeout and timeout action. Empty fields inherit the instance defaults. Changing the effective configuration destroys the current workspace, and the next use provisions a new one. Destroying or recreating a sandbox also closes its terminal shells. Conversation history stays in Shinona.
 
-Removing a named project moves its sessions into the default project. Use **Destroy sandbox** before removing a project if you want to clean up its provider workspace.
+Removing a named project closes its terminals and destroys its retained sandbox before moving its sessions to the default project. If sandbox cleanup fails, the project remains.
 
 The workspace panel has **Changes & Commit**, **Git History**, and **Files**. Workspace inspection is available between turns. The agent or terminal provisions the project workspace on first use. Files supports folders and read-only UTF-8 previews. The Git panels use a repository at the selected workspace folder and support diffs, the latest 40 commits, and a local commit of selected paths. Unrelated staged changes stay staged.
 

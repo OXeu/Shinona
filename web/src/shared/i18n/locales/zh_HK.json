@@ -269,7 +269,7 @@
   "projects.saveName": "儲存名稱",
   "projects.renamed": "已重新命名項目。",
   "projects.removed": "已移除項目。",
-  "projects.confirmRemove": "移除「{name}」？此項目的對話將移至預設項目。",
+  "projects.confirmRemove": "移除「{name}」？此項目的沙箱將被銷毀，對話將移至預設項目。",
   "projects.updateFailed": "未能更新項目。",
   "projects.all": "所有項目",
   "projects.default": "預設項目",
