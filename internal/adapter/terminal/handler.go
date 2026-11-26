@@ -49,8 +49,13 @@ func Routes(mux httpserver.Routes, lifetime context.Context, origin string, sour
 ) {
 	h := handler{
 		lifetime: lifetime, source: source, sessionUser: sessionUser, logger: logger,
-		upgrader: websocket.Upgrader{HandshakeTimeout: socketTimeout,
-			CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == origin }},
+		upgrader: websocket.Upgrader{
+			HandshakeTimeout: socketTimeout,
+			CheckOrigin:      func(r *http.Request) bool { return r.Header.Get("Origin") == origin },
+			Error: func(w http.ResponseWriter, _ *http.Request, status int, _ error) {
+				httpserver.WriteError(w, status, "TERMINAL_UPGRADE_FAILED", "Could not open a terminal connection.")
+			},
+		},
 	}
 	mux.Handle("GET "+Path, requireUser(http.HandlerFunc(h.list)))
 	mux.Handle("GET "+Path+"/connect", requireUser(http.HandlerFunc(h.connect)))
@@ -61,7 +66,7 @@ func Routes(mux httpserver.Routes, lifetime context.Context, origin string, sour
 func (h handler) list(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
 	if !validID(session) {
-		http.Error(w, "Invalid conversation", http.StatusBadRequest)
+		httpserver.WriteError(w, http.StatusBadRequest, "INVALID_TERMINAL_REQUEST", "Invalid conversation.")
 		return
 	}
 	list := timing.Start(r.Context(), "terminal_list")
@@ -85,7 +90,7 @@ func readRequest(w http.ResponseWriter, r *http.Request, needsTerminal bool) (te
 	if err := decoder.Decode(&request); err != nil ||
 		!validID(request.Session) || (needsTerminal && !validID(request.Terminal)) ||
 		!errors.Is(decoder.Decode(new(any)), io.EOF) {
-		http.Error(w, "Invalid terminal request", http.StatusBadRequest)
+		httpserver.WriteError(w, http.StatusBadRequest, "INVALID_TERMINAL_REQUEST", "Invalid terminal request.")
 		return terminalRequest{}, false
 	}
 	return request, true
@@ -134,18 +139,16 @@ func (h handler) writeJSON(w http.ResponseWriter, status int, value any) {
 func (h handler) respondError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, run.ErrSession), errors.Is(err, run.ErrTerminalNotFound):
-		http.Error(w, "Terminal conversation or tab not found", http.StatusNotFound)
+		httpserver.WriteError(w, http.StatusNotFound, "TERMINAL_NOT_FOUND", "Terminal conversation or tab not found.")
 	case errors.Is(err, run.ErrTerminalLimit):
-		w.Header().Set("X-Shinona-Error-Code", "TERMINAL_LIMIT")
-		http.Error(w, "Terminal limit reached", http.StatusConflict)
+		httpserver.WriteError(w, http.StatusConflict, "TERMINAL_LIMIT", "Terminal limit reached.")
 	case errors.Is(err, run.ErrWorkspaceBusy):
-		w.Header().Set("X-Shinona-Error-Code", "WORKSPACE_BUSY")
-		http.Error(w, "Workspace is busy", http.StatusConflict)
+		httpserver.WriteError(w, http.StatusConflict, "WORKSPACE_BUSY", "Workspace is busy.")
 	case errors.Is(err, run.ErrTerminalUnavailable):
-		http.Error(w, "Terminal unavailable", http.StatusServiceUnavailable)
+		httpserver.WriteError(w, http.StatusServiceUnavailable, "TERMINAL_UNAVAILABLE", "Terminal unavailable.")
 	default:
 		h.logger.Warn("terminal request", "error", err)
-		http.Error(w, "Terminal unavailable", http.StatusInternalServerError)
+		httpserver.WriteError(w, http.StatusInternalServerError, "TERMINAL_UNAVAILABLE", "Terminal unavailable.")
 	}
 }
 
@@ -153,7 +156,7 @@ func (h handler) connect(w http.ResponseWriter, r *http.Request) {
 	owner := auth.CurrentUser(r.Context()).ID
 	session, id := r.URL.Query().Get("session"), r.URL.Query().Get("terminal")
 	if !validID(session) || !validID(id) {
-		http.Error(w, "Invalid terminal request", http.StatusBadRequest)
+		httpserver.WriteError(w, http.StatusBadRequest, "INVALID_TERMINAL_REQUEST", "Invalid terminal request.")
 		return
 	}
 	lookup := timing.Start(r.Context(), "terminal_lookup")
