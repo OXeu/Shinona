@@ -103,7 +103,7 @@ function resumeOnFocus() {
   if (refreshPaused.value) restart()
 }
 
-watch(() => store.selectedProjectId, restart)
+watch(() => store.selectedProject, restart)
 onMounted(() => {
   document.addEventListener('visibilitychange', restart)
   window.addEventListener('online', restart)

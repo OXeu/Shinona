@@ -1,8 +1,10 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 
 import { readComposerSelection, writeComposerSelection } from './composerPreferences'
 import type { ComposerSelection } from './composerPreferences'
+import { allProjects, defaultProject, includesProject, projectScopeKey } from './projectScope'
+import type { ProjectScope } from './projectScope'
 import { sessionApi } from './sessionApi'
 import type { Project, SessionSummary } from './sessionApi'
 import type { SessionListSnapshot } from './sessionListApi'
@@ -13,8 +15,8 @@ export const useSessionStore = defineStore('sessions', () => {
   const projects = ref<Project[]>([])
   const composerSelections = ref(new Map<string | null, ComposerSelection>())
   const projectNames = computed(() => new Map(projects.value.map(({ id, name }) => [id, name])))
-  // null includes every project, while an empty string selects the default project.
-  const selectedProjectId = ref<string | null>(null)
+  const selectedProject = shallowRef<ProjectScope>(allProjects)
+  const draftProject = computed(() => selectedProject.value.kind === 'all' ? defaultProject : selectedProject.value)
   let account: string | undefined
   let version = 0
   let projectVersion = 0
@@ -38,7 +40,7 @@ export const useSessionStore = defineStore('sessions', () => {
     recent.value = []
     projects.value = []
     composerSelections.value = new Map()
-    selectedProjectId.value = null
+    selectedProject.value = allProjects
   }
 
   function composerSelection(session: string | null): ComposerSelection {
@@ -57,11 +59,11 @@ export const useSessionStore = defineStore('sessions', () => {
     composerSelections.value.delete(null)
   }
 
-  function selectProject(id: string | null) {
-    if (id === selectedProjectId.value) return
+  function selectProject(project: ProjectScope) {
+    if (projectScopeKey(project) === projectScopeKey(selectedProject.value)) return
     version++
     resetPolling()
-    selectedProjectId.value = id
+    selectedProject.value = project
     recent.value = []
   }
 
@@ -72,7 +74,7 @@ export const useSessionStore = defineStore('sessions', () => {
     projectVersion++
     polling?.changed()
     projects.value = [...projects.value.filter(({ id }) => id !== project.id), project]
-    selectProject(project.id)
+    selectProject({ kind: 'project', id: project.id })
     return true
   }
 
@@ -94,7 +96,8 @@ export const useSessionStore = defineStore('sessions', () => {
     version++
     polling?.changed()
     projects.value = projects.value.filter((entry) => entry.id !== id)
-    if (selectedProjectId.value === id) selectProject(null)
+    const selected = selectedProject.value
+    if (selected.kind === 'project' && selected.id === id) selectProject(allProjects)
     else recent.value = recent.value.map((item) => item.projectId === id ? { ...item, projectId: null } : item)
     return true
   }
@@ -105,20 +108,20 @@ export const useSessionStore = defineStore('sessions', () => {
     const request = ++refreshID
     const requestedAt = version
     const requestedProjectVersion = projectVersion
-    const projectId = selectedProjectId.value
-    const poller = polling ??= new SessionListPolling(owner, projectId)
+    const selected = selectedProject.value
+    const poller = polling ??= new SessionListPolling(owner, selected)
     const response = await poller.refresh(serverSnapshot, signal)
     if (signal.aborted || request !== refreshID) return
     serverSnapshot = response
     if (requestedAt === version) recent.value = response.sessions
     if (requestedProjectVersion === projectVersion) {
       projects.value = response.projects
-      if (projectId && !response.projects.some(({ id }) => id === projectId)) selectProject(null)
+      if (selected.kind === 'project' && !response.projects.some(({ id }) => id === selected.id)) selectProject(allProjects)
     }
   }
 
   function upsert(session: SessionSummary) {
-    if (selectedProjectId.value !== null && (session.projectId ?? '') !== selectedProjectId.value) return
+    if (!includesProject(selectedProject.value, session.projectId)) return
     const { id, projectId, title, defaultTitle, turnCount, updatedAt, pinned, active, unread } = session
     const summary: SessionSummary = { id, projectId, title, defaultTitle, turnCount, updatedAt, pinned, active, unread }
     const previous = recent.value.find((entry) => entry.id === id)
@@ -147,7 +150,7 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   return {
-    recent, projects, projectNames, selectedProjectId, composerSelection, chooseComposerOptions, moveDraftComposerOptions,
+    recent, projects, projectNames, selectedProject, draftProject, composerSelection, chooseComposerOptions, moveDraftComposerOptions,
     useAccount, refresh, selectProject, createProject, renameProject, removeProject, upsert, remove, markRead,
   }
 })

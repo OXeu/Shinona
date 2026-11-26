@@ -1,4 +1,6 @@
 import { requestConditional } from '../../shared/http'
+import { projectTargetId } from './projectScope'
+import type { ProjectScope } from './projectScope'
 import type { Project, SessionSummary } from './sessionApi'
 import { sessionRequestTimeout } from './sessionListWorkerMessages'
 
@@ -36,7 +38,7 @@ function applyPatch<T extends { id: string }>(base: T[], patch?: ListPatch<T>): 
 }
 
 export async function listSessions(
-  projectId: string | null,
+  project: ProjectScope,
   owner: string,
   base: SessionListSnapshot | undefined,
   signal?: AbortSignal,
@@ -47,7 +49,7 @@ export async function listSessions(
   signal?.addEventListener('abort', abort, { once: true })
   const timeout = setTimeout(() => controller.abort(), sessionRequestTimeout)
   const query = new URLSearchParams({ delta: 'true' })
-  if (projectId !== null) query.set('projectId', projectId)
+  if (project.kind !== 'all') query.set('projectId', projectTargetId(project) ?? '')
   try {
     const headers = { 'X-Shinona-Account': owner }
     const response = await requestConditional('/api/v1/sessions?' + query, base?.etag, controller.signal, headers)

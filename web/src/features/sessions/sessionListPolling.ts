@@ -1,4 +1,6 @@
 import { HttpError } from '../../shared/http'
+import { projectScopeKey } from './projectScope'
+import type { ProjectScope } from './projectScope'
 import { listSessions } from './sessionListApi'
 import SharedSessionList from './sessionListWorker?sharedworker'
 import type { SessionListSnapshot } from './sessionListApi'
@@ -15,11 +17,11 @@ export class SessionListPolling {
   private pending = new Map<number, PendingRefresh>()
   private nextID = 0
 
-  constructor(private readonly owner: string, private readonly projectId: string | null) {
+  constructor(private readonly owner: string, private readonly project: ProjectScope) {
     if (typeof SharedWorker === 'undefined') return
     try {
       const worker = new SharedSessionList({
-        name: JSON.stringify(['shinona-session-list', owner, projectId]),
+        name: JSON.stringify(['shinona-session-list', owner, projectScopeKey(project)]),
       })
       this.port = worker.port
       this.port.onmessage = (event: MessageEvent<SessionListWorkerReply>) => {
@@ -51,7 +53,7 @@ export class SessionListPolling {
       const response = await this.refreshShared(base, signal)
       if (response) return response
     }
-    return listSessions(this.projectId, this.owner, base, signal)
+    return listSessions(this.project, this.owner, base, signal)
   }
 
   private send(message: SessionListWorkerRequest) {
@@ -93,7 +95,7 @@ export class SessionListPolling {
           else reject(error)
         },
       })
-      this.send({ type: 'refresh', id, scope: { owner: this.owner, projectId: this.projectId }, etag: base?.etag })
+      this.send({ type: 'refresh', id, scope: { owner: this.owner, project: this.project }, etag: base?.etag })
     })
   }
 }

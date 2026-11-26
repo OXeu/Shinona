@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { messageFor } from '../../shared/errors'
 import { t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
+import { projectTargetId } from './projectScope'
 import { sessionApi } from './sessionApi'
 import type { ComposerAction, ComposerPayload, ComposerRunOptions, ImageAttachment, PendingAction, PendingMessage, SessionSummary } from './sessionApi'
 import { useSessionStore } from './sessionStore'
@@ -75,14 +76,14 @@ export function useTurnActions(
   }
 
   async function submitDraft(message: string, payload: ComposerPayload) {
-    const projectId = store.selectedProjectId
+    const project = store.draftProject
     const from = route.fullPath
     draftRequest = new AbortController()
     const { signal } = draftRequest
     submitting.value = true
     try {
-      if (!draftSession || draftSession.projectId !== (projectId || null)) {
-        const createSession = await sessionApi.create(projectId, signal)
+      if (!draftSession || draftSession.projectId !== projectTargetId(project)) {
+        const createSession = await sessionApi.create(project, signal)
         if (signal.aborted || route.fullPath !== from) return
         draftSession = createSession
         store.upsert(createSession)
@@ -210,7 +211,7 @@ export function useTurnActions(
     setChatError('create', '')
     creating.value = true
     try {
-      const createSession = await sessionApi.create(store.selectedProjectId)
+      const createSession = await sessionApi.create(store.draftProject)
       if (route.fullPath !== from) return
       store.upsert(createSession)
       await router.push({ name: 'session', params: { id: createSession.id } })

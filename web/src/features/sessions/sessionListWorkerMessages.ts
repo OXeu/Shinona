@@ -1,3 +1,4 @@
+import type { ProjectScope } from './projectScope'
 import type { SessionListSnapshot } from './sessionListApi'
 
 export const sessionPollInterval = 2_500
@@ -5,7 +6,7 @@ export const sessionRequestTimeout = 15_000
 
 export interface SessionListScope {
   owner: string
-  projectId: string | null
+  project: ProjectScope
 }
 
 export type SessionListWorkerRequest =

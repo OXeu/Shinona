@@ -11,6 +11,8 @@ import UiIcon from '../../shared/ui/UiIcon.vue'
 import UiInput from '../../shared/ui/UiInput.vue'
 import UiMoreMenu from '../../shared/ui/UiMoreMenu.vue'
 import { UiBox, UiButton, UiForm, UiInline, UiSubheading } from '../../shared/ui/elements'
+import { allProjects, defaultProject, projectScopeKey, projectTargetId } from './projectScope'
+import type { ProjectScope } from './projectScope'
 import type { Project } from './sessionApi'
 import { useSessionStore } from './sessionStore'
 
@@ -26,12 +28,16 @@ const name = ref('')
 const saving = ref(false)
 
 const choices = computed(() => [
-  { id: null, name: t('projects.all'), icon: 'folder-open-line', project: undefined },
-  { id: '', name: t('projects.default'), icon: 'folder-3-line', project: undefined },
-  ...store.projects.map((project) => ({ ...project, icon: 'folder-3-line', project })),
-].filter((item) => !props.hideAll || item.id !== null))
-const selectedId = computed(() => props.hideAll ? store.selectedProjectId ?? '' : store.selectedProjectId)
-const label = computed(() => choices.value.find((item) => item.id === selectedId.value)?.name ??
+  { scope: allProjects, name: t('projects.all'), icon: 'folder-open-line', project: undefined },
+  { scope: defaultProject, name: t('projects.default'), icon: 'folder-3-line', project: undefined },
+  ...store.projects.map((project) => ({
+    scope: { kind: 'project', id: project.id } as const, name: project.name, icon: 'folder-3-line', project,
+  })),
+].filter((item) => !props.hideAll || item.scope.kind !== 'all')
+  .map((item) => ({ ...item, key: projectScopeKey(item.scope) })))
+const selected = computed(() => props.hideAll ? store.draftProject : store.selectedProject)
+const selectedKey = computed(() => projectScopeKey(selected.value))
+const label = computed(() => choices.value.find((item) => item.key === selectedKey.value)?.name ??
   t(props.hideAll ? 'projects.default' : 'projects.all'))
 const dialogTitle = computed(() => t(action.value === 'add' ? 'projects.add' : action.value === 'rename' ? 'projects.rename' : 'projects.remove'))
 
@@ -40,6 +46,12 @@ function openDialog(next: typeof action.value, project?: Project) {
   target.value = project
   name.value = project?.name ?? ''
   dialogOpen.value = true
+}
+
+function manageSandbox(project: ProjectScope) {
+  if (project.kind !== 'all') {
+    void router.push({ name: 'project-sandbox', params: { projectId: projectTargetId(project) ?? '' } })
+  }
 }
 
 async function save() {
@@ -76,25 +88,25 @@ onUnmounted(() => request.abort())
   >
     <template #trigger>
       <UiBox class="project-trigger">
-        <UiIcon :name="selectedId === null ? 'folder-open-line' : 'folder-3-line'" />
+        <UiIcon :name="selected.kind === 'all' ? 'folder-open-line' : 'folder-3-line'" />
         <UiInline class="project-name">{{ label }}</UiInline>
         <UiIcon name="arrow-down-s-line" />
       </UiBox>
     </template>
     <template #default="{ close }">
       <UiBox class="project-options">
-        <UiBox v-for="item in choices" :key="item.id ?? 'all'" class="project-option">
+        <UiBox v-for="item in choices" :key="item.key" class="project-option">
           <UiButton
             class="menu-item"
-            :aria-current="item.id === selectedId ? 'true' : undefined"
+            :aria-current="item.key === selectedKey ? 'true' : undefined"
             :title="item.name"
-            @click="store.selectProject(item.id); close(true)"
+            @click="store.selectProject(item.scope); close(true)"
           >
             <UiIcon :name="item.icon" /> <UiInline class="project-option-name">{{ item.name }}</UiInline>
-            <UiIcon class="menu-tail" name="check-line" :hidden="item.id !== selectedId" />
+            <UiIcon class="menu-tail" name="check-line" :hidden="item.key !== selectedKey" />
           </UiButton>
           <UiMoreMenu
-            :hidden="item.id === null"
+            :hidden="item.scope.kind === 'all'"
             :label="t('projects.actionsFor', { name: item.name })"
             boundary=".project-options"
             :disabled="saving"
@@ -102,7 +114,7 @@ onUnmounted(() => request.abort())
             <template #default="{ close: closeActions }">
               <UiButton
                 class="menu-item"
-                @click="closeActions(); close(); router.push({ name: 'project-sandbox', params: { projectId: item.id ?? '' } })"
+                @click="closeActions(); close(); manageSandbox(item.scope)"
               >
                 <UiIcon name="terminal-box-line" /> {{ t('sandbox.manage') }}
               </UiButton>

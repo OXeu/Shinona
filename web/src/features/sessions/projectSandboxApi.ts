@@ -1,4 +1,6 @@
 import { apiJSON } from '../../shared/http'
+import { projectTargetId } from './projectScope'
+import type { ProjectTarget } from './projectScope'
 import type { Project } from './sessionApi'
 
 export interface ProjectSandboxConfig {
@@ -18,20 +20,19 @@ export interface ProjectSandbox {
   state: 'NONE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'MISSING' | 'UNAVAILABLE'
 }
 
-
-function sandboxPath(projectId: string) {
-  return '/projects/' + encodeURIComponent(projectId || 'default') + '/sandbox'
+function sandboxPath(project: ProjectTarget) {
+  return '/projects/' + encodeURIComponent(projectTargetId(project) ?? 'default') + '/sandbox'
 }
 
 export const projectSandboxApi = {
-  load: (projectId: string, signal: AbortSignal) =>
-    apiJSON<ProjectSandbox>(sandboxPath(projectId), 'GET', signal),
-  save: (projectId: string, input: ProjectSandboxConfig, signal: AbortSignal, skipCleanupFor?: string) =>
-    apiJSON<void>(sandboxPath(projectId) + '/config', 'PUT', signal, { input, skipCleanupFor }),
-  create: (projectId: string, signal: AbortSignal) =>
-    apiJSON<void>(sandboxPath(projectId), 'POST', signal),
-  destroy: (projectId: string, signal: AbortSignal) =>
-    apiJSON<void>(sandboxPath(projectId), 'DELETE', signal),
-  recreate: (projectId: string, signal: AbortSignal) =>
-    apiJSON<void>(sandboxPath(projectId) + '/recreate', 'POST', signal),
+  load: (project: ProjectTarget, signal: AbortSignal) =>
+    apiJSON<ProjectSandbox>(sandboxPath(project), 'GET', signal),
+  save: (project: ProjectTarget, input: ProjectSandboxConfig, signal: AbortSignal, skipCleanupFor?: string) =>
+    apiJSON<void>(sandboxPath(project) + '/config', 'PUT', signal, { input, skipCleanupFor }),
+  create: (project: ProjectTarget, signal: AbortSignal) =>
+    apiJSON<void>(sandboxPath(project), 'POST', signal),
+  destroy: (project: ProjectTarget, signal: AbortSignal) =>
+    apiJSON<void>(sandboxPath(project), 'DELETE', signal),
+  recreate: (project: ProjectTarget, signal: AbortSignal) =>
+    apiJSON<void>(sandboxPath(project) + '/recreate', 'POST', signal),
 }

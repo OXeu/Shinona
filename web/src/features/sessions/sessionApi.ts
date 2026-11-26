@@ -1,6 +1,8 @@
 import { fromBinary } from '@bufbuild/protobuf'
 
 import { apiJSON, request } from '../../shared/http'
+import { projectTargetId } from './projectScope'
+import type { ProjectTarget } from './projectScope'
 import { decodeRunOptions, decodeSandboxSettings, decodeSessionSummary, decodeTurn } from './wire/sessionMessages'
 import { TranscriptPageSchema } from './wire/session_transfer_pb'
 
@@ -161,8 +163,8 @@ export const sessionApi = {
   detail: (id: string, signal: AbortSignal) => transcriptPage(id, signal),
   olderTurns: (id: string, beforeSequence: number, signal: AbortSignal) =>
     transcriptPage(id, signal, beforeSequence),
-  create: (projectId: string | null, signal?: AbortSignal) =>
-    apiJSON<SessionSummary>('/sessions', 'POST', signal, { projectId }),
+  create: (project: ProjectTarget, signal?: AbortSignal) =>
+    apiJSON<SessionSummary>('/sessions', 'POST', signal, { projectId: projectTargetId(project) }),
   createProject: (name: string, signal: AbortSignal) =>
     apiJSON<Project>('/projects', 'POST', signal, { name }),
   renameProject: (id: string, name: string, signal: AbortSignal) =>

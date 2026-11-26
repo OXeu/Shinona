@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import { useAuthStore } from '../features/auth/authStore'
+import { defaultProject } from '../features/sessions/projectScope'
 import { useSessionStore } from '../features/sessions/sessionStore'
 
 const agent = () => import('../features/sessions/AgentPage.vue')
@@ -14,7 +15,10 @@ export const router = createRouter({
     {
       path: '/projects/sandbox/:projectId?',
       name: 'project-sandbox',
-      props: true,
+      props: ({ params }) => {
+        const id = params.projectId
+        return { project: typeof id === 'string' && id && id !== 'default' ? { kind: 'project', id } : defaultProject }
+      },
       component: () => import('../features/sessions/ProjectSandboxView.vue'),
     },
     { path: '/pinned/:id', redirect: (to) => ({ name: 'session', params: { id: to.params.id } }) },

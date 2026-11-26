@@ -14,8 +14,10 @@ import UiInput from '../../shared/ui/UiInput.vue'
 import { UiBox, UiButton, UiForm, UiHeading, UiInline, UiSection, UiSubheading } from '../../shared/ui/elements'
 import { projectSandboxApi } from './projectSandboxApi'
 import type { ProjectSandbox, ProjectSandboxConfig } from './projectSandboxApi'
+import { projectScopeKey } from './projectScope'
+import type { ProjectTarget } from './projectScope'
 
-const props = defineProps<{ projectId?: string }>()
+const props = defineProps<{ project: ProjectTarget }>()
 type Action = 'save' | 'destroy' | 'recreate' | 'create'
 
 const statusKeys: Record<ProjectSandbox['state'], MessageKey> = {
@@ -109,7 +111,7 @@ async function refresh(reset = false) {
   const { signal } = request
   loading.value = true
   try {
-    const projectSandbox = await projectSandboxApi.load(props.projectId ?? '', signal)
+    const projectSandbox = await projectSandboxApi.load(props.project, signal)
     if (!signal.aborted) {
       if (reset || !dirty.value) restoreEditor(projectSandbox)
       snapshot.value = projectSandbox
@@ -144,12 +146,12 @@ function prepare(nextAction: Action) {
 async function perform() {
   if (busy.value) return
   const { signal } = request
-  const id = props.projectId ?? ''
+  const project = props.project
   const operation = action.value
   busy.value = true
   try {
-    if (operation === 'save') await projectSandboxApi.save(id, next.value, signal, skipCleanupFor.value)
-    else await projectSandboxApi[operation](id, signal)
+    if (operation === 'save') await projectSandboxApi.save(project, next.value, signal, skipCleanupFor.value)
+    else await projectSandboxApi[operation](project, signal)
     if (!signal.aborted) {
       confirmOpen.value = false
       notify.success(t(operation === 'save' ? 'settings.saved' : operation === 'destroy' ? 'sandbox.destroyed' : 'sandbox.created'))
@@ -173,7 +175,7 @@ async function perform() {
   }
 }
 
-watch(() => props.projectId, () => {
+watch(() => projectScopeKey(props.project), () => {
   request?.abort()
   request = new AbortController()
   snapshot.value = undefined

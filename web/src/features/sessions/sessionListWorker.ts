@@ -1,4 +1,5 @@
 import { HttpError } from '../../shared/http'
+import { projectScopeKey } from './projectScope'
 import { listSessions } from './sessionListApi'
 import type { SessionListSnapshot } from './sessionListApi'
 import { sessionPollInterval } from './sessionListWorkerMessages'
@@ -15,7 +16,7 @@ let loading: Promise<void> | undefined
 async function check(scope: SessionListScope) {
   const requestedGeneration = generation
   try {
-    snapshot = await listSessions(scope.projectId, scope.owner, snapshot)
+    snapshot = await listSessions(scope.project, scope.owner, snapshot)
     checkedGeneration = requestedGeneration
     lastCheck = performance.now()
   } catch (error) {
@@ -28,7 +29,7 @@ async function check(scope: SessionListScope) {
 
 async function refresh(requested: SessionListScope): Promise<SessionListSnapshot> {
   scope ??= requested
-  if (scope.owner !== requested.owner || scope.projectId !== requested.projectId) {
+  if (scope.owner !== requested.owner || projectScopeKey(scope.project) !== projectScopeKey(requested.project)) {
     throw new HttpError(400, 'Session list scope does not match the shared worker.')
   }
   if (snapshot && checkedGeneration === generation && performance.now() - lastCheck < freshness) return snapshot
