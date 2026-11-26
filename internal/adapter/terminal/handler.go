@@ -245,16 +245,21 @@ func relay(ctx context.Context, socket *websocket.Conn, tab *run.TerminalSession
 	var output [sandbox.TerminalChunkSize]byte
 	replayEnd := tab.ReplayEnd()
 	for ctx.Err() == nil {
-		buffer := output[:]
-		replaying := offset < replayEnd
-		if replaying {
-			buffer = buffer[:min(uint64(len(buffer)), replayEnd-offset)]
+		var boundary *uint64
+		if offset < replayEnd {
+			boundary = &replayEnd
 		}
-		next, n, state, changed := tab.Output(offset, buffer)
+		next, n, state, changed := tab.Output(offset, output[:], boundary)
+		offset = next
+		if boundary != nil && n == 0 && offset >= replayEnd {
+			// The replay was overwritten. Announce the state before reading
+			// any still-retained live output.
+			continue
+		}
 		exiting := state == run.TerminalExited || state == run.TerminalFailed
 		// Announce running after the replay boundary even under continuous
 		// output. Announce exit only after delivering the final output.
-		if state != reported && ((!replaying && !exiting) || n == 0) {
+		if state != reported && ((boundary == nil && !exiting) || n == 0) {
 			payload, err := json.Marshal(struct {
 				State run.TerminalState `json:"state"`
 			}{state})
@@ -266,7 +271,6 @@ func relay(ctx context.Context, socket *websocket.Conn, tab *run.TerminalSession
 			}
 			reported = state
 		}
-		offset = next
 		if n > 0 {
 			if err := write(ctx, socket, websocket.BinaryMessage, output[:n]); err != nil {
 				return err

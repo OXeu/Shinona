@@ -416,11 +416,17 @@ func (t *TerminalSession) ReplayEnd() uint64 {
 
 // Output reads the retained byte stream by offset. A new viewer starts at
 // offset zero and a slow viewer resumes at the oldest bytes still retained.
-func (t *TerminalSession) Output(offset uint64, buffer []byte) (uint64, int, TerminalState, <-chan struct{}) {
+// A replay boundary limits the bytes copied even if the oldest retained byte
+// has already advanced past that boundary.
+func (t *TerminalSession) Output(offset uint64, buffer []byte, replayEnd *uint64) (uint64, int, TerminalState, <-chan struct{}) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	offset = min(t.end, max(offset, t.end-min(t.end, terminalHistorySize)))
-	n := min(int(t.end-offset), len(buffer))
+	end := t.end
+	if replayEnd != nil {
+		end = min(end, *replayEnd)
+	}
+	n := min(int(max(end, offset)-offset), len(buffer))
 	if n > 0 {
 		start := int(offset % terminalHistorySize)
 		first := copy(buffer[:n], t.history[start:])

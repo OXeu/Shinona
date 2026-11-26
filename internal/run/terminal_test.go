@@ -141,7 +141,7 @@ func TestTerminalStartupDeadlineCoversAcquireAndOpen(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, _, state, _ := entry.Output(0, nil)
+				_, _, state, _ := entry.Output(0, nil, nil)
 				if stage == "running" {
 					if state != TerminalRunning || len(tabs) != 1 {
 						t.Fatalf("startup timeout ended a running shell: %s, %v", state, tabs)
@@ -191,7 +191,7 @@ func TestTerminalOutputResumesAtRetainedHistory(t *testing.T) {
 		tab.appendOutput(chunk)
 	}
 	buffer := make([]byte, terminalHistorySize)
-	offset, n, state, changed := tab.Output(0, buffer)
+	offset, n, state, changed := tab.Output(0, buffer, nil)
 	if offset != terminalHistorySize || n != terminalHistorySize || state != TerminalRunning {
 		t.Fatalf("initial replay: offset=%d bytes=%d state=%s", offset, n, state)
 	}
@@ -201,12 +201,38 @@ func TestTerminalOutputResumesAtRetainedHistory(t *testing.T) {
 	default:
 		t.Fatal("attached reader was not notified")
 	}
-	next, n, _, _ := tab.Output(offset, buffer)
+	next, n, _, _ := tab.Output(offset, buffer, nil)
 	if string(buffer[:n]) != "new output" || next != offset+uint64(n) {
 		t.Fatalf("attached read: offset=%d bytes=%q", next, buffer[:n])
 	}
-	replayEnd, n, _, _ := tab.Output(0, buffer)
+	replayEnd, n, _, _ := tab.Output(0, buffer, nil)
 	if replayEnd != next || n != terminalHistorySize || !bytes.HasSuffix(buffer[:n], []byte("new output")) {
 		t.Fatalf("replay after wrap: offset=%d bytes=%d", replayEnd, n)
+	}
+}
+
+func TestTerminalReplayStopsAtBoundaryWhenHistoryWraps(t *testing.T) {
+	tab := TerminalSession{state: TerminalRunning, changed: make(chan struct{})}
+	chunk := bytes.Repeat([]byte{'x'}, sandbox.TerminalChunkSize)
+	for range terminalHistorySize / len(chunk) {
+		tab.appendOutput(chunk)
+	}
+	boundary := tab.ReplayEnd()
+	tab.appendOutput([]byte("live"))
+	buffer := make([]byte, terminalHistorySize)
+	next, n, _, _ := tab.Output(0, buffer, &boundary)
+	if next != boundary || n != terminalHistorySize-len("live") || !bytes.Equal(buffer[:n], bytes.Repeat([]byte{'x'}, n)) {
+		t.Fatalf("partial replay crossed its boundary: offset=%d bytes=%d", next, n)
+	}
+	for range terminalHistorySize / len(chunk) {
+		tab.appendOutput(chunk)
+	}
+	next, n, _, _ = tab.Output(0, buffer, &boundary)
+	if next != boundary+uint64(len("live")) || n != 0 {
+		t.Fatalf("overwritten replay returned live bytes: offset=%d bytes=%d", next, n)
+	}
+	_, n, _, _ = tab.Output(next, buffer, nil)
+	if n != terminalHistorySize {
+		t.Fatalf("live relay could not resume at the oldest retained byte: bytes=%d", n)
 	}
 }
