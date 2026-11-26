@@ -13,6 +13,7 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/pigo"
 	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/auth"
+	"github.com/OXeu/shinona/internal/keylock"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 )
@@ -22,6 +23,7 @@ type modelRuntime struct {
 	client *http.Client
 	mu     sync.Mutex
 	cache  map[string]modelEndpoint
+	owners keylock.Locks[string]
 }
 
 type modelEndpoint struct {
@@ -42,24 +44,31 @@ func (m *modelRuntime) settings(ctx context.Context, owner string) (settings.Val
 }
 
 func (m *modelRuntime) load(ctx context.Context, owner string) (settings.Values, *pigo.Endpoint, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	release, err := m.owners.Acquire(ctx, owner, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
 	values, err := m.settings(ctx, owner)
 	if err != nil {
 		return nil, nil, err
 	}
 	base, key := values[settings.ModelBaseURL], values[settings.ModelAPIKey]
 	if base == "" {
-		delete(m.cache, owner)
 		return values, nil, nil
 	}
-	if cached, ok := m.cache[owner]; ok && cached.base == base && cached.key == key {
+	m.mu.Lock()
+	cached := m.cache[owner]
+	m.mu.Unlock()
+	if cached.endpoint != nil && cached.base == base && cached.key == key {
 		return values, cached.endpoint, nil
 	}
 	endpoint, err := m.endpoint(base, key)
 	if err != nil {
 		return nil, nil, err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	// Bound in-memory catalogs independently of the number of stored accounts.
 	if len(m.cache) >= 128 {
 		for account := range m.cache {
@@ -93,8 +102,11 @@ func (r *runtime) ModelFields(ctx context.Context) ([]settings.Field, error) {
 func (r *runtime) UpdateModelSettings(ctx context.Context, changes []settings.Change) ([]settings.Field, error) {
 	owner := auth.CurrentUser(ctx).ID
 	m := r.models
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	release, err := m.owners.Acquire(ctx, owner, false)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	previous, err := m.settings(ctx, owner)
 	if err != nil {
 		return nil, err
@@ -117,6 +129,9 @@ func (r *runtime) UpdateModelSettings(ctx context.Context, changes []settings.Ch
 	if err := m.repo.SaveModelSettings(ctx, owner, next); err != nil {
 		return nil, err
 	}
+	m.mu.Lock()
+	delete(m.cache, owner)
+	m.mu.Unlock()
 	return settings.ModelFields(next), nil
 }
 

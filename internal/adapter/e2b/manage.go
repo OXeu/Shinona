@@ -32,10 +32,11 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 }
 
 func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error {
-	if err := p.provision.Acquire(ctx, 1); err != nil {
+	release, err := p.provision.Acquire(ctx, spec.ProjectKey(), false)
+	if err != nil {
 		return err
 	}
-	defer p.provision.Release(1)
+	defer release()
 	id, _, err := p.store.E2BSandbox(ctx, spec.OwnerID, spec.ProjectID, p.endpoint)
 	if err != nil || id == "" {
 		return err

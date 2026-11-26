@@ -14,9 +14,9 @@ import (
 	"time"
 
 	sdk "github.com/eric642/e2b-go-sdk"
-	"golang.org/x/sync/semaphore"
 
 	"github.com/OXeu/shinona/internal/adapter/envd"
+	"github.com/OXeu/shinona/internal/keylock"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
@@ -43,7 +43,7 @@ type Provider struct {
 	dataScheme string
 	endpoint   string
 	store      WorkspaceStore
-	provision  *semaphore.Weighted
+	provision  keylock.Locks[sandbox.ProjectKey]
 }
 
 // WorkspaceStore persists sandbox IDs and private data-plane credentials.
@@ -119,7 +119,7 @@ func New(config Config, data *http.Client, store WorkspaceStore) (*Provider, err
 	}
 	return &Provider{
 		api: api, data: data, config: config, dataScheme: scheme,
-		endpoint: strings.TrimRight(apiURL, "/"), store: store, provision: semaphore.NewWeighted(1),
+		endpoint: strings.TrimRight(apiURL, "/"), store: store,
 	}, nil
 }
 
@@ -138,10 +138,11 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	if spec.Policy != sandbox.Shared {
 		return nil, sandbox.ErrPolicy
 	}
-	if err := p.provision.Acquire(ctx, 1); err != nil {
+	release, err := p.provision.Acquire(ctx, spec.ProjectKey(), false)
+	if err != nil {
 		return nil, err
 	}
-	defer p.provision.Release(1)
+	defer release()
 	workspace, err := p.acquireProject(ctx, spec)
 	if err != nil {
 		return nil, err
