@@ -3,18 +3,19 @@ package sqlite
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
 type projectSandboxRow struct {
 	OwnerID                  string `gorm:"primaryKey;not null"`
 	ProjectID                string `gorm:"primaryKey;not null"`
+	SSHServerID              *string
 	run.ProjectSandboxConfig `gorm:"embedded"`
 }
 
@@ -26,13 +27,19 @@ func (r *ProjectStore) ProjectSandboxConfig(ctx context.Context, ownerID, projec
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	return &record.ProjectSandboxConfig, err
+	if err != nil {
+		return nil, err
+	}
+	if record.SSHServerID != nil {
+		record.Provider = settings.SSHProviderName(*record.SSHServerID)
+	}
+	return &record.ProjectSandboxConfig, nil
 }
 
 func (r *ProjectStore) SaveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config run.ProjectSandboxConfig) error {
 	return r.saveProjectSandboxConfig(ctx, ownerID, projectID, config, clause.OnConflict{
 		Columns:   []clause.Column{{Name: "owner_id"}, {Name: "project_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"provider", "template", "timeout_seconds", "on_timeout"}),
+		DoUpdates: clause.AssignmentColumns([]string{"provider", "ssh_server_id", "template", "timeout_seconds", "on_timeout"}),
 	})
 }
 
@@ -42,9 +49,14 @@ func (r *ProjectStore) RememberProjectSandboxProvider(ctx context.Context, owner
 }
 
 func (r *ProjectStore) saveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config run.ProjectSandboxConfig, conflict clause.OnConflict) error {
+	record := projectSandboxRow{OwnerID: ownerID, ProjectID: projectID, ProjectSandboxConfig: config}
+	if id, personal := settings.SSHProviderServerID(config.Provider); personal {
+		record.Provider = sandbox.ProviderSSH
+		record.SSHServerID = &id
+	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if id, personal := strings.CutPrefix(config.Provider, settings.SSHProviderPrefix); personal {
-			if _, err := findSSHServer(tx.Omit("private_key"), ownerID, id); err != nil {
+		if record.SSHServerID != nil {
+			if _, err := findSSHServer(tx.Select("id"), ownerID, *record.SSHServerID); err != nil {
 				return err
 			}
 		}
@@ -58,9 +70,7 @@ func (r *ProjectStore) saveProjectSandboxConfig(ctx context.Context, ownerID, pr
 				return err
 			}
 		}
-		return tx.Clauses(conflict).Create(&projectSandboxRow{
-			OwnerID: ownerID, ProjectID: projectID, ProjectSandboxConfig: config,
-		}).Error
+		return tx.Clauses(conflict).Create(&record).Error
 	})
 }
 

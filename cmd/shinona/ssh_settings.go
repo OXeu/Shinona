@@ -137,7 +137,7 @@ func (r *sshRuntime) personalSSH(server settings.SSHServer) (*sshsandbox.Provide
 
 func (r *runtime) ResolveForAccount(ctx context.Context, owner, name string) (run.Target, error) {
 	target := r.Resolve(name)
-	id, personal := strings.CutPrefix(name, settings.SSHProviderPrefix)
+	id, personal := settings.SSHProviderServerID(name)
 	if !personal && (name != "" || target.Provider != nil) {
 		return target, nil
 	}
@@ -186,7 +186,7 @@ func (r *runtime) ProjectTargets(ctx context.Context, owner string) ([]run.Targe
 }
 
 func sshTarget(server settings.SSHServerInfo) run.Target {
-	return run.Target{Name: settings.SSHProviderPrefix + server.ID, Label: server.Name,
+	return run.Target{Name: settings.SSHProviderName(server.ID), Label: server.Name,
 		Defaults: run.ProjectSandboxConfig{Template: server.Template}}
 }
 

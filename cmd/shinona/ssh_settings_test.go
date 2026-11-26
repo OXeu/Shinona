@@ -142,7 +142,7 @@ func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 	if serialized, err := json.Marshal(defaultServer); err != nil || bytes.Contains(serialized, []byte("PRIVATE KEY")) {
 		t.Fatal("SSH server could expose its credential when serialized")
 	}
-	provider := settings.SSHProviderPrefix + second
+	provider := settings.SSHProviderName(second)
 	if response := query("bob", http.MethodPut, "/projects/default/sandbox/config", sandboxInput(provider, "")); !strings.Contains(response, "SANDBOX_PROVIDER_UNAVAILABLE") {
 		t.Fatalf("selected another account's SSH server: %s", response)
 	}
@@ -249,7 +249,7 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	}
 
 	const saveSandbox = "/projects/default/sandbox/config"
-	provider := settings.SSHProviderPrefix + id
+	provider := settings.SSHProviderName(id)
 	if response := query("alice", http.MethodPut, saveSandbox, sandboxInput(provider, "")); response != "" {
 		t.Fatalf("assign SSH provider: %s", response)
 	}
@@ -356,7 +356,7 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	open := func(owner string) (sandbox.Workspace, []timing.Metric, error) {
 		t.Helper()
 		ctx, recorder := timing.WithRecorder(t.Context())
-		target, err := app.ResolveForAccount(ctx, owner, settings.SSHProviderPrefix+server.ID)
+		target, err := app.ResolveForAccount(ctx, owner, settings.SSHProviderName(server.ID))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -388,11 +388,11 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	first := release("alice", true)
 	conn := nextConnection()
 	release("alice", false)
-	target, err := app.ResolveForAccount(t.Context(), "alice", settings.SSHProviderPrefix+server.ID)
+	target, err := app.ResolveForAccount(t.Context(), "alice", settings.SSHProviderName(server.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := app.ResolveForAccount(t.Context(), "alice", settings.SSHProviderPrefix+server.ID)
+	resolved, err := app.ResolveForAccount(t.Context(), "alice", settings.SSHProviderName(server.ID))
 	if err != nil || target.Provider != resolved.Provider {
 		t.Fatalf("unchanged SSH settings rebuilt the provider: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	release("alice", true)
 	conn = nextConnection()
 
-	if err := repo.Projects.SaveProjectSandboxConfig(t.Context(), "alice", "", run.ProjectSandboxConfig{Provider: settings.SSHProviderPrefix + server.ID}); err != nil {
+	if err := repo.Projects.SaveProjectSandboxConfig(t.Context(), "alice", "", run.ProjectSandboxConfig{Provider: settings.SSHProviderName(server.ID)}); err != nil {
 		t.Fatal(err)
 	}
 	var session struct{ ID string }

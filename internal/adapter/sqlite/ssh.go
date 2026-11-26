@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/mattn/go-sqlite3"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -81,27 +82,14 @@ func (r *SettingsStore) SaveSSHServer(ctx context.Context, owner string, server 
 }
 
 func (r *SettingsStore) RemoveSSHServer(ctx context.Context, owner, id string) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		record, err := findSSHServer(tx, owner, id)
-		if err != nil {
-			return err
-		}
-		if err := ensureSSHServerUnused(tx, owner, id); err != nil {
-			return err
-		}
-		return tx.Delete(&record).Error
-	})
-}
-
-func ensureSSHServerUnused(tx *gorm.DB, owner, id string) error {
-	var count int64
-	if err := tx.Model(&projectSandboxRow{}).Where("owner_id = ? AND provider = ?", owner, settings.SSHProviderPrefix+id).Count(&count).Error; err != nil {
-		return err
-	}
-	if count > 0 {
+	result := r.db.WithContext(ctx).Delete(&sshServerRow{}, "owner_id = ? AND id = ?", owner, id)
+	if err, ok := errors.AsType[sqlite3.Error](result.Error); ok && err.ExtendedCode == sqlite3.ErrConstraintForeignKey {
 		return settings.ErrSSHServerInUse
 	}
-	return nil
+	if result.Error == nil && result.RowsAffected == 0 {
+		return settings.ErrSSHServer
+	}
+	return result.Error
 }
 
 func findSSHServer(db *gorm.DB, owner, id string) (sshServerRow, error) {

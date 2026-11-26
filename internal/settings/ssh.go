@@ -3,9 +3,16 @@ package settings
 import (
 	"context"
 	"errors"
+	"strings"
 )
 
-const SSHProviderPrefix = "ssh:"
+const sshProviderPrefix = "ssh:"
+
+func SSHProviderName(serverID string) string { return sshProviderPrefix + serverID }
+
+func SSHProviderServerID(provider string) (string, bool) {
+	return strings.CutPrefix(provider, sshProviderPrefix)
+}
 
 var (
 	ErrSSHServer      = errors.New("SSH server not found")
