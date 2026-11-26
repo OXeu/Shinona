@@ -94,12 +94,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	authHandler.Routes(mux, sameOriginJSON)
 	config.mcpOAuth.Routes(mux, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)
-	mux.Handle("POST /graphql", sameOriginJSON(authHandler.RequireUser(api)))
-	terminal.Routes(mux, ctx, config.origin.String(), service, authHandler.RequireUser, sameOriginJSON, authHandler.SessionUser, logger)
-	mux.Handle("GET "+sessiontransfer.RecentPath, authHandler.RequireUser(transfer.Recent(ctx, config.origin.String(), authHandler.SessionUser)))
-	mux.Handle("GET "+sessiontransfer.LivePath, authHandler.RequireUser(transfer.Live(ctx, config.origin.String(), authHandler.SessionUser, service)))
-	mux.Handle("POST "+sessiontransfer.TranscriptPath, sameOriginJSON(authHandler.RequireUser(http.HandlerFunc(transfer.Transcript))))
-	mux.Handle("GET "+sessiontransfer.AttachmentPath, authHandler.RequireUser(sessiontransfer.Attachment(service, logger)))
+	registerRunRoutes(mux, ctx, config.origin.String(), service, api, transfer, authHandler, logger)
 	server := &http.Server{
 		Handler:           httpserver.ServerTiming(allowedHost(mux, config.Host)),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -132,6 +127,17 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		<-workerDone
 		return errors.Join(shutdownErr, ignoreServerClosed(<-serverDone))
 	}
+}
+
+func registerRunRoutes(mux *http.ServeMux, ctx context.Context, origin string, service *run.Service,
+	api http.Handler, transfer *sessiontransfer.Handler, authHandler *httpauth.Handler, logger *slog.Logger,
+) {
+	mux.Handle("POST /graphql", sameOriginJSON(authHandler.RequireUser(api)))
+	terminal.Routes(mux, ctx, origin, service, authHandler.RequireUser, sameOriginJSON, authHandler.SessionUser, logger)
+	mux.Handle("GET "+sessiontransfer.RecentPath, authHandler.RequireUser(transfer.Recent(ctx, origin, authHandler.SessionUser)))
+	mux.Handle("GET "+sessiontransfer.LivePath, authHandler.RequireUser(transfer.Live(ctx, origin, authHandler.SessionUser, service)))
+	mux.Handle("POST "+sessiontransfer.TranscriptPath, sameOriginJSON(authHandler.RequireUser(http.HandlerFunc(transfer.Transcript))))
+	mux.Handle("GET "+sessiontransfer.AttachmentPath, authHandler.RequireUser(sessiontransfer.Attachment(service, logger)))
 }
 
 func allowedHost(next http.Handler, configuredHost func() string) http.Handler {

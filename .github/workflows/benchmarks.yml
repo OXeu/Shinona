@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      e2b:
+        description: Run live E2B benchmarks with the dedicated benchmark credentials
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,13 +37,25 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Run Go benchmarks
+      - name: Run core API benchmarks
         run: |
           set -o pipefail
           go test -p 1 -cpu 2 -run '^$' \
-            -bench '^Benchmark(SessionsList|Transcript|TranscriptPages|SessionStorageAppend|SessionStorageRestore)$' \
-            -benchmem -benchtime=500ms -count=1 \
-            ./internal/adapter/sqlite ./internal/adapter/pigo | tee .tmp/go-bench.txt
+            -bench '^BenchmarkCoreAPI$' -benchmem -benchtime=500ms -count=1 \
+            ./cmd/shinona | tee .tmp/go-bench.txt
+      - name: Run live SSH sandbox API benchmarks
+        run: |
+          set -o pipefail
+          if ! command -v sshd >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y openssh-server
+          fi
+          bash .github/scripts/benchmark-ssh.sh bash -e -c '
+            go test -p 1 -cpu 2 -run "^\$" -bench "^BenchmarkSandboxAPI\$/^ssh\$/^(FileList|GitChanges|GitHistory|PTYRoundTrip)\$" \
+              -benchmem -benchtime=500ms -count=1 ./cmd/shinona
+            go test -p 1 -cpu 2 -run "^\$" -bench "^BenchmarkSandboxAPI\$/^ssh\$/^(Initialize|Recreate|Destroy)\$" \
+              -benchmem -benchtime=5x -count=1 ./cmd/shinona
+          ' | tee -a .tmp/go-bench.txt
       - uses: actions/upload-artifact@v7
         with:
           name: go-bench
@@ -70,3 +87,33 @@ jobs:
           bencher run --project shinona --branch "$branch" --hash "$BENCHMARK_SHA" \
             --testbed github-ubuntu-24.04-x64 --adapter go_bench --file .tmp/go-bench.txt \
             --github-actions "$GITHUB_TOKEN" "${options[@]}"
+      - name: Run live E2B sandbox API benchmarks
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.e2b
+        env:
+          SHINONA_BENCH_E2B_API_KEY: ${{ secrets.SHINONA_BENCH_E2B_API_KEY }}
+          SHINONA_BENCH_E2B_TEMPLATE: ${{ vars.SHINONA_BENCH_E2B_TEMPLATE }}
+        run: |
+          set -o pipefail
+          : "${SHINONA_BENCH_E2B_API_KEY:?Set the dedicated E2B benchmark API key secret}"
+          : "${SHINONA_BENCH_E2B_TEMPLATE:?Set the E2B benchmark template variable}"
+          go test -p 1 -cpu 2 -run '^$' \
+            -bench '^BenchmarkSandboxAPI$/^e2b$' -benchmem -benchtime=5x -count=1 \
+            ./cmd/shinona | tee .tmp/go-bench-e2b.txt
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.e2b
+        with:
+          name: go-bench-e2b
+          path: .tmp/go-bench-e2b.txt
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Publish E2B results to Bencher
+        if: github.repository == 'OXeu/Shinona' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.e2b
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
+        run: |
+          if [[ -z "$BENCHER_API_KEY" ]]; then
+            echo "::warning::Set the BENCHER_API_KEY repository secret to publish benchmark results."
+            exit 0
+          fi
+          bencher run --project shinona --branch "$GITHUB_REF_NAME" --hash "$GITHUB_SHA" \
+            --testbed github-ubuntu-24.04-x64-e2b --adapter go_bench --file .tmp/go-bench-e2b.txt

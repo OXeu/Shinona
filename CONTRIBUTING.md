@@ -35,18 +35,43 @@ Coordinate GraphQL schema changes with the hand-written operations and types in 
 
 ## Performance benchmarks
 
-The [Benchmarks workflow](.github/workflows/benchmarks.yml) runs the session list, transcript, and session storage benchmarks on pushes to `main`, pull requests targeting `main`, and manual runs. It saves the full Go output in the `go-bench` artifact. Before running the same suite locally, follow the repository's [temporary file instructions](AGENTS.md).
+The [Benchmarks workflow](.github/workflows/benchmarks.yml) runs the core API and live SSH/Docker benchmarks on pushes to `main`, pull requests targeting `main`, and manual runs. The `go-bench` artifact contains the Go output. Benchmarks use one authenticated client over loopback and report mean latency in ns/op. Request timing includes reading and decoding the response. Account setup, fixture creation, and state reset between iterations are outside the timer.
+
+| Benchmark | API and fixture |
+| --- | --- |
+| `SessionsList` | One poll over the connected binary Recent WebSocket, returning 30 sessions from 256 across four projects |
+| `Transcript` | Binary HTTP transcript download through the final frame, using the default latest 30 turns from a 120-turn session |
+| `Send` / `Queue` | GraphQL `submitRun` on an idle session and with an active turn, respectively. Timing ends at the submission response. |
+| `Steering` | GraphQL `steerRun` targeting a held turn in the real worker. The fixture agent verifies delivery outside the timer. |
+| `Revert` | Original GraphQL `revertTurn`, including the head check and returned draft. The fixture reverts three of 30 turns per request. |
+| `GitChanges` / `FileList` / `GitHistory` | GraphQL workspace queries on an already-running project sandbox with a 40-file Git fixture, 12 commits, and two pending changes |
+| `Initialize` / `Recreate` / `Destroy` | GraphQL project lifecycle mutations. Initialize starts from an absent sandbox, and recreate and destroy start from a running sandbox. The SSH base image is already available on the host. |
+| `PTYRoundTrip` | A binary input frame through the connected terminal WebSocket until the shell's response arrives. Sandbox, shell, and WebSocket startup are outside the timer. |
+
+Before running locally, follow the repository's [temporary file instructions](AGENTS.md).
 
 ```sh
 mkdir -p .tmp
-TMPDIR="$PWD/.tmp" TMP="$PWD/.tmp" TEMP="$PWD/.tmp" GOTMPDIR="$PWD/.tmp" \
-  go test -p 1 -cpu 2 -run '^$' \
-    -bench '^Benchmark(SessionsList|Transcript|TranscriptPages|SessionStorageAppend|SessionStorageRestore)$' \
-    -benchmem -benchtime=500ms -count=1 \
-    ./internal/adapter/sqlite ./internal/adapter/pigo
+export TMPDIR="$PWD/.tmp" TMP="$PWD/.tmp" TEMP="$PWD/.tmp" GOTMPDIR="$PWD/.tmp"
+go test -p 1 -cpu 2 -run '^$' -bench '^BenchmarkCoreAPI$' \
+  -benchmem -benchtime=500ms -count=1 ./cmd/shinona
 ```
 
-In GitHub Actions settings, set the repository secret `BENCHER_API_KEY` to a project key for [Shinona](https://bencher.dev/console/projects/shinona). The workflow uploads mean latency in ns/op to the `github-ubuntu-24.04-x64` testbed. Same-repository PR reports use `pr-<number>` with the target branch as their start point. Fork PRs and runs without a key still produce the Go artifact.
+The SSH fixture runs a dedicated loopback OpenSSH server with a generated key and a Docker image containing Bash and Git. It needs `sshd`, `sudo -n`, and access to Docker. Alternatively, use a dedicated SSH/Docker host by setting `SHINONA_BENCH_SSH_ADDRESS`, `SHINONA_BENCH_SSH_USER`, `SHINONA_BENCH_SSH_KEY_PATH`, `SHINONA_BENCH_SSH_HOST_FINGERPRINT`, and `SHINONA_BENCH_SSH_IMAGE`, then run the same Go command without the SSH fixture script.
+
+```sh
+bash .github/scripts/benchmark-ssh.sh go test -p 1 -cpu 2 -run '^$' \
+  -bench '^BenchmarkSandboxAPI$/^ssh$' -benchmem -benchtime=5x -count=1 ./cmd/shinona
+```
+
+E2B runs against a dedicated benchmark account using `SHINONA_BENCH_E2B_API_KEY` and `SHINONA_BENCH_E2B_TEMPLATE`. The template needs Bash, Git, and the usual Linux file utilities. For self-hosted E2B, set `SHINONA_BENCH_E2B_API_URL` and, if needed, `SHINONA_BENCH_E2B_PROXY_URL` and `SHINONA_BENCH_E2B_DOMAIN`. Each sandbox case uses a new project ID, cleans up its own resources, and can incur provider charges.
+
+```sh
+go test -p 1 -cpu 2 -run '^$' -bench '^BenchmarkSandboxAPI$/^e2b$' \
+  -benchmem -benchtime=5x -count=1 ./cmd/shinona
+```
+
+Set the `BENCHER_API_KEY` repository secret to a project key for [Shinona](https://bencher.dev/console/projects/shinona). Core and SSH results go to the `github-ubuntu-24.04-x64` testbed. Same-repository PR reports use `pr-<number>` with the target branch as their start point. Fork PRs and runs without a key still produce the Go artifact. To run E2B in Actions, configure the `SHINONA_BENCH_E2B_API_KEY` repository secret and the `SHINONA_BENCH_E2B_TEMPLATE` repository variable, then dispatch the workflow on `main` with `e2b` enabled. It produces a `go-bench-e2b` artifact and publishes to the separate `github-ubuntu-24.04-x64-e2b` testbed.
 
 ## Session transfer schema
 

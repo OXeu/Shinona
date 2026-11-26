@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,11 +15,30 @@ func TestTranscriptPageSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	transferFixture{sessions: 1, turns: 65}.seed(t, repo)
+	const owner, session = "owner", "session"
+	now := time.Now().UTC()
+	if err := repo.CreateSession(ctx, run.Session{ID: session, OwnerID: owner, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for sequence := range 65 {
+		item, err := repo.Enqueue(ctx, run.Run{
+			ID: fmt.Sprintf("turn-%d", sequence+1), OwnerID: owner, SessionID: session,
+			Status: run.Queued, CreatedAt: now, UpdatedAt: now,
+		}, "Fixture", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if claimed, err := repo.ClaimNext(ctx, now); err != nil || claimed == nil || claimed.ID != item.ID {
+			t.Fatalf("claim turn %s: %v, %v", item.ID, claimed, err)
+		}
+		if err := repo.Complete(ctx, item.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	check := func(before, first, last, next int) *run.Transcript {
 		t.Helper()
-		page, err := repo.TranscriptPage(ctx, transferOwner, transferSession, before)
+		page, err := repo.TranscriptPage(ctx, owner, session, before)
 		if err != nil || page == nil {
 			t.Fatalf("get page before %d: %v", before, err)
 		}
@@ -38,9 +56,8 @@ func TestTranscriptPageSequence(t *testing.T) {
 	if latest.Session.TurnCount != 65 {
 		t.Fatalf("total turn count: %d", latest.Session.TurnCount)
 	}
-	now := time.Now().UTC()
 	if _, err := repo.Enqueue(ctx, run.Run{
-		ID: "appended", OwnerID: transferOwner, SessionID: transferSession, Status: run.Queued,
+		ID: "appended", OwnerID: owner, SessionID: session, Status: run.Queued,
 		CreatedAt: now, UpdatedAt: now,
 	}, "", false); err != nil {
 		t.Fatal(err)
@@ -49,55 +66,14 @@ func TestTranscriptPageSequence(t *testing.T) {
 	check(older.NextBeforeSequence, 1, 5, 0)
 	check(0, 37, 66, 37)
 	check(31, 1, 30, 0)
-	if err := repo.StopQueued(ctx, transferOwner, transferSession, "appended", now); err != nil {
+	if err := repo.StopQueued(ctx, owner, session, "appended", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.RevertTurn(ctx, transferOwner, transferSession, older.Turns[0].ID, "appended", now); err != nil {
+	if _, err := repo.RevertTurn(ctx, owner, session, older.Turns[0].ID, "appended", now); err != nil {
 		t.Fatal(err)
 	}
 	check(0, 1, 5, 0)
-	if page, err := repo.TranscriptPage(ctx, "other-owner", transferSession, 36); err != nil || page != nil {
+	if page, err := repo.TranscriptPage(ctx, "other-owner", session, 36); err != nil || page != nil {
 		t.Fatalf("cursor must not expose another owner's session: %v, %v", page, err)
-	}
-}
-
-func BenchmarkTranscriptPages(b *testing.B) {
-	for _, count := range []int{120, 500} {
-		b.Run(fmt.Sprint(count), func(b *testing.B) {
-			ctx := b.Context()
-			repo, err := Open(ctx, filepath.Join(b.TempDir(), "transcript.db"))
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.Cleanup(func() { _ = repo.Close() })
-			transferFixture{sessions: 1, turns: count, textBytes: 8 << 10}.seed(b, repo)
-			for _, scenario := range []struct {
-				name         string
-				before, want int
-			}{
-				{name: "full", want: count},
-				{name: "latest", want: run.TranscriptPageSize},
-				{name: "deep", before: 2*run.TranscriptPageSize + 1, want: run.TranscriptPageSize},
-			} {
-				b.Run(scenario.name, func(b *testing.B) {
-					read := func() (*run.Transcript, error) {
-						if scenario.name == "full" {
-							return repo.Transcript(ctx, transferOwner, transferSession, 0)
-						}
-						return repo.TranscriptPage(ctx, transferOwner, transferSession, scenario.before)
-					}
-					page, err := read()
-					if err != nil || page == nil || len(page.Turns) != scenario.want {
-						b.Fatalf("load fixture transcript: %v", err)
-					}
-					b.ReportAllocs()
-					for b.Loop() {
-						if _, err := read(); err != nil {
-							b.Fatal(err)
-						}
-					}
-				})
-			}
-		})
 	}
 }
