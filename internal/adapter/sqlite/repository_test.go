@@ -247,6 +247,45 @@ func TestHistoryScopesEarlierTurnsAndSkipsCancelledQueueItems(t *testing.T) {
 	}
 }
 
+func TestDelayedCompletionPreservesNewerSessionActivity(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	const owner, session = "owner", "session"
+	seedAccounts(t, repo, owner)
+	newSession(t, repo, owner, session)
+	now := time.Now().UTC()
+	finished := now.Add(time.Second)
+	queuedAt := now.Add(2 * time.Second)
+	for _, item := range []run.Run{
+		{ID: "finishing", OwnerID: owner, SessionID: session, Status: run.Running, CreatedAt: now, UpdatedAt: now},
+		{ID: "queued", OwnerID: owner, SessionID: session, Status: run.Queued, CreatedAt: queuedAt, UpdatedAt: queuedAt},
+	} {
+		if _, err := repo.Conversations.Enqueue(ctx, item, "", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	completion := run.Completion{Status: run.Succeeded, UpdatedAt: finished, Result: run.Result{Output: "done"}}
+	if err := repo.Conversations.Complete(ctx, "finishing", completion); err != nil {
+		t.Fatal(err)
+	}
+	list, err := repo.Conversations.SessionListSnapshot(ctx, owner, nil, 1)
+	items := list.Sessions
+	if err != nil || len(items) != 1 || !items[0].UpdatedAt.Equal(queuedAt) || !items[0].Active {
+		t.Fatalf("completion changed more recent session activity: %+v, %v", items, err)
+	}
+	var stored row
+	if err := repo.read.WithContext(ctx).First(&stored, "id = ?", "finishing").Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != run.Succeeded || !stored.UpdatedAt.Equal(finished) || stored.Output != "done" {
+		t.Fatalf("unexpected persisted completion: %+v", stored)
+	}
+}
+
 func TestHistoryStartsAtLatestEligibleCompaction(t *testing.T) {
 	ctx := t.Context()
 	repo, err := Open(ctx, ":memory:")

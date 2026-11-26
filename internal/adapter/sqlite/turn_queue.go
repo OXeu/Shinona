@@ -114,7 +114,10 @@ func (r *ConversationStore) Complete(ctx context.Context, id string, completion 
 		if result.RowsAffected == 0 {
 			return fmt.Errorf("complete run %s: %w", id, run.ErrNotRunning)
 		}
-		return tx.Model(&sessionRow{}).Where("id = ?", item.SessionID).Update("updated_at", completion.UpdatedAt).Error
+		// A delayed completion may commit after another turn has been queued.
+		// Preserve the newer session activity while recording the actual finish time.
+		return tx.Model(&sessionRow{}).Where("id = ? AND updated_at < ?", item.SessionID, completion.UpdatedAt).
+			UpdateColumn("updated_at", completion.UpdatedAt).Error
 	})
 }
 
