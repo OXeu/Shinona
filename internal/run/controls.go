@@ -10,10 +10,10 @@ import (
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
-// Controls routes commands to the active turn of each session. The mutex covers
-// the database claim and registration so Stop cannot miss a newly claimed turn.
+// Controls routes commands to the active turn of each session.
 type Controls struct {
 	mu           sync.Mutex
+	claiming     sync.Mutex
 	leases       keylock.Locks[sandbox.ProjectKey]
 	active       map[sessionKey]*activeTurn
 	liveProjects map[sandbox.ProjectKey]*liveWorkspace
@@ -30,6 +30,7 @@ type activeTurn struct {
 	parts     []TurnPart
 	usage     ContextUsage
 	stopping  bool
+	finishing bool
 	workspace *liveWorkspace
 }
 
@@ -54,12 +55,14 @@ func (c *Controls) queueWake() chan struct{} {
 }
 
 func (c *Controls) claim(ctx context.Context, repo Repository) (*activeTurn, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.claiming.Lock()
+	defer c.claiming.Unlock()
 	item, err := repo.ClaimNext(ctx, time.Now().UTC())
 	if err != nil || item == nil {
 		return nil, err
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	runCtx, cancel := context.WithCancel(ctx)
 	active := &activeTurn{item: *item, ctx: runCtx, cancel: cancel}
 	key := active.key()
@@ -80,34 +83,55 @@ func (c *Controls) claim(ctx context.Context, repo Repository) (*activeTurn, err
 
 func (c *Controls) updateSteering(owner, session, id string, durable bool, change func(*Steering) error) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	key := sessionKey{owner: owner, id: session}
 	active := c.active[key]
-	if !active.matches(owner, session, id) || active.stopping || active.ctx.Err() != nil {
+	available := active.matches(owner, session, id) && !active.stopping && !active.finishing && active.ctx.Err() == nil
+	c.mu.Unlock()
+	if !available {
 		return ErrNotRunning
 	}
 	if err := change(&active.steering); err != nil {
 		return err
 	}
-	c.notifyLocked(key, durable)
+	c.mu.Lock()
+	if c.active[key] == active || durable {
+		c.notifyLocked(key, durable)
+	}
+	c.mu.Unlock()
 	return nil
 }
 
 func (c *Controls) stop(ctx context.Context, repo Repository, owner, session, id string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	key := sessionKey{owner: owner, id: session}
-	if active := c.active[key]; active.matches(owner, session, id) {
-		active.stopping = true
-		active.cancel()
+	if c.cancelActive(key, id) {
+		return nil
+	}
+	// A database claim and its registration form one handoff. Protect the
+	// queued fallback until any in-flight claim has registered the active turn.
+	c.claiming.Lock()
+	if c.cancelActive(key, id) {
+		c.claiming.Unlock()
 		return nil
 	}
 	err := repo.StopQueued(ctx, owner, session, id, time.Now().UTC())
+	c.claiming.Unlock()
 	if err == nil {
-		c.notifyLocked(key, true)
+		c.changed(owner, session)
 		c.wakeQueue()
 	}
 	return err
+}
+
+func (c *Controls) cancelActive(key sessionKey, id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	active := c.active[key]
+	if !active.matches(key.owner, key.id, id) || active.finishing {
+		return false
+	}
+	active.stopping = true
+	active.cancel()
+	return true
 }
 
 func (c *Controls) stopAccount(owner string) {
@@ -123,12 +147,11 @@ func (c *Controls) stopAccount(owner string) {
 }
 
 func (c *Controls) addProgress(turn *Run) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if active := c.active[sessionKey{turn.OwnerID, turn.SessionID}]; active.matches(turn.OwnerID, turn.SessionID, turn.ID) {
-		turn.Steering = active.steering.snapshot()
-		turn.Parts = slices.Clone(active.parts)
-		turn.LiveContext = active.usage
+	progress := c.progress(sessionKey{turn.OwnerID, turn.SessionID})
+	if progress.TurnID == turn.ID {
+		turn.Steering = progress.Steering
+		turn.Parts = progress.Parts
+		turn.LiveContext = progress.Context
 	}
 }
 

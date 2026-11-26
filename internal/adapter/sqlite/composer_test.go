@@ -100,7 +100,7 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls).Serve(ctx)
+		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	defer func() {
 		cancel()
@@ -257,7 +257,7 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls).Serve(ctx)
+		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	defer func() {
 		cancel()
@@ -343,7 +343,7 @@ func TestWorkerStopsRunningTurnAndRetainsQueue(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls).Serve(ctx)
+		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	defer func() {
 		cancel()

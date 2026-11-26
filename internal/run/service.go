@@ -169,9 +169,7 @@ func (s *Service) TranscriptSnapshot(ctx context.Context, owner, id string, befo
 }
 
 func (s *Service) StreamTranscript(ctx context.Context, owner, id string, write func(TranscriptStream) error) error {
-	s.controls.mu.Lock()
-	progress := s.controls.active[sessionKey{owner, id}].progress()
-	s.controls.mu.Unlock()
+	progress := s.controls.progress(sessionKey{owner, id})
 	return s.repo.StreamTranscript(ctx, owner, id, func(stream TranscriptStream) error {
 		if stream.Next != nil && progress.TurnID != "" {
 			next := stream.Next

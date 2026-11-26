@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -15,9 +16,9 @@ import (
 )
 
 const (
-	cleanupTimeout = 10 * time.Second
-	queueInterval  = 5 * time.Second
-	maxActiveRuns  = 4
+	cleanupTimeout           = 10 * time.Second
+	queueInterval            = 5 * time.Second
+	DefaultWorkerConcurrency = 4
 )
 
 var errWorkspaceSetup = errors.New("could not prepare the sandbox")
@@ -25,21 +26,22 @@ var errWorkspaceSetup = errors.New("could not prepare the sandbox")
 // Worker dispatches a bounded number of turns. Claims preserve ordering within
 // each session and avoid filling execution slots with the same workspace.
 type Worker struct {
-	repo     Repository
-	resolve  ResolveTarget
-	logger   *slog.Logger
-	controls *Controls
+	repo        Repository
+	resolve     ResolveTarget
+	logger      *slog.Logger
+	controls    *Controls
+	parallelism int
 }
 
-func NewWorker(repo Repository, resolve ResolveTarget, logger *slog.Logger, controls *Controls) *Worker {
-	return &Worker{repo: repo, resolve: resolve, logger: logger, controls: controls}
+func NewWorker(repo Repository, resolve ResolveTarget, logger *slog.Logger, controls *Controls, parallelism int) *Worker {
+	return &Worker{repo: repo, resolve: resolve, logger: logger, controls: controls, parallelism: max(1, parallelism)}
 }
 
 func (w *Worker) Serve(ctx context.Context) {
 	ticker := time.NewTicker(queueInterval)
 	defer ticker.Stop()
 	wake := w.controls.queueWake()
-	finished := make(chan struct{}, maxActiveRuns)
+	finished := make(chan struct{}, w.parallelism)
 	inFlight := 0
 	defer func() {
 		// Completion still writes to the repository after cancellation.
@@ -49,7 +51,7 @@ func (w *Worker) Serve(ctx context.Context) {
 	}()
 
 	for ctx.Err() == nil {
-		if inFlight < maxActiveRuns {
+		if inFlight < w.parallelism {
 			item, err := w.controls.claim(ctx, w.repo)
 			switch {
 			case err != nil && ctx.Err() == nil:
@@ -78,18 +80,16 @@ func (w *Worker) Serve(ctx context.Context) {
 func (w *Worker) execute(ctx context.Context, active *activeTurn) {
 	defer active.cancel()
 	item := active.item
-	result, err := w.run(active.ctx, active)
+	result, err := w.runSafely(active)
 
-	// Serialize the final state with Stop and reject steering after cleanup.
+	// Freeze the terminal status before writing it to the repository.
 	w.controls.mu.Lock()
-	defer w.controls.mu.Unlock()
-	defer func() {
-		delete(w.controls.active, active.key())
-		w.controls.notifyLocked(active.key(), true)
-	}()
+	active.finishing = true
+	stopping := active.stopping
+	w.controls.mu.Unlock()
 	status := Succeeded
 	switch {
-	case active.stopping:
+	case stopping:
 		status = Stopped
 	case err != nil:
 		details := failureDetails(err)
@@ -98,14 +98,42 @@ func (w *Worker) execute(ctx context.Context, active *activeTurn) {
 		result.Parts = append(result.Parts, TurnPart{Kind: "failure", Text: turnFailureReason(active.ctx, err), Output: details})
 	}
 
-	saveCtx, stopSave := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-	defer stopSave()
 	completion := Completion{
 		Result: result, Steering: active.steering.close(), Status: status, UpdatedAt: time.Now().UTC(),
 	}
-	if err := w.repo.Complete(saveCtx, item.ID, completion); err != nil && !errors.Is(err, ErrNotRunning) {
+	for {
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		err := w.repo.Complete(saveCtx, item.ID, completion)
+		cancel()
+		if err == nil || errors.Is(err, ErrNotRunning) {
+			w.controls.mu.Lock()
+			key := active.key()
+			if w.controls.active[key] == active {
+				delete(w.controls.active, key)
+			}
+			w.controls.notifyLocked(key, true)
+			w.controls.mu.Unlock()
+			return
+		}
 		w.logger.Error("persist run completion", "run_id", item.ID, "error", err)
+		retry := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			retry.Stop()
+			return
+		case <-retry.C:
+		}
 	}
+}
+
+func (w *Worker) runSafely(active *activeTurn) (result Result, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			w.logger.Error("panic in agent turn", "run_id", active.item.ID, "stack", string(debug.Stack()))
+			err = errors.New("agent turn failed unexpectedly")
+		}
+	}()
+	return w.run(active.ctx, active)
 }
 
 var diagnosticCredentials = regexp.MustCompile(`(?i)(\b(?:api[ _-]?key|client[ _-]?secret|access[ _-]?token|refresh[ _-]?token|authorization)\b["']?\s*[:=]\s*["']?(?:(?:bearer|basic)[ \t]+)?|\b(?:bearer|basic)[ \t]+)[^\s"',;&}\]]+`)
@@ -125,7 +153,7 @@ func failureDetails(err error) string {
 
 func turnFailureReason(ctx context.Context, err error) string {
 	switch {
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+	case errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
 		return "deadline"
 	case errors.Is(err, ErrModelIdle):
 		return "model_idle"
@@ -138,7 +166,7 @@ func turnFailureReason(ctx context.Context, err error) string {
 	}
 }
 
-func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
+func (w *Worker) run(ctx context.Context, active *activeTurn) (_ Result, err error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
@@ -178,14 +206,15 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 	}
 
 	detach := w.controls.publishWorkspace(active, workspace, projectID)
-	result, runErr := agent.Run(ctx, Input{
+	defer func() {
+		detach()
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		err = errors.Join(err, workspace.Close(closeCtx))
+	}()
+	return agent.Run(ctx, Input{
 		OwnerID: item.OwnerID, Prompt: item.Prompt, History: history, Payload: item.Payload, Steering: &active.steering,
 		ReportParts:   func(parts []TurnPart) { w.controls.reportParts(active, parts) },
 		ReportContext: func(usage ContextUsage) { w.controls.reportContext(active, usage) },
 	}, workspace)
-	detach()
-	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-	defer cancel()
-	closeErr := workspace.Close(closeCtx)
-	return result, errors.Join(runErr, closeErr)
 }

@@ -158,7 +158,7 @@ func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repo, resolve, slog.New(slog.DiscardHandler), controls).Serve(workerCtx)
+		run.NewWorker(repo, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(workerCtx)
 	}()
 	defer func() { cancel(); <-done }()
 	executed := map[string]bool{}

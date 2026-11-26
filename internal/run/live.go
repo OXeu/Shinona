@@ -58,11 +58,26 @@ func (w *SessionWatch) Changes() <-chan struct{} { return w.changed }
 func (w *SessionWatch) Read() SessionChange {
 	c := w.controls
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	change := SessionChange{Transcript: w.dirty}
 	w.dirty = false
-	change.Progress = c.active[w.key].progress()
+	active := c.active[w.key]
+	change.Progress = active.progress()
+	c.mu.Unlock()
+	if active != nil {
+		change.Progress.Steering = active.steering.snapshot()
+	}
 	return change
+}
+
+func (c *Controls) progress(key sessionKey) LiveProgress {
+	c.mu.Lock()
+	active := c.active[key]
+	progress := active.progress()
+	c.mu.Unlock()
+	if active != nil {
+		progress.Steering = active.steering.snapshot()
+	}
+	return progress
 }
 
 func (a *activeTurn) progress() LiveProgress {
@@ -70,7 +85,7 @@ func (a *activeTurn) progress() LiveProgress {
 		return LiveProgress{}
 	}
 	return LiveProgress{
-		TurnID: a.item.ID, Parts: slices.Clone(a.parts), Steering: a.steering.snapshot(), Context: a.usage,
+		TurnID: a.item.ID, Parts: slices.Clone(a.parts), Context: a.usage,
 	}
 }
 

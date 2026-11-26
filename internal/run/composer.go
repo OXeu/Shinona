@@ -105,7 +105,7 @@ func (s *Steering) enqueue(load func() (SteeringMessage, error)) error {
 	if s.sealed {
 		return ErrNotRunning
 	}
-	if len(s.messages) >= 16 {
+	if len(s.messages)-s.next >= 16 {
 		return ErrQueueFull
 	}
 	message, err := load()
