@@ -1,8 +1,8 @@
 package pigo
 
 import (
-	"bytes"
 	"encoding/json"
+	"slices"
 
 	"github.com/sky-valley/pi/agent"
 	"github.com/sky-valley/pi/ai"
@@ -122,11 +122,15 @@ func assistantMessage(message ai.Message) *ai.AssistantMessage {
 
 func restoreMessage(data json.RawMessage) (ai.Message, error) {
 	message, err := ai.UnmarshalMessage(data)
-	if err != nil || message.MessageRole() != ai.RoleAssistant || !bytes.Contains(data, []byte(`"signature"`)) {
-		return message, err
+	if err != nil {
+		return nil, err
 	}
 	assistant := assistantMessage(message)
-	// The previous SDK serialized this field as signature.
+	if assistant == nil || !slices.ContainsFunc(assistant.Content, unsignedThinking) {
+		return message, nil
+	}
+	// Releases before the Pi migration stored provider data under signature.
+	// Honor that field only on reasoning blocks that lack thinkingSignature.
 	var legacy struct {
 		Content []struct{ Signature string }
 	}
@@ -134,12 +138,16 @@ func restoreMessage(data json.RawMessage) (ai.Message, error) {
 		return nil, err
 	}
 	for i, block := range assistant.Content {
-		if thinking, ok := block.(ai.ThinkingContent); ok {
-			if thinking.ThinkingSignature == "" && i < len(legacy.Content) {
-				thinking.ThinkingSignature = legacy.Content[i].Signature
-				assistant.Content[i] = thinking
-			}
+		if i < len(legacy.Content) && unsignedThinking(block) && legacy.Content[i].Signature != "" {
+			thinking := block.(ai.ThinkingContent)
+			thinking.ThinkingSignature = legacy.Content[i].Signature
+			assistant.Content[i] = thinking
 		}
 	}
 	return assistant, nil
+}
+
+func unsignedThinking(block ai.Content) bool {
+	thinking, ok := block.(ai.ThinkingContent)
+	return ok && thinking.ThinkingSignature == ""
 }

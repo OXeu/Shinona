@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/sky-valley/pi/agent"
 	"github.com/sky-valley/pi/ai"
-	"github.com/sky-valley/pi/coding"
 
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -31,128 +29,93 @@ func New(endpoint *Endpoint, modelID string, remote ToolSource) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Workspace) (run.Result, error) {
+	model, reasoning := a.selectedModel(input.Payload.Options)
+	result := run.Result{ContextWindow: model.ContextWindow}
+	if len(input.Payload.Images) > 0 && !slices.Contains(model.Input, "image") {
+		return result, errors.New("the selected model does not accept images")
+	}
+	loadout, closeTools, err := a.openTools(ctx, input, workspace)
+	if err != nil {
+		return result, err
+	}
+	defer closeTools()
+
+	history, err := conversationHistory(input.History, model)
+	if err != nil {
+		return result, fmt.Errorf("load agent messages: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	execution, err := a.runSession(ctx, input, model, reasoning, loadout, history)
+	return turnResult(result, execution, err)
+}
+
+func (a *Agent) selectedModel(options run.Options) (ai.Model, agent.ThinkingLevel) {
 	model := a.model
-	options := input.Payload.Options
 	if a.endpoint != nil {
 		if options.Model != "" {
 			model.ID = options.Model
 		}
 		model = a.endpoint.Model(model.ID)
 	}
-	result := run.Result{ContextWindow: model.ContextWindow}
-	if len(input.Payload.Images) > 0 && !slices.Contains(model.Input, "image") {
-		return result, errors.New("the selected model does not accept images")
-	}
-
-	systemPrompt := "You are a coding assistant. Use the provided tools for the sandbox workspace. " +
-		"Tool failures are recoverable. Use any partial results to continue or answer with the evidence you have."
-	toolset := tools(workspace, options.Permission != run.ReadOnly)
-	if options.ArrowJS {
-		toolset = append(toolset, arrowRenderTool())
-		systemPrompt += " Use render_ui when a custom visualization or an interactive view would make the answer clearer."
-	}
-	if names := options.SelectedMCPServers(); len(names) > 0 {
-		if a.remote == nil || options.Permission == run.ReadOnly {
-			return result, run.ErrOptions
-		}
-		remoteTools, closeTools, err := a.remote.Open(ctx, input.OwnerID, names)
-		if err != nil {
-			return result, err
-		}
-		defer func() { _ = closeTools() }()
-		for _, remote := range remoteTools {
-			tool, err := remoteAgentTool(remote)
-			if err != nil {
-				return result, err
-			}
-			toolset = append(toolset, tool)
-		}
-	}
-	for index, tool := range toolset {
-		toolset[index] = withToolTimeout(tool)
-	}
-	var reasoning agent.ThinkingLevel
+	reasoning := agent.ThinkOff
 	if options.Thinking != "" && options.Thinking != "off" {
 		reasoning = agent.ThinkingLevel(options.Thinking)
 		model.Reasoning = true
 		model.Compat = completionCompatibility(model.Compat, false, true)
 	}
-	history, err := conversationHistory(input.History, model)
-	if err != nil {
-		return result, fmt.Errorf("load agent messages: %w", err)
+	return model, reasoning
+}
+
+type toolLoadout struct {
+	prompt string
+	tools  []agent.AgentTool
+}
+
+func (a *Agent) openTools(ctx context.Context, input run.Input, workspace sandbox.Workspace) (toolLoadout, func(), error) {
+	options := input.Payload.Options
+	loadout := toolLoadout{
+		prompt: "You are a coding assistant. Use the provided tools for the sandbox workspace. " +
+			"Tool failures are recoverable. Use any partial results to continue or answer with the evidence you have.",
+		tools: tools(workspace, options.Permission != run.ReadOnly),
 	}
-	reportLive := liveParts(input.ReportParts)
-	var stream agent.StreamFn
-	if a.endpoint != nil {
-		stream = func(ctx context.Context, model *ai.Model, conversation ai.TranscriptContext, options *ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
-			return a.endpoint.stream(ctx, model, conversation, options, input.ReportContext)
+	if options.ArrowJS {
+		loadout.tools = append(loadout.tools, arrowRenderTool())
+		loadout.prompt += " Use render_ui when a custom visualization or an interactive view would make the answer clearer."
+	}
+	closeTools := func() {}
+	if names := options.SelectedMCPServers(); len(names) > 0 {
+		if a.remote == nil || options.Permission == run.ReadOnly {
+			return toolLoadout{}, nil, run.ErrOptions
 		}
-	}
-	session, err := coding.NewSession(coding.SessionOptions{
-		Model:      &model,
-		Cwd:        "/",
-		NoTools:    coding.NoToolsAll,
-		StreamFn:   stream,
-		Compaction: coding.DefaultCompactionSettings(),
-	})
-	if err != nil {
-		return result, fmt.Errorf("create Pi session: %w", err)
-	}
-	// Reuse Pi's coding context transform with the sandbox tools and prompt.
-	// The coding session's default prompt discovers resources on the host.
-	transform := session.Agent.TransformContext
-	var compacted []agent.AgentMessage
-	var compactedThrough int
-	engine := agent.NewAgent(agent.AgentOptions{
-		InitialState: &agent.AgentState{
-			Model: &model, ThinkingLevel: reasoning, SystemPrompt: systemPrompt, Tools: toolset, Messages: history,
-		},
-		ToolExecution: agent.ToolSequential,
-		SteeringMode:  agent.QueueAll,
-		StreamFn:      session.Agent.StreamFn,
-		Identity:      &ai.ClientIdentity{Attribution: ai.NoAttribution},
-		TransformContext: func(ctx context.Context, messages []agent.AgentMessage) []agent.AgentMessage {
-			projected := transform(ctx, messages)
-			// Pi returns the original slice until it produces a projection.
-			if len(projected) > 0 && len(messages) > 0 && &projected[0] != &messages[0] {
-				compacted, compactedThrough = projected, len(messages)
+		remoteTools, release, err := a.remote.Open(ctx, input.OwnerID, names)
+		if err != nil {
+			return toolLoadout{}, nil, err
+		}
+		closeTools = func() { _ = release() }
+		for _, remote := range remoteTools {
+			tool, err := remoteAgentTool(remote)
+			if err != nil {
+				closeTools()
+				return toolLoadout{}, nil, err
 			}
-			return projected
-		},
-	})
-	session.Agent = engine
-	initial := len(engine.State().Messages)
-	steer := func(messages []string) {
-		for _, text := range messages {
-			engine.Steer(ai.NewUserText(text, time.Now().UnixMilli()))
+			loadout.tools = append(loadout.tools, tool)
 		}
 	}
-	defer engine.Subscribe(func(ctx context.Context, event agent.AgentEvent) error {
-		reportLive(event)
-		if event.Type == agent.EvTurnEnd && ctx.Err() == nil {
-			if message := assistantMessage(event.Message); message != nil &&
-				message.StopReason != ai.StopError && message.StopReason != ai.StopAborted {
-				if len(event.ToolResults) > 0 {
-					steer(input.Steering.Drain())
-				} else {
-					steer(input.Steering.Finish())
-				}
-			}
-		}
-		return nil
-	})()
-	if err := ctx.Err(); err != nil {
-		return result, err
+	for index, tool := range loadout.tools {
+		loadout.tools[index] = withToolTimeout(tool)
 	}
-	steer(input.Steering.Drain())
-	err = engine.Prompt(ctx, input.Prompt, imageBlocks(input.Payload.Images)...)
-	transcript := engine.State().Messages
-	messages := transcript[initial:]
+	return loadout, closeTools, nil
+}
+
+func turnResult(result run.Result, execution sessionExecution, err error) (run.Result, error) {
+	messages := execution.messages
 	var message *ai.AssistantMessage
 	if len(messages) > 0 {
 		message = assistantMessage(messages[len(messages)-1])
 	}
-	answered := err == nil && message != nil && message.StopReason != ai.StopError && message.StopReason != ai.StopAborted
+	answered := err == nil && successfulResponse(message)
 	result.Parts = transcriptParts(messages, answered)
 	var usage run.TokenUsage
 	for _, entry := range messages {
@@ -170,8 +133,8 @@ func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Work
 	}
 	var encodeErr error
 	result.AgentMessages, encodeErr = encodeMessages(messages, false)
-	if encodeErr == nil && compacted != nil {
-		result.CompactedContext, encodeErr = encodeMessages(slices.Concat(compacted, transcript[compactedThrough:]), true)
+	if encodeErr == nil && execution.compacted != nil {
+		result.CompactedContext, encodeErr = encodeMessages(execution.compacted, true)
 	}
 	if encodeErr != nil {
 		return result, errors.Join(err, fmt.Errorf("save agent messages: %w", encodeErr))
@@ -206,6 +169,10 @@ func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Work
 		return result, fmt.Errorf("%w: the model returned an empty answer", run.ErrModelResponse)
 	}
 	return result, nil
+}
+
+func successfulResponse(message *ai.AssistantMessage) bool {
+	return message != nil && message.StopReason != ai.StopError && message.StopReason != ai.StopAborted
 }
 
 func imageBlocks(images []run.Image) []ai.ImageContent {

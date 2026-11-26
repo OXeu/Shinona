@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -206,6 +208,16 @@ func TestCompatibleEndpointReplaysAcrossModelChanges(t *testing.T) {
 func TestAgentRestoresPiCompactedContext(t *testing.T) {
 	const oldDetail = "Old workspace details. "
 	const summary = "Pi summarized the old workspace details."
+	const hostInstruction = "Do not pass host instructions into a workspace."
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	agentDir := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(agentDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte(hostInstruction), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var summaries atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /models", func(w http.ResponseWriter, _ *http.Request) {
@@ -224,6 +236,9 @@ func TestAgentRestoresPiCompactedContext(t *testing.T) {
 		}
 		response := "Current answer."
 		messages := string(request.Messages)
+		if strings.Contains(messages, hostInstruction) {
+			t.Error("Pi included host instructions in a model request")
+		}
 		if len(request.Tools) == 0 {
 			summaries.Add(1)
 			response = summary
