@@ -40,7 +40,10 @@ The [Benchmarks workflow](.github/workflows/benchmarks.yml) runs the core API ba
 | Benchmark | API and fixture |
 | --- | --- |
 | `SessionsList` | Authenticated `GET /api/v1/sessions`, returning 30 sessions from 256 across four projects |
+| `SessionListPoll` | Full response, unchanged `304`, and a one-session rename delta against the same 256-session fixture. `body-B/op` measures the uncompressed response size. |
+| `WorkerScheduling` | Two 25 ms fixture turns in the same session or in separate accounts. `overlap-%` measures how many pairs execute concurrently. `start-us/op` measures the time from submission to the first turn starting. The same-session case verifies submission order. |
 | `Transcript` | HTTP transcript read with Zstandard negotiation and Protobuf decoding, using the default latest 30 turns from a 120-turn session |
+| `TranscriptServer` | Same transcript fixture through the authenticated HTTP handler with a counting response writer. It excludes loopback and client decoding and reports compressed response bytes as `wire-B/op`. |
 | `Send` / `Queue` | `POST /api/v1/sessions/{id}/turns` on an idle session and with an active turn, respectively. Timing ends at the submission response. |
 | `Steering` | The REST steering endpoint targeting a held turn in the real worker. The fixture agent verifies delivery outside the timer. |
 | `Revert` | The original revert operation through the REST endpoint, including the head check and returned draft. The fixture reverts three of 30 turns per request. |
@@ -65,6 +68,8 @@ Core read load uses the same authenticated APIs. Each client issues its next req
 | `CoreAPI/Transcript` | The same `concurrency` levels crossed with `page` of `latest` or `full`, with `turns` fixed at 200. The latest page returns 30 turns. The full response returns all 200. |
 
 Load results include mean, p50, and p99 latency in nanoseconds, plus throughput in completed requests per second. CI saves the raw BMF v1 report and test log in the `core-read-load` artifact. The load report selects BMF v1 explicitly so Bencher can filter variants by parameters and plot both latency percentiles on the latency measure.
+
+The `BenchmarkZstdTranscriptEncoding` codec benchmark in `internal/adapter/httpserver` compares Zstandard settings without HTTP or client decoding. The web production build limits the combined compressed Arrow frame assets to 480 KiB.
 
 ```sh
 GOMAXPROCS=2 SHINONA_BENCH_LOAD_OUTPUT="$PWD/.tmp/core-read-load.json" \

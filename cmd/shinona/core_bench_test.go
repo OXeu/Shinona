@@ -48,7 +48,10 @@ var benchmarkZstdDecoders = sync.Pool{New: func() any {
 
 func BenchmarkCoreAPI(b *testing.B) {
 	b.Run("SessionsList", benchmarkSessionsList)
+	b.Run("SessionListPoll", benchmarkSessionListPoll)
+	b.Run("WorkerScheduling", benchmarkWorkerScheduling)
 	b.Run("Transcript", benchmarkTranscript)
+	b.Run("TranscriptServer", benchmarkTranscriptServer)
 	b.Run("Send", func(b *testing.B) { benchmarkSubmitRun(b, false) })
 	b.Run("Queue", func(b *testing.B) { benchmarkSubmitRun(b, true) })
 	b.Run("Steering", benchmarkSteering)
@@ -146,12 +149,21 @@ func (a *benchmarkAPI) post(b testing.TB, path string, body []byte, status int) 
 }
 
 func (a *benchmarkAPI) request(ctx context.Context, client *http.Client, method, path string, body []byte, status int) ([]byte, http.Header, error) {
+	return a.requestWithHeaders(ctx, client, method, path, body, status, nil)
+}
+
+func (a *benchmarkAPI) requestWithHeaders(ctx context.Context, client *http.Client, method, path string, body []byte, status int, headers http.Header) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, method, a.URL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(body) != 0 {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
 	}
 	req.Header.Set("Origin", a.URL)
 	req.Header.Set("Accept-Encoding", "zstd")
@@ -328,6 +340,56 @@ func benchmarkTranscript(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+type benchmarkResponseWriter struct {
+	header http.Header
+	status int
+	bytes  int
+}
+
+func (w *benchmarkResponseWriter) Header() http.Header { return w.header }
+func (w *benchmarkResponseWriter) WriteHeader(status int) {
+	w.status = status
+}
+func (w *benchmarkResponseWriter) Write(body []byte) (int, error) {
+	w.bytes += len(body)
+	return len(body), nil
+}
+
+func benchmarkTranscriptServer(b *testing.B) {
+	a := newCoreBenchmarkAPI(b, demo.Agent{})
+	session := a.seedBenchmarkTranscript(b, 120, 48)
+	endpoint, err := url.Parse(a.URL)
+	if err != nil {
+		b.Fatal(err)
+	}
+	path := a.URL + benchmarkSessionPath(session) + "/transcript"
+	request := httptest.NewRequestWithContext(b.Context(), http.MethodGet, path, nil)
+	request.Header.Set("Origin", a.URL)
+	request.Header.Set("Accept-Encoding", "zstd")
+	for _, cookie := range a.Client().Jar.Cookies(endpoint) {
+		request.AddCookie(cookie)
+	}
+	response := benchmarkResponseWriter{header: make(http.Header)}
+	serve := func() {
+		clear(response.header)
+		response.status, response.bytes = http.StatusOK, 0
+		a.Config.Handler.ServeHTTP(&response, request.Clone(b.Context()))
+	}
+	serve()
+	if response.status != http.StatusOK || response.bytes == 0 ||
+		response.header.Get("Content-Type") != httpserver.ProtobufMediaType ||
+		response.header.Get("Content-Encoding") != "zstd" {
+		b.Fatalf("unexpected response: %d, %d bytes, headers %v", response.status, response.bytes, response.header)
+	}
+	for b.Loop() {
+		serve()
+		if response.status != http.StatusOK {
+			b.Fatalf("transcript returned %d", response.status)
+		}
+	}
+	b.ReportMetric(float64(response.bytes), "wire-B/op")
 }
 
 func (a *benchmarkAPI) seedBenchmarkTranscript(b testing.TB, turnCount, logLines int) string {
