@@ -15,8 +15,10 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sky-valley/pi/agent"
 	"github.com/sky-valley/pi/ai"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/OXeu/shinona/internal/settings"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 type Servers struct {
@@ -51,27 +53,46 @@ func (s *Servers) Lookup(name string) (settings.MCPServer, bool) {
 }
 
 func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]agent.AgentTool, func() error, error) {
-	var allTools []agent.AgentTool
-	var sessions []func() error
+	type connection struct {
+		tools []agent.AgentTool
+		close func() error
+	}
+	connections := make([]connection, len(names))
 	closeTools := func() error {
 		var err error
-		for _, closeSession := range slices.Backward(sessions) {
-			err = errors.Join(err, closeSession())
+		for _, session := range slices.Backward(connections) {
+			if session.close != nil {
+				err = errors.Join(err, session.close())
+			}
 		}
 		return err
 	}
+	startup, openCtx := errgroup.WithContext(ctx)
+	startup.SetLimit(4)
 	for i, name := range names {
-		prefix, source := "mcp_", ""
-		if len(names) > 1 {
-			// A distinct prefix keeps identically named tools callable on each server.
-			prefix, source = fmt.Sprintf("m%d_", i+1), fmt.Sprintf("MCP server %s. ", name)
-		}
-		tools, closeSession, err := s.open(ctx, owner, name, prefix, source)
-		if err != nil {
-			return nil, nil, errors.Join(fmt.Errorf("open MCP server %q: %w", name, err), closeTools())
-		}
-		sessions = append(sessions, closeSession)
-		allTools = append(allTools, tools...)
+		startup.Go(func() error {
+			if err := openCtx.Err(); err != nil {
+				return err
+			}
+			prefix, source := "mcp_", ""
+			if len(names) > 1 {
+				// Keep tool names stable regardless of completion order.
+				prefix, source = fmt.Sprintf("m%d_", i+1), fmt.Sprintf("MCP server %s. ", name)
+			}
+			tools, closeSession, err := s.open(openCtx, owner, name, prefix, source)
+			if err != nil {
+				return fmt.Errorf("open MCP server %q: %w", name, err)
+			}
+			connections[i] = connection{tools, closeSession}
+			return nil
+		})
+	}
+	if err := startup.Wait(); err != nil {
+		return nil, nil, errors.Join(err, closeTools())
+	}
+	var allTools []agent.AgentTool
+	for _, session := range connections {
+		allTools = append(allTools, session.tools...)
 	}
 	return allTools, closeTools, nil
 }
@@ -91,9 +112,13 @@ func (s *Servers) open(ctx context.Context, owner, name, prefix, source string) 
 	} else {
 		client.Transport = tokenTransport{base: client.Transport, token: server.Token}
 	}
-	connection, err := sdk.NewClient(&sdk.Implementation{Name: "Shinona", Version: "1"}, nil).Connect(ctx, &sdk.StreamableClientTransport{
+	connect, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	initialized := timing.Start(ctx, "mcp_initialize")
+	connection, err := sdk.NewClient(&sdk.Implementation{Name: "Shinona", Version: "1"}, nil).Connect(connect, &sdk.StreamableClientTransport{
 		Endpoint: server.URL, HTTPClient: &client, DisableStandaloneSSE: true, MaxRetries: -1,
 	}, nil)
+	initialized()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -124,6 +149,7 @@ func (t tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 var toolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,60}$`)
 
 func listTools(ctx context.Context, connection *sdk.ClientSession, prefix, source string) ([]agent.AgentTool, error) {
+	defer timing.Start(ctx, "mcp_list_tools")()
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	tools := make([]agent.AgentTool, 0)

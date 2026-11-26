@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sky-valley/pi/ai"
@@ -47,13 +49,28 @@ func TestConfiguredStreamableHTTPTool(t *testing.T) {
 func TestSelectedMCPServersExposeSameNamedToolsIndependently(t *testing.T) {
 	mux := http.NewServeMux()
 	names := []string{"first", "second"}
+	ready := make(chan struct{})
+	var connecting atomic.Int32
 	for _, name := range names {
 		server := sdk.NewServer(&sdk.Implementation{Name: name, Version: "1"}, nil)
 		sdk.AddTool(server, &sdk.Tool{Name: "echo"}, func(_ context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, any, error) {
 			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: name}}}, nil, nil
 		})
 		handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil)
-		mux.Handle("/"+name, handler)
+		var entered atomic.Bool
+		mux.HandleFunc("/"+name, func(w http.ResponseWriter, r *http.Request) {
+			if entered.CompareAndSwap(false, true) {
+				if connecting.Add(1) == int32(len(names)) {
+					close(ready)
+				}
+				select {
+				case <-ready:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			handler.ServeHTTP(w, r)
+		})
 	}
 	fixture := httptest.NewServer(mux)
 	t.Cleanup(fixture.Close)
@@ -61,7 +78,9 @@ func TestSelectedMCPServersExposeSameNamedToolsIndependently(t *testing.T) {
 		{Name: "first", URL: fixture.URL + "/first"},
 		{Name: "second", URL: fixture.URL + "/second"},
 	}, fixture.Client(), nil)
-	tools, closeTools, err := servers.Open(t.Context(), "owner", names)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	tools, closeTools, err := servers.Open(ctx, "owner", names)
 	if err != nil {
 		t.Fatal(err)
 	}
