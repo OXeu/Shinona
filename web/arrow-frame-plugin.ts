@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { gzipSync } from 'node:zlib'
 import { build } from 'esbuild'
 import type { Plugin } from 'vite'
+import { arrowFrameGzipBudget } from './arrow-frame-budget.ts'
 
 const id = 'virtual:arrow-frame'
 const entry = fileURLToPath(new URL('./arrow-frame-runtime.ts', import.meta.url))
@@ -11,7 +12,6 @@ const wasmState = fileURLToPath(new URL('./arrow-frame-wasm.ts', import.meta.url
 const documentPath = fileURLToPath(new URL('./arrow-frame.html', import.meta.url))
 const wasmPath = createRequire(import.meta.url).resolve('@jitl/quickjs-wasmfile-release-asyncify/wasm')
 const devPrefix = '/@shinona/arrow-frame/'
-const gzipBudget = 480 << 10
 
 function replaceOnce(source: string, anchor: string, replacement: string) {
   if (!source.includes(anchor) || source.indexOf(anchor) !== source.lastIndexOf(anchor)) {
@@ -31,7 +31,7 @@ export function arrowFrame(): Plugin {
     ]).then(([runtime, document, wasm]) => {
       const compressedWasm = gzipSync(wasm)
       const size = gzipSync(runtime).length + gzipSync(document).length + compressedWasm.length
-      if (size > gzipBudget) throw new Error(`ArrowJS frame requires ${size} compressed bytes. Budget is ${gzipBudget}.`)
+      if (size > arrowFrameGzipBudget) throw new Error(`ArrowJS frame requires ${size} compressed bytes. Budget is ${arrowFrameGzipBudget}.`)
       return { runtime, document, wasm: compressedWasm }
     }).catch((error: unknown) => {
       assets = undefined
