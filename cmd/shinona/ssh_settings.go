@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
@@ -38,8 +39,13 @@ type sshRuntime struct {
 	repo      settings.SSHRepository
 	trusted   map[string]bool
 	container sshsandbox.ContainerConfig
-	projects  sshsandbox.ProjectConnections
+	cleanup   time.Duration
 	providers *responsecache.Cache[personalSSHKey, cachedSSHProvider]
+
+	// The instance provider can dial private networks directly. A matching
+	// personal provider must still go through its own dialing policy.
+	instanceConnections sshsandbox.ProjectConnections
+	personalConnections sshsandbox.ProjectConnections
 }
 
 func newSSHRuntime(repo settings.SSHRepository, env environment) (*sshRuntime, error) {
@@ -52,12 +58,14 @@ func newSSHRuntime(repo settings.SSHRepository, env environment) (*sshRuntime, e
 		return nil, err
 	}
 	return &sshRuntime{
-		repo: repo, trusted: trusted, container: container,
+		repo: repo, trusted: trusted, container: container, cleanup: sandbox.DefaultCleanupTimeout,
 		providers: responsecache.New[personalSSHKey, cachedSSHProvider](sshProviderCacheSize, sshProviderCacheSize),
 	}, nil
 }
 
-func (r *sshRuntime) Close() error { return r.projects.Close() }
+func (r *sshRuntime) Close() error {
+	return errors.Join(r.instanceConnections.Close(), r.personalConnections.Close())
+}
 
 func (r *sshRuntime) resolvePersonalSSH(owner string, server settings.SSHServer) (*sshsandbox.Provider, error) {
 	key := personalSSHKey{owner, server.ID}
@@ -106,7 +114,8 @@ func (r *sshRuntime) personalSSH(server settings.SSHServer) (*sshsandbox.Provide
 		Address: server.Address, User: server.User, HostFingerprint: server.HostFingerprint,
 		Template: server.Template, PrivateKey: server.PrivateKey,
 		Container:          r.container,
-		ProjectConnections: &r.projects,
+		CleanupTimeout:     r.cleanup,
+		ProjectConnections: &r.personalConnections,
 	}
 	if !r.trusted[server.Address] {
 		host, _, err := net.SplitHostPort(server.Address)

@@ -19,6 +19,8 @@ const (
 	ProviderSSH = "ssh"
 )
 
+const DefaultCleanupTimeout = 5 * time.Second
+
 var (
 	ErrPolicy           = errors.New("that sandbox policy is unavailable for this account")
 	ErrWorkspaceMissing = errors.New("this project has no retained workspace")

@@ -14,9 +14,10 @@ import (
 
 type terminal struct {
 	io.Reader
-	input   io.WriteCloser
-	session *ssh.Session
-	stop    func() bool
+	input     io.WriteCloser
+	session   *ssh.Session
+	workspace *workspace
+	stop      func() bool
 }
 
 func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize) (_ sandbox.Terminal, err error) {
@@ -40,17 +41,17 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	w.discard.Store(true)
 	setup, cancelSetup := context.WithTimeout(ctx, connectTimeout)
 	defer cancelSetup()
-	timer := time.AfterFunc(connectTimeout, func() { _ = w.client.Close() })
+	timer := time.AfterFunc(connectTimeout, w.abortTransport)
 	defer timer.Stop()
 	session, err := w.openSession(setup)
 	if err != nil {
 		return nil, err
 	}
-	stop := context.AfterFunc(ctx, func() { _ = session.Close() })
+	terminal := &terminal{session: session, workspace: w}
+	terminal.stop = context.AfterFunc(ctx, func() { terminal.interrupt(ctx) })
 	defer func() {
 		if err != nil {
-			stop()
-			_ = session.Close()
+			_ = terminal.Close(context.WithoutCancel(ctx))
 		}
 	}()
 	if err := session.RequestPty("xterm-256color", int(size.Rows), int(size.Cols), ssh.TerminalModes{}); err != nil {
@@ -70,14 +71,15 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	if !timer.Stop() || setup.Err() != nil {
 		return nil, context.DeadlineExceeded
 	}
-	return &terminal{Reader: output, input: input, session: session, stop: stop}, nil
+	terminal.Reader, terminal.input = output, input
+	return terminal, nil
 }
 
 func (t *terminal) Input(ctx context.Context, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	stop := context.AfterFunc(ctx, func() { _ = t.session.Close() })
+	stop := context.AfterFunc(ctx, func() { t.interrupt(ctx) })
 	defer stop()
 	_, err := t.input.Write(data)
 	return err
@@ -90,14 +92,22 @@ func (t *terminal) Resize(ctx context.Context, size sandbox.TerminalSize) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	stop := context.AfterFunc(ctx, func() { _ = t.session.Close() })
+	stop := context.AfterFunc(ctx, func() { t.interrupt(ctx) })
 	defer stop()
 	return t.session.WindowChange(int(size.Rows), int(size.Cols))
 }
 
-func (t *terminal) Close(context.Context) error {
+func (t *terminal) Close(ctx context.Context) error {
 	t.stop()
-	return t.session.Close()
+	defer t.workspace.abortTransport()
+	return t.workspace.closeSession(ctx, t.session)
+}
+
+func (t *terminal) interrupt(ctx context.Context) {
+	// The terminal owns this transport. Closing it also wakes a reader
+	// when the peer receives the channel close but never acknowledges it.
+	defer t.workspace.abortTransport()
+	_ = t.workspace.closeSession(context.WithoutCancel(ctx), t.session)
 }
 
 var _ sandbox.TerminalWorkspace = (*workspace)(nil)

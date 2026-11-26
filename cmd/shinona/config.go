@@ -240,7 +240,7 @@ func (r *sshRuntime) sshSandboxProvider(values settings.Values) (sandbox.Provide
 		Address: values[settings.SSHAddress], User: values[settings.SSHUser],
 		KeyPath: values[settings.SSHKeyPath], HostFingerprint: values[settings.SSHHostFingerprint],
 		Template:  values[settings.SSHTemplate],
-		Container: r.container, ProjectConnections: &r.projects,
+		Container: r.container, CleanupTimeout: r.cleanup, ProjectConnections: &r.instanceConnections,
 	})
 	if err != nil {
 		return nil, settings.Invalid("INVALID_SSH_CONFIG", err.Error())

@@ -8,12 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http/httptrace"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -48,6 +46,7 @@ type Config struct {
 	PrivateKey      string
 	DialContext     func(context.Context, string, string) (net.Conn, error)
 	Container       ContainerConfig
+	CleanupTimeout  time.Duration
 	// Providers sharing ProjectConnections must use the same dial policy.
 	ProjectConnections *ProjectConnections
 }
@@ -60,6 +59,7 @@ type Provider struct {
 	projects     *ProjectConnections
 	identity     [sha256.Size]byte
 	container    ContainerConfig
+	cleanup      time.Duration
 	legacyLimits *responsecache.Cache[string, struct{}]
 }
 
@@ -84,6 +84,12 @@ func New(config Config) (*Provider, error) {
 	}
 	if err := container.Validate(); err != nil {
 		return nil, err
+	}
+	if config.CleanupTimeout < 0 {
+		return nil, errors.New("SSH cleanup timeout must be positive")
+	}
+	if config.CleanupTimeout == 0 {
+		config.CleanupTimeout = sandbox.DefaultCleanupTimeout
 	}
 	fingerprint := config.HostFingerprint
 	decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(fingerprint, "SHA256:"))
@@ -123,7 +129,7 @@ func New(config Config) (*Provider, error) {
 	}{config.Address, config.User, fingerprint, string(signer.PublicKey().Marshal())}))
 	return &Provider{
 		address: config.Address, client: client, template: config.Template, dial: dial,
-		projects: projects, identity: identity, container: container,
+		projects: projects, identity: identity, container: container, cleanup: config.CleanupTimeout,
 		legacyLimits: responsecache.New[string, struct{}](256, 16<<10),
 	}, nil
 }
@@ -151,7 +157,7 @@ func (p *Provider) connect(ctx context.Context, spec sandbox.Spec) (*workspace, 
 	if err != nil {
 		return nil, err
 	}
-	return newWorkspace(client, spec), nil
+	return p.newWorkspace(client, spec), nil
 }
 
 func (p *Provider) connectClient(ctx context.Context) (*ssh.Client, error) {
@@ -159,7 +165,7 @@ func (p *Provider) connectClient(ctx context.Context) (*ssh.Client, error) {
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 	dialed := timing.Start(ctx, "ssh_dial")
-	conn, err := p.dial(sshDialTrace(ctx), "tcp", p.address)
+	conn, err := p.dial(ctx, "tcp", p.address)
 	dialed()
 	if err != nil {
 		return nil, fmt.Errorf("dial the sandbox SSH host: %w", err)
@@ -178,41 +184,8 @@ func (p *Provider) connectClient(ctx context.Context) (*ssh.Client, error) {
 	return ssh.NewClient(client, channels, requests), nil
 }
 
-func sshDialTrace(ctx context.Context) context.Context {
-	var mu sync.Mutex
-	var dns time.Time
-	attempts := make(map[string]time.Time)
-	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		DNSStart: func(httptrace.DNSStartInfo) {
-			mu.Lock()
-			defer mu.Unlock()
-			dns = time.Now()
-		},
-		DNSDone: func(httptrace.DNSDoneInfo) {
-			mu.Lock()
-			defer mu.Unlock()
-			if !dns.IsZero() {
-				timing.Since(ctx, "ssh_dns", dns)
-			}
-		},
-		ConnectStart: func(_, address string) {
-			mu.Lock()
-			defer mu.Unlock()
-			attempts[address] = time.Now()
-		},
-		ConnectDone: func(_, address string, _ error) {
-			mu.Lock()
-			defer mu.Unlock()
-			if start, ok := attempts[address]; ok {
-				timing.Since(ctx, "ssh_tcp", start)
-				delete(attempts, address)
-			}
-		},
-	})
-}
-
-func newWorkspace(client *ssh.Client, spec sandbox.Spec) *workspace {
-	return &workspace{client: client, name: fmt.Sprintf("shinona-%x", projectHash(spec))}
+func (p *Provider) newWorkspace(client *ssh.Client, spec sandbox.Spec) *workspace {
+	return &workspace{client: client, name: fmt.Sprintf("shinona-%x", projectHash(spec)), cleanup: p.cleanup}
 }
 
 func (*Provider) Policies(string) []sandbox.Policy { return []sandbox.Policy{sandbox.Shared} }
@@ -238,7 +211,7 @@ func (p *Provider) TestConnection(ctx context.Context) error {
 	defer func() { _ = ws.Close(ctx) }()
 	stop := context.AfterFunc(ctx, func() { _ = ws.Close(ctx) })
 	defer stop()
-	if err := ws.docker(ctx, "info", "--format", "{{.ServerVersion}}"); err != nil {
+	if err := ws.docker(ctx, "info", "--format", "{{.ServerVersion}}\n"); err != nil {
 		return errors.Join(ErrDockerUnavailable, ctx.Err(), err)
 	}
 	return nil
@@ -256,7 +229,7 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	}
 	defer release()
 	ws, err := p.openProject(ctx, spec, func(ws *workspace) error {
-		stop := context.AfterFunc(ctx, func() { _ = ws.client.Close() })
+		stop := context.AfterFunc(ctx, ws.abortTransport)
 		defer stop()
 		return p.ensureRunning(ctx, ws, spec)
 	})
@@ -318,7 +291,7 @@ func (p *Provider) tryProject(ctx context.Context, spec sandbox.Spec, key projec
 		}
 		conn = &projectConnection{client: client, opened: time.Now()}
 	}
-	ws := newWorkspace(conn.client, spec)
+	ws := p.newWorkspace(conn.client, spec)
 	ws.release = func() error { return p.projects.put(key, conn) }
 	defer func() {
 		if lease == nil {
@@ -335,7 +308,7 @@ func (w *workspace) requireRunningProject(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 	// NewSession can block before a channel exists to cancel.
-	stop := context.AfterFunc(ctx, func() { _ = w.client.Close() })
+	stop := context.AfterFunc(ctx, w.abortTransport)
 	status, err := w.status(ctx)
 	stop()
 	if ctx.Err() != nil {
@@ -349,14 +322,19 @@ func (w *workspace) requireRunningProject(ctx context.Context) error {
 }
 
 func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbox.ProjectStatus, error) {
-	ws, err := p.connect(ctx, spec)
+	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	var status sandbox.ProjectStatus
+	ws, err := p.openProject(ctx, spec, func(ws *workspace) error {
+		var err error
+		status, err = ws.status(ctx)
+		return err
+	})
 	if err != nil {
-		return sandbox.ProjectStatus{}, err
+		return status, err
 	}
-	defer func() { _ = ws.Close(ctx) }()
-	stop := context.AfterFunc(ctx, func() { _ = ws.Close(ctx) })
-	defer stop()
-	return ws.status(ctx)
+	_ = ws.Close(ctx)
+	return status, nil
 }
 
 func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error {

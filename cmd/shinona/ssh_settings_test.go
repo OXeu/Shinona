@@ -13,6 +13,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -185,7 +188,7 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	var dockerAvailable atomic.Bool
-	go serveSSHTestHost(listener, hostKey, &dockerAvailable)
+	go serveSSHTestHost(listener, hostKey, sshTestDocker(t), &dockerAvailable)
 	t.Setenv("SHINONA_TRUSTED_SSH_ADDRESSES", listener.Addr().String())
 	t.Setenv("E2B_API_KEY", "test-e2b-key")
 	_, repo, query := settingsTestApp(t, nil)
@@ -253,6 +256,10 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	if response := query("alice", http.MethodPut, saveSandbox, sandboxInput(provider, "")); response != "" {
 		t.Fatalf("assign SSH provider: %s", response)
 	}
+	unsupported := map[string]any{"input": map[string]any{"provider": provider, "timeoutSeconds": 90, "onTimeout": "kill"}}
+	if response := query("alice", http.MethodPut, saveSandbox, unsupported); !strings.Contains(response, "INVALID_PROJECT_SANDBOX") {
+		t.Fatalf("SSH should reject an unsupported idle timeout: %s", response)
+	}
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -314,6 +321,7 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	state.Store("running")
 	var statusCalls, listCalls atomic.Int32
 	accepted := make(chan net.Conn, 8)
+	dockerPath := sshTestDocker(t)
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -321,18 +329,18 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 				return
 			}
 			accepted <- conn
-			go serveSSHTestConnection(conn, config, func(command string) (string, uint32, bool) {
+			go serveSSHTestConnection(conn, config, dockerPath, func(args []string) (string, uint32, bool) {
 				current := state.Load().(string)
 				switch {
-				case strings.HasPrefix(command, "exec docker 'ps' "):
+				case args[0] == "ps":
 					statusCalls.Add(1)
 					if current == "" {
 						return "", 0, true
 					}
 					return "container-id " + current + " hardened\n", 0, true
-				case strings.HasPrefix(command, "exec docker 'exec' ") && strings.Contains(command, " 'shinona-list' "):
+				case args[0] == "exec" && slices.Contains(args, "shinona-list"):
 					listCalls.Add(1)
-					if current != "running" || strings.HasSuffix(command, " 'missing'") {
+					if current != "running" || args[len(args)-1] == "missing" {
 						return "", 2, true
 					}
 					return "d\x00src\x00f\x00README.md\x00", 0, true
@@ -379,7 +387,8 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 		hasMetric := func(name string) bool {
 			return slices.ContainsFunc(metrics, func(metric timing.Metric) bool { return metric.Name == name })
 		}
-		if !hasMetric("ssh_project_status") || hasMetric("ssh_connect") != wantConnect {
+		if !hasMetric("ssh_project_status") || hasMetric("ssh_connect") != wantConnect ||
+			hasMetric("ssh_dial") != wantConnect || hasMetric("ssh_handshake") != wantConnect {
 			t.Fatalf("unexpected SSH timings: %+v", metrics)
 		}
 		return ws
@@ -416,6 +425,25 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	if _, _, err := open("alice"); !errors.Is(err, sandbox.ErrWorkspaceMissing) {
 		t.Fatalf("did not recheck the container state: %v", err)
 	}
+	managed := target.Provider.(sandbox.ManagedProjectProvider)
+	spec := sandbox.Spec{OwnerID: "alice"}
+	readStatus := func(dockerState string, projectState sandbox.ProjectState, wantConnect bool) {
+		t.Helper()
+		state.Store(dockerState)
+		previous := statusCalls.Load()
+		ctx, recorder := timing.WithRecorder(t.Context())
+		got, err := managed.ProjectStatus(ctx, spec)
+		if err != nil || got.State != projectState || statusCalls.Load()-previous != 1 {
+			t.Fatalf("expected a fresh %q sandbox status, got %+v, %v", projectState, got, err)
+		}
+		metrics := recorder.Metrics()
+		if slices.ContainsFunc(metrics, func(metric timing.Metric) bool { return metric.Name == "ssh_handshake" }) != wantConnect {
+			t.Fatalf("unexpected SSH status timings: %+v", metrics)
+		}
+	}
+	readStatus("paused", sandbox.ProjectPaused, false)
+	readStatus("exited", sandbox.ProjectStopped, false)
+	readStatus("", sandbox.ProjectNone, false)
 	state.Store("running")
 	if len(accepted) != 0 {
 		t.Fatal("opened another connection for the same account and credentials")
@@ -423,11 +451,24 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
-	release("alice", true)
+	readStatus("running", sandbox.ProjectRunning, true)
 	conn = nextConnection()
 
 	if err := repo.Projects.SaveProjectSandboxConfig(t.Context(), "alice", "", run.ProjectSandboxConfig{Provider: settings.SSHProviderName(server.ID)}); err != nil {
 		t.Fatal(err)
+	}
+	for range 2 {
+		var project struct {
+			State     sandbox.ProjectState
+			SandboxID string
+		}
+		body := query("alice", http.MethodGet, "/projects/default/sandbox", nil)
+		if err := json.Unmarshal([]byte(body), &project); err != nil || project.State != sandbox.ProjectRunning || project.SandboxID != "container-id" {
+			t.Fatalf("unexpected SSH sandbox response: %s", body)
+		}
+	}
+	if len(accepted) != 0 {
+		t.Fatal("the sandbox API did not reuse the SSH connection")
 	}
 	var session struct{ ID string }
 	created := query("alice", http.MethodPost, "/sessions", map[string]any{})
@@ -461,6 +502,23 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	list(".", `"name":"README.md"`, 0)
 	nextConnection()
 
+	keyPath := filepath.Join(t.TempDir(), "instance.key")
+	if err := os.WriteFile(keyPath, []byte(key), 0600); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := app.sshSandboxProvider(settings.Values{
+		settings.SSHAddress: server.Address, settings.SSHUser: server.User, settings.SSHTemplate: server.Template,
+		settings.SSHHostFingerprint: server.HostFingerprint, settings.SSHKeyPath: keyPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := instance.(sandbox.ManagedProjectProvider).ProjectStatus(t.Context(), spec); err != nil || got.State != sandbox.ProjectRunning {
+		t.Fatalf("instance sandbox status: %+v, %v", got, err)
+	}
+	nextConnection()
+	readStatus("running", sandbox.ProjectRunning, false)
+
 	release("bob", true)
 	nextConnection()
 	server.User = "new-user"
@@ -488,7 +546,16 @@ func sshTestKey(t *testing.T) (ssh.Signer, string) {
 	return signer, strings.TrimSpace(string(pem.EncodeToMemory(block)))
 }
 
-func serveSSHTestHost(listener net.Listener, key ssh.Signer, dockerAvailable *atomic.Bool) {
+func sshTestDocker(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte("#!/bin/sh\nprintf '%s\\000' \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return dir + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
+func serveSSHTestHost(listener net.Listener, key ssh.Signer, dockerPath string, dockerAvailable *atomic.Bool) {
 	config := &ssh.ServerConfig{PublicKeyCallback: func(conn ssh.ConnMetadata, public ssh.PublicKey) (*ssh.Permissions, error) {
 		if conn.User() != "worker" || !bytes.Equal(public.Marshal(), key.PublicKey().Marshal()) {
 			return nil, errors.New("unexpected SSH user or key")
@@ -501,8 +568,8 @@ func serveSSHTestHost(listener net.Listener, key ssh.Signer, dockerAvailable *at
 		if err != nil {
 			return
 		}
-		serveSSHTestConnection(conn, config, func(command string) (string, uint32, bool) {
-			ok := command == "exec docker 'info' '--format' '{{.ServerVersion}}'"
+		serveSSHTestConnection(conn, config, dockerPath, func(args []string) (string, uint32, bool) {
+			ok := slices.Equal(args, []string{"info", "--format", "{{.ServerVersion}}\n"})
 			if dockerAvailable.Load() {
 				return "", 0, ok
 			}
@@ -511,7 +578,7 @@ func serveSSHTestHost(listener net.Listener, key ssh.Signer, dockerAvailable *at
 	}
 }
 
-func serveSSHTestConnection(conn net.Conn, config *ssh.ServerConfig, execute func(string) (string, uint32, bool)) {
+func serveSSHTestConnection(conn net.Conn, config *ssh.ServerConfig, dockerPath string, execute func([]string) (string, uint32, bool)) {
 	defer func() { _ = conn.Close() }()
 	_, channels, requests, err := ssh.NewServerConn(conn, config)
 	if err != nil {
@@ -530,7 +597,11 @@ func serveSSHTestConnection(conn net.Conn, config *ssh.ServerConfig, execute fun
 			var status struct{ Code uint32 }
 			var ok bool
 			if request.Type == "exec" && ssh.Unmarshal(request.Payload, &payload) == nil {
-				output, status.Code, ok = execute(payload.Command)
+				command := exec.Command("sh", "-c", payload.Command)
+				command.Env = append(command.Environ(), "PATH="+dockerPath)
+				if args, err := command.Output(); err == nil && len(args) > 0 && args[len(args)-1] == 0 {
+					output, status.Code, ok = execute(strings.Split(string(args[:len(args)-1]), "\x00"))
+				}
 			}
 			_ = request.Reply(ok, nil)
 			if ok {

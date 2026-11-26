@@ -11,6 +11,11 @@ linters:
         linters:
           - depguard
         text: os/exec
+      # Exercise SSH commands with real login shells and a fake Docker CLI.
+      - path: (^|/)(internal/adapter/sshsandbox/command_test|cmd/shinona/ssh_settings_test)\.go$
+        linters:
+          - depguard
+        text: os/exec
       # Test callbacks may need to implement signatures fixed by production code.
       - path: _test\.go$
         linters:

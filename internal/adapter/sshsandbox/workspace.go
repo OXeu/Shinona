@@ -3,6 +3,7 @@ package sshsandbox
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 type workspace struct {
 	client  *ssh.Client
 	name    string
+	cleanup time.Duration
 	release func() error
 	inUse   sync.RWMutex
 	closed  atomic.Bool
@@ -149,20 +151,37 @@ func (w *workspace) WriteFile(ctx context.Context, name string, data []byte) err
 	return commandError(result, err)
 }
 
-// The SSH server starts the remote command through a shell. Quote each argument
-// before it crosses that boundary, including commands passed to docker exec.
+// OpenSSH passes this command through the account's login shell. The bootstrap
+// decodes arguments only after entering sh, without reading Docker's stdin.
+const dockerBootstrap = `exec sh -c 'for wire do case "$wire" in ` +
+	`+*) value=$(printf %s "${wire#+}" | base64 -d && printf .) || exit 2; set -- "$@" "${value%.}";; ` +
+	`*) set -- "$@" "$wire";; esac; shift; done; exec docker "$@"' sh`
+
 func dockerCommand(args []string) (string, error) {
-	var command strings.Builder
-	command.WriteString("exec docker")
+	var arguments strings.Builder
+	encoded := false
 	for _, arg := range args {
 		if strings.ContainsRune(arg, 0) {
 			return "", errors.New("SSH command arguments cannot contain a null character")
 		}
-		command.WriteString(" '")
-		command.WriteString(strings.ReplaceAll(arg, "'", "'\"'\"'"))
-		command.WriteByte('\'')
+		// A leading '+' marks encoded data. Quotes, backslashes, history
+		// expansion, and control bytes vary across login shells.
+		if strings.HasPrefix(arg, "+") || strings.IndexFunc(arg, func(ch rune) bool {
+			return ch < ' ' || ch == 0x7f || ch == '\'' || ch == '\\' || ch == '!'
+		}) >= 0 {
+			arguments.WriteString(" +")
+			arguments.WriteString(base64.StdEncoding.EncodeToString([]byte(arg)))
+			encoded = true
+		} else {
+			arguments.WriteString(" '")
+			arguments.WriteString(arg)
+			arguments.WriteByte('\'')
+		}
 	}
-	return command.String(), nil
+	if encoded {
+		return dockerBootstrap + arguments.String(), nil
+	}
+	return "exec docker" + arguments.String(), nil
 }
 
 func (w *workspace) command(ctx context.Context, input io.Reader, limit int, args ...string) (sandbox.Result, error) {
@@ -187,7 +206,9 @@ func (w *workspace) runDocker(ctx context.Context, input io.Reader, limit int, c
 		w.discard.Store(true)
 		return sandbox.Result{}, err
 	}
-	defer func() { _ = session.Close() }()
+	done := make(chan struct{})
+	defer close(done)
+	defer func() { _ = w.closeSession(context.WithoutCancel(ctx), session) }()
 	if err := ctx.Err(); err != nil {
 		w.discard.Store(true)
 		return sandbox.Result{}, err
@@ -199,22 +220,19 @@ func (w *workspace) runDocker(ctx context.Context, input io.Reader, limit int, c
 			return sandbox.Result{}, err
 		}
 	}
-	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
+		// Let the channel or the Docker watchdog end the command first. A
+		// stalled host may block both the close request and the exit response.
+		deadline := time.AfterFunc(w.cleanup, w.abortTransport)
+		defer deadline.Stop()
 		if control == nil {
 			_ = session.Close()
-			return
+		} else {
+			_ = control.Close()
 		}
-		// Give Docker time to deliver EOF before closing the transport.
-		deadline := time.AfterFunc(2*time.Second, func() { _ = w.client.Close() })
-		defer deadline.Stop()
-		_ = control.Close()
 		<-done
 	})
-	defer func() {
-		close(done)
-		stop()
-	}()
+	defer stop()
 	out, stderr := sandbox.NewOutput(limit), sandbox.NewOutput(sandbox.DefaultOutputLimit)
 	session.Stdin, session.Stdout, session.Stderr = input, out, stderr
 	err = session.Run(command)
@@ -234,22 +252,54 @@ func (w *workspace) runDocker(ctx context.Context, input io.Reader, limit int, c
 }
 
 func (w *workspace) openSession(ctx context.Context) (*ssh.Session, error) {
-	// A retained transport belongs to this lease alone. Closing it bounds the
-	// channel-open wait even if a stale SSH server never acknowledges it.
-	if w.shared {
-		// Live readers share the agent's transport. A reader canceling should
-		// only end its own channel unless the transport stops responding.
-		limit := time.AfterFunc(connectTimeout, func() { _ = w.client.Close() })
-		defer limit.Stop()
-	} else if w.release != nil {
-		stop := context.AfterFunc(ctx, func() { _ = w.client.Close() })
-		defer stop()
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	limit := time.AfterFunc(connectTimeout, w.abortTransport)
+	defer limit.Stop()
+	opened := make(chan struct{})
+	defer close(opened)
+	stop := context.AfterFunc(ctx, func() {
+		if !w.shared {
+			w.abortTransport()
+			return
+		}
+		// A live reader shares the agent's transport. Wait briefly for the
+		// channel to open so a responsive connection can continue serving it.
+		grace := time.NewTimer(w.cleanup)
+		defer grace.Stop()
+		select {
+		case <-opened:
+		case <-grace.C:
+			w.abortTransport()
+		}
+	})
+	defer stop()
 	session, err := w.client.NewSession()
 	if err != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	return session, err
+}
+
+func (w *workspace) abortTransport() {
+	w.discard.Store(true)
+	_ = w.Close(context.Background())
+}
+
+func (w *workspace) closeSession(ctx context.Context, session *ssh.Session) error {
+	cleanup, cancel := context.WithTimeout(ctx, w.cleanup)
+	defer cancel()
+	stop := context.AfterFunc(cleanup, w.abortTransport)
+	defer stop()
+	err := session.Close()
+	if cleanup.Err() != nil {
+		return cleanup.Err()
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 var _ sandbox.Workspace = (*workspace)(nil)
