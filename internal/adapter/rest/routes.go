@@ -2,9 +2,7 @@ package rest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -153,17 +151,7 @@ func bind(c *gin.Context, args any, body bool) bool {
 			reject(c, http.StatusUnsupportedMediaType, "JSON_REQUIRED", "An application/json body is required.")
 			return false
 		}
-		decoder := json.NewDecoder(httpserver.MaxBytesReader(c.Writer, c.Request.Body, 6<<20))
-		err = decoder.Decode(args)
-		if err == nil {
-			err = decoder.Decode(new(any))
-			if err == nil {
-				err = errors.New("multiple JSON values")
-			} else if errors.Is(err, io.EOF) {
-				err = nil
-			}
-		}
-		if err != nil {
+		if err := httpserver.DecodeJSON(c.Writer, c.Request, 6<<20, args); err != nil {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
 				reject(c, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "Request body is too large.")

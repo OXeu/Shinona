@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -164,12 +163,7 @@ func (h *Handler) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct{ Email, Password string }
-	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 4096))
-	if err := decoder.Decode(&input); err != nil {
-		authError(w, "AUTH_INVALID_REQUEST", "Invalid sign-in request.", http.StatusBadRequest)
-		return
-	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+	if err := httpserver.DecodeJSON(w, r, 4096, &input); err != nil {
 		authError(w, "AUTH_INVALID_REQUEST", "Invalid sign-in request.", http.StatusBadRequest)
 		return
 	}

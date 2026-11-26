@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -86,10 +85,8 @@ type terminalRequest struct {
 
 func readRequest(w http.ResponseWriter, r *http.Request, needsTerminal bool) (terminalRequest, bool) {
 	var request terminalRequest
-	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 1024))
-	if err := decoder.Decode(&request); err != nil ||
-		!validID(request.Session) || (needsTerminal && !validID(request.Terminal)) ||
-		!errors.Is(decoder.Decode(new(any)), io.EOF) {
+	if err := httpserver.DecodeJSON(w, r, 1024, &request); err != nil ||
+		!validID(request.Session) || (needsTerminal && !validID(request.Terminal)) {
 		httpserver.WriteError(w, http.StatusBadRequest, "INVALID_TERMINAL_REQUEST", "Invalid terminal request.")
 		return terminalRequest{}, false
 	}

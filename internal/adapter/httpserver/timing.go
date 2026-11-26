@@ -4,7 +4,6 @@ package httpserver
 import (
 	"bufio"
 	"context"
-	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -142,21 +141,4 @@ func StreamTiming(w http.ResponseWriter, ctx context.Context) (context.Context, 
 			w.Header()[timingHeader] = phaseValues(phases)
 		}
 	}
-}
-
-// MaxBytesReader preserves net/http's handling of oversized requests through the timing writer.
-func MaxBytesReader(w http.ResponseWriter, body io.ReadCloser, limit int64) io.ReadCloser {
-	if timed := findTimedWriter(w); timed != nil {
-		w = timed.Unwrap()
-	}
-	return http.MaxBytesReader(w, body, limit)
-}
-
-// MaxBytesHandler limits the request body before passing it to the handler.
-func MaxBytesHandler(next http.Handler, limit int64) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		request := *r
-		request.Body = MaxBytesReader(w, r.Body, limit)
-		next.ServeHTTP(w, &request)
-	})
 }

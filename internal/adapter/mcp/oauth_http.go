@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -36,8 +35,7 @@ func (o *OAuth) Routes(mux httpserver.Routes, requireUser, sameOrigin func(http.
 
 func (h oauthHandler) submittedServer(w http.ResponseWriter, r *http.Request) (settings.MCPServer, bool) {
 	var input struct{ Name string }
-	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, 4096))
-	if err := decoder.Decode(&input); err != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) {
+	if err := httpserver.DecodeJSON(w, r, 4096, &input); err != nil {
 		httpserver.WriteError(w, http.StatusBadRequest, "INVALID_MCP_OAUTH", "Invalid MCP OAuth request.")
 		return settings.MCPServer{}, false
 	}

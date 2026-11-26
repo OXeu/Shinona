@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 
 	"github.com/OXeu/shinona/internal/timing"
@@ -128,13 +130,26 @@ func TestServerTimingWebSocket(t *testing.T) {
 }
 
 func TestServerTimingRetainsOversizedRequestHandling(t *testing.T) {
-	server := httptest.NewServer(ServerTiming(MaxBytesHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := io.Copy(io.Discard, r.Body); err != nil {
-			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+	router := gin.New()
+	router.POST("/", Compress, func(c *gin.Context) {
+		var payload struct{ Name string }
+		err := DecodeJSON(c.Writer, c.Request, 16, &payload)
+		var oversized *http.MaxBytesError
+		if !errors.As(err, &oversized) {
+			t.Errorf("expected an oversized body, got %v", err)
+			c.Status(http.StatusBadRequest)
+			return
 		}
-	}), 4)))
+		c.Status(http.StatusRequestEntityTooLarge)
+	})
+	server := httptest.NewServer(ServerTiming(router))
 	defer server.Close()
-	response, err := server.Client().Post(server.URL, "text/plain", strings.NewReader("too large"))
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, strings.NewReader(`{"name":"too large"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept-Encoding", "zstd")
+	response, err := server.Client().Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}

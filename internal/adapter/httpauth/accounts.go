@@ -2,9 +2,7 @@ package httpauth
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -230,9 +228,7 @@ func (h *Handler) accountPasswordSlot(w http.ResponseWriter) bool {
 }
 
 func accountInput(w http.ResponseWriter, r *http.Request, input any, size int64) bool {
-	decoder := json.NewDecoder(httpserver.MaxBytesReader(w, r.Body, size))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(input); err == nil && errors.Is(decoder.Decode(new(any)), io.EOF) {
+	if err := httpserver.DecodeStrictJSON(w, r, size, input); err == nil {
 		return true
 	}
 	authError(w, "AUTH_INVALID_REQUEST", "Invalid account request.", http.StatusBadRequest)
