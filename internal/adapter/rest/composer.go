@@ -66,8 +66,12 @@ func (r *handler) FetchModels(ctx context.Context, args struct {
 	BaseURL *string
 	APIKey  *string
 }) ([]ModelInfo, error) {
-	if (args.BaseURL != nil && len(*args.BaseURL) > 4096) || (args.APIKey != nil && len(*args.APIKey) > 4096) {
-		return nil, codedError{errors.New("invalid model endpoint settings"), "INVALID_MODEL_BASE_URL"}
+	const maxModelFieldBytes = 4096
+	if args.BaseURL != nil && len(*args.BaseURL) > maxModelFieldBytes {
+		return nil, codedError{errors.New("the model base URL exceeds 4096 bytes"), "INVALID_MODEL_BASE_URL"}
+	}
+	if args.APIKey != nil && len(*args.APIKey) > maxModelFieldBytes {
+		return nil, codedError{errors.New("the model API key exceeds 4096 bytes"), "INVALID_MODEL_API_KEY"}
 	}
 	models, err := r.app.FetchModels(ctx, args.BaseURL, args.APIKey)
 	var invalid *settings.ValidationError

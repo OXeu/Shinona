@@ -76,6 +76,7 @@ const errorKeys: Readonly<Partial<Record<string, MessageKey>>> = {
   SSH_DOCKER_TIMEOUT: 'ssh.dockerTimeout',
   MISSING_MODEL_CONFIG: 'settings.missingModel',
   INVALID_MODEL_BASE_URL: 'composer.invalidBaseUrl',
+  INVALID_MODEL_API_KEY: 'composer.invalidApiKey',
   PRIVATE_ENDPOINT: 'settings.publicEndpointRequired',
   MODEL_FETCH_FAILED: 'composer.modelsFailed',
   INVALID_MCP_SERVERS: 'composer.invalidMcp',

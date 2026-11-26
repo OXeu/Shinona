@@ -420,6 +420,7 @@
   "composer.noModels": "The endpoint returned no models.",
   "composer.modelsFailed": "Could not fetch models. Check the base URL and API key.",
   "composer.invalidBaseUrl": "Enter an HTTP or HTTPS OpenAI-compatible base URL without credentials.",
+  "composer.invalidApiKey": "The model API key must be 4096 bytes or fewer.",
   "composer.mcp": "MCP servers",
   "composer.plugins": "Plugins",
   "composer.pluginsSelected": "{count} plugins or MCP servers selected",

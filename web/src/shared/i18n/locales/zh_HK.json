@@ -420,6 +420,7 @@
   "composer.noModels": "端點沒有傳回任何模型。",
   "composer.modelsFailed": "未能取得模型，請檢查基礎網址及 API 金鑰。",
   "composer.invalidBaseUrl": "請輸入不含憑證的 HTTP 或 HTTPS OpenAI 兼容基礎網址。",
+  "composer.invalidApiKey": "模型 API 金鑰不得超過 4096 位元組。",
   "composer.mcp": "MCP 伺服器",
   "composer.plugins": "外掛",
   "composer.pluginsSelected": "已選擇 {count} 個外掛或 MCP 服務",
