@@ -76,6 +76,23 @@
   font-size: 0.79rem;
 }
 
+// Mini text button that sits at the end of the folder path in the files header.
+.repo-set-root {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.repo-set-root:hover:not(:disabled) {
+  background: var(--selection-bg);
+  color: var(--foreground);
+}
+
 .repo-card-scroll {
   min-height: 0;
   overflow: auto;

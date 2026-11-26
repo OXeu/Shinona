@@ -37,6 +37,7 @@ const errorKeys: Readonly<Partial<Record<string, MessageKey>>> = {
   WORKSPACE_INVALID_PATH: 'repository.invalidPath',
   WORKSPACE_BINARY_FILE: 'repository.binary',
   WORKSPACE_COMMIT_FAILED: 'repository.commitFailed',
+  WORKSPACE_INVALID_ROOT: 'repository.rootOutside',
   ACTIVE_TURN: 'chat.activeTurn',
   HISTORY_CHANGED: 'chat.historyChanged',
   RETRY_TURN_UNAVAILABLE: 'chat.retryUnavailable',

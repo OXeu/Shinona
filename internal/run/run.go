@@ -155,6 +155,8 @@ type Repository interface {
 	TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*Transcript, error)
 	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Image, error)
 	SessionProject(ctx context.Context, ownerID, sessionID string) (string, error)
+	WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error)
+	SetWorkspaceRoot(ctx context.Context, ownerID, sessionID, root string) error
 	LatestWorkspaceRun(ctx context.Context, ownerID, sessionID string) (*Run, error)
 	UpdateSession(ctx context.Context, ownerID, sessionID string, changes SessionChanges) (Session, error)
 	ArchiveSession(ctx context.Context, ownerID, sessionID string, now time.Time) error

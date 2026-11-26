@@ -35,6 +35,18 @@ export interface WorkspacePreview {
 }
 
 export const workspaceApi = {
+  root: (sessionId: string, signal: AbortSignal) =>
+    graphql<{ workspaceRoot: string }>(`
+      query WorkspaceRoot($sessionId: ID!) {
+        workspaceRoot(sessionId: $sessionId)
+      }
+    `, { sessionId }, signal),
+  setRoot: (sessionId: string, root: string, signal: AbortSignal) =>
+    graphql<{ setWorkspaceRoot: string }>(`
+      mutation SetWorkspaceRoot($sessionId: ID!, $root: String!) {
+        setWorkspaceRoot(sessionId: $sessionId, root: $root)
+      }
+    `, { sessionId, root }, signal),
   changes: (sessionId: string, signal: AbortSignal) =>
     graphql<{ workspaceChanges: WorkspaceChanges }>(`
       query Changes($sessionId: ID!) {

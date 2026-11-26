@@ -67,7 +67,7 @@ func Open(ctx context.Context, filename string) (*Repository, error) {
 	}
 	// A single connection serializes SQLite writes and supports in-memory tests.
 	pool.SetMaxOpenConns(1)
-	if err := db.WithContext(ctx).AutoMigrate(&userRow{}, &avatarRow{}, &emailChallengeRow{}, &identityRow{}, &loginRow{}, &flowRow{}, &projectRow{}, &sessionRow{}, &settingsRow{}, &composerDefaultsRow{}, &instanceSettingsRow{}, &modelSettingsRow{}, &mcpSettingsRow{}, &mcpGrantRow{}, &e2bWorkspaceRow{}, &row{}); err != nil {
+	if err := db.WithContext(ctx).AutoMigrate(&userRow{}, &avatarRow{}, &emailChallengeRow{}, &identityRow{}, &loginRow{}, &flowRow{}, &projectRow{}, &sessionRow{}, &settingsRow{}, &composerDefaultsRow{}, &instanceSettingsRow{}, &modelSettingsRow{}, &mcpSettingsRow{}, &mcpGrantRow{}, &e2bWorkspaceRow{}, &workspaceRootRow{}, &row{}); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
 	// Existing queued E2B turns should start with the project workspace after upgrade.
