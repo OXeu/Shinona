@@ -1,5 +1,11 @@
+<script lang="ts">
+import { defineAsyncComponent } from 'vue'
+
+const TerminalPanel = defineAsyncComponent(() => import('./TerminalPanel.vue'))
+</script>
+
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, useTemplateRef, watch } from 'vue'
+import { computed, ref, useTemplateRef, watch } from 'vue'
 
 import { t } from '../../shared/i18n'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
@@ -10,7 +16,6 @@ import type { WorkspaceView } from './workbench'
 
 defineProps<{ sessionId?: string; projectId?: string | null; active: boolean; runningTurnId?: string }>()
 const emit = defineEmits<{ unauthorized: [] }>()
-const TerminalPanel = defineAsyncComponent(() => import('./TerminalPanel.vue'))
 const { workspaceId, workspaceOpen, terminalOpen, view, repositoryView, selectView, leaveTerminal } = useWorkbench()
 const repository = useTemplateRef('repository')
 const terminalMounted = ref(false)
@@ -24,6 +29,11 @@ const tabs = computed<{ id: WorkspaceView; label: string }[]>(() => [
 watch(terminalOpen, (open) => {
   if (open) terminalMounted.value = true
 }, { immediate: true })
+
+function selectTab(next: WorkspaceView) {
+  if (next !== 'terminal') void repository.value?.closeInspection()
+  selectView(next)
+}
 
 function terminalEmpty() {
   terminalMounted.value = false
@@ -41,7 +51,7 @@ function terminalEmpty() {
           class="workspace-tab"
           :aria-pressed="view === item.id"
           :disabled="!sessionId"
-          @click="selectView(item.id)"
+          @click="selectTab(item.id)"
         >
           {{ item.label }}
         </UiButton>

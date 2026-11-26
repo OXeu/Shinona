@@ -32,14 +32,12 @@ const title = computed(() => {
     default: return sessionHeader.value?.title.value ?? t('nav.agent')
   }
 })
-const workspaceLabel = computed(() => {
-  if (props.workbenchPage && !props.sessionSelected) return t('repository.selectSession')
-  return t(workspaceOpen.value ? 'workspace.hidePanel' : 'workspace.showPanel')
-})
-const terminalLabel = computed(() => {
-  if (props.workbenchPage && !props.sessionSelected) return t('repository.selectSession')
-  return t(terminalOpen.value ? 'terminal.backToWorkspace' : 'terminal.open')
-})
+const sessionsLabel = computed(() => t(sessionsOpen.value ? 'sessions.hide' : 'sessions.show'))
+const workspaceLabel = computed(() => t(workspaceOpen.value ? 'workspace.hidePanel' : 'workspace.showPanel'))
+const terminalLabel = computed(() => t(terminalOpen.value ? 'terminal.backToWorkspace' : 'terminal.open'))
+const workbenchDisabledReason = computed(() => props.workbenchPage ? undefined : t('nav.workbenchControls'))
+const workspaceDisabledReason = computed(() => workbenchDisabledReason.value ??
+  (props.sessionSelected ? undefined : t('repository.selectSession')))
 
 function openPage(close: () => void, name: 'account' | 'admin-users') {
   close()
@@ -71,7 +69,9 @@ function signOut(close: () => void) {
       </RouterLink>
       <UiIconButton
         icon="layout-left-line"
-        :label="t(sessionsOpen ? 'sessions.hide' : 'sessions.show')"
+        :label="sessionsLabel"
+        :title="workbenchDisabledReason ?? sessionsLabel"
+        :aria-description="workbenchDisabledReason"
         :disabled="!workbenchPage"
         :aria-expanded="sessionsOpen"
         :aria-controls="workbenchPage ? sessionsId : undefined"
@@ -93,7 +93,8 @@ function signOut(close: () => void) {
       <UiIconButton
         icon="layout-right-line"
         :label="workspaceLabel"
-        :aria-label="t(workspaceOpen ? 'workspace.hidePanel' : 'workspace.showPanel')"
+        :title="workspaceDisabledReason ?? workspaceLabel"
+        :aria-description="workspaceDisabledReason"
         :disabled="!sessionSelected"
         :aria-expanded="workspaceOpen"
         :aria-controls="workbenchPage ? workspaceId : undefined"
@@ -102,7 +103,8 @@ function signOut(close: () => void) {
       <UiIconButton
         icon="terminal-line"
         :label="terminalLabel"
-        :aria-label="t(terminalOpen ? 'terminal.backToWorkspace' : 'terminal.open')"
+        :title="workspaceDisabledReason ?? terminalLabel"
+        :aria-description="workspaceDisabledReason"
         :disabled="!sessionSelected"
         :aria-pressed="terminalOpen"
         :aria-controls="workbenchPage ? workspaceId : undefined"

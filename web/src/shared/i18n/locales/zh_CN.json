@@ -26,6 +26,7 @@
   "nav.settings": "设置",
   "nav.brand": "Shinona",
   "nav.home": "返回 Shinona 工作台",
+  "nav.workbenchControls": "返回工作台后可使用此控件。",
   "auth.signInHeading": "登录 Shinona",
   "auth.email": "电子邮箱",
   "auth.password": "密码",

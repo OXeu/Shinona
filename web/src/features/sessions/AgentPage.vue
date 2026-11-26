@@ -115,7 +115,7 @@ onUnmounted(() => {
   <UiSplitPanel
     v-model="sessionSize"
     :start-min="216"
-    :end-min="570"
+    :end-min="workspaceOpen ? 570 : 302"
     :start-collapsed="!sessionsOpen"
     :end-collapsed="compact && sessionsOpen"
     :label="t('sessions.resize')"

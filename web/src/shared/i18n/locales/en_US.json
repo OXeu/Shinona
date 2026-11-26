@@ -26,6 +26,7 @@
   "nav.settings": "Settings",
   "nav.brand": "Shinona",
   "nav.home": "Go to Shinona workbench",
+  "nav.workbenchControls": "Return to the workbench to use this control.",
   "auth.signInHeading": "Sign in to Shinona",
   "auth.email": "Email",
   "auth.password": "Password",

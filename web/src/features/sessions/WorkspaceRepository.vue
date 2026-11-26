@@ -203,12 +203,9 @@ function resume() {
   }
 }
 
-watch(() => props.view, () => {
-  void closeInspection()
-})
 watch([() => props.view, () => props.active, () => props.runningTurnId, () => props.visible, folder], restart, { immediate: true })
 
-defineExpose({ inspection, refresh: restart, refreshDisabled })
+defineExpose({ inspection, closeInspection, refresh: restart, refreshDisabled })
 
 onMounted(() => {
   document.addEventListener('visibilitychange', resume)
