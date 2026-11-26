@@ -48,7 +48,6 @@ type OAuth struct {
 	clientMetadata string
 	mu             sync.Mutex
 	flows          map[string]*oauthFlow
-	starting       map[string]int
 	refreshing     keylock.Locks[oauthGrantKey]
 	accountChanges keylock.Locks[string]
 }
@@ -60,6 +59,7 @@ type oauthFlow struct {
 	expires               time.Time
 	used                  bool
 	grant                 oauthGrant
+	cancelDiscovery       context.CancelCauseFunc
 }
 
 type oauthGrant struct {
@@ -71,8 +71,7 @@ type oauthGrant struct {
 }
 
 func NewOAuth(store OAuthStore, origin string) *OAuth {
-	flow := &OAuth{store: store, redirect: origin + OAuthCallback,
-		flows: make(map[string]*oauthFlow), starting: make(map[string]int)}
+	flow := &OAuth{store: store, redirect: origin + OAuthCallback, flows: make(map[string]*oauthFlow)}
 	if strings.HasPrefix(origin, "https://") {
 		flow.clientMetadata = origin + OAuthMetadata
 	}
@@ -94,54 +93,49 @@ func (o *OAuth) Start(ctx context.Context, owner string, server settings.MCPServ
 	if owner == "" || server.OAuth == nil {
 		return "", "", ErrOAuthFlow
 	}
-	if !o.reserveFlow(owner, previous) {
-		return "", "", errors.New("MCP OAuth sign-in is busy")
-	}
-	defer func() {
-		o.mu.Lock()
-		o.starting[owner]--
-		if o.starting[owner] == 0 {
-			delete(o.starting, owner)
-		}
-		o.mu.Unlock()
-	}()
+	ctx, cancelDiscovery := context.WithCancelCause(ctx)
+	defer cancelDiscovery(nil)
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
+	state := oauth2.GenerateVerifier()
+	flow := &oauthFlow{owner: owner, name: server.Name, verifier: oauth2.GenerateVerifier(), cancelDiscovery: cancelDiscovery}
+	if !o.reserveFlow(state, previous, flow) {
+		return "", "", errors.New("MCP OAuth sign-in is busy")
+	}
 	grant, err := discoverOAuth(ctx, server, o.redirect, o.clientMetadata)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if cause := context.Cause(ctx); cause != nil {
+		err = cause
+	}
 	if err != nil {
+		delete(o.flows, state)
 		return "", "", err
 	}
 	grant.Fingerprint = fingerprint(server)
-	state, verifier := oauth2.GenerateVerifier(), oauth2.GenerateVerifier()
-	now := time.Now()
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.flows[state] = &oauthFlow{owner: owner, name: server.Name, verifier: verifier,
-		expires: now.Add(OAuthFlowLifetime), grant: grant}
-	return state, grant.Config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier),
+	flow.cancelDiscovery = nil
+	flow.expires = time.Now().Add(OAuthFlowLifetime)
+	flow.grant = grant
+	return state, grant.Config.AuthCodeURL(state, oauth2.S256ChallengeOption(flow.verifier),
 		oauth2.SetAuthURLParam("resource", grant.Resource)), nil
 }
 
-func (o *OAuth) reserveFlow(owner, previous string) bool {
+func (o *OAuth) reserveFlow(state, previous string, incoming *oauthFlow) bool {
 	now := time.Now()
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	owned := o.starting[owner]
-	for state, flow := range o.flows {
-		if !now.Before(flow.expires) || (state == previous && flow.owner == owner) {
-			delete(o.flows, state)
-		} else if flow.owner == owner {
+	owned := 0
+	for key, flow := range o.flows {
+		if flow.cancelDiscovery == nil && (!now.Before(flow.expires) || (key == previous && flow.owner == incoming.owner)) {
+			delete(o.flows, key)
+		} else if flow.owner == incoming.owner {
 			owned++
 		}
 	}
-	total := len(o.flows)
-	for _, count := range o.starting {
-		total += count
-	}
-	if owned >= maxFlowsPerOwner || total >= maxOAuthFlows {
+	if owned >= maxFlowsPerOwner || len(o.flows) >= maxOAuthFlows {
 		return false
 	}
-	o.starting[owner]++
+	o.flows[state] = incoming
 	return true
 }
 
@@ -149,7 +143,7 @@ func (o *OAuth) takeFlow(owner, state string) *oauthFlow {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	flow := o.flows[state]
-	if flow == nil || flow.owner != owner || flow.used || time.Now().After(flow.expires) {
+	if flow == nil || flow.owner != owner || flow.used || !time.Now().Before(flow.expires) {
 		return nil
 	}
 	flow.used = true
@@ -225,7 +219,13 @@ func (o *OAuth) ApplyServerChanges(ctx context.Context, owner string, commit fun
 	defer o.mu.Unlock()
 	for state, flow := range o.flows {
 		if flow.owner == owner && slices.Contains(names, flow.name) {
-			delete(o.flows, state)
+			if flow.cancelDiscovery != nil {
+				// Keep the reservation until discovery returns so canceled
+				// requests continue to count against the concurrency limit.
+				flow.cancelDiscovery(ErrOAuthFlow)
+			} else {
+				delete(o.flows, state)
+			}
 		}
 	}
 	return nil

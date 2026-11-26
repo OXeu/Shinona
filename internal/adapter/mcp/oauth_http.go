@@ -61,6 +61,10 @@ func (h oauthHandler) start(w http.ResponseWriter, r *http.Request) {
 			httpserver.WriteError(w, http.StatusBadRequest, "MCP_OAUTH_CLIENT_REQUIRED", ErrOAuthClientRequired.Error())
 			return
 		}
+		if errors.Is(err, ErrOAuthFlow) {
+			httpserver.WriteError(w, http.StatusConflict, "MCP_OAUTH_START_FAILED", ErrOAuthFlow.Error())
+			return
+		}
 		h.logger.Warn("start MCP OAuth failed", "server", server.Name, "failure", httpserver.OAuthFailure(err))
 		httpserver.WriteError(w, http.StatusBadGateway, "MCP_OAUTH_START_FAILED", "Could not start MCP OAuth.")
 		return

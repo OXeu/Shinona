@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -211,6 +214,95 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	}
 	if _, err := oauth.Token(ctx, "owner", server); !errors.Is(err, ErrOAuthRequired) {
 		t.Fatalf("disconnected account obtained a token: %v", err)
+	}
+}
+
+func TestDisconnectCancelsPendingOAuthDiscovery(t *testing.T) {
+	store, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "shinona.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	const owner = "owner"
+	if err := store.Accounts.CreatePasswordUser(t.Context(), auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+		t.Fatal(err)
+	}
+	discovering := make(chan struct{})
+	stopped := make(chan struct{})
+	var firstRequest atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if firstRequest.CompareAndSwap(false, true) {
+			close(discovering)
+			<-r.Context().Done()
+			close(stopped)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, r *http.Request) {
+		issuer := "http://" + r.Host
+		writeOAuthJSON(w, map[string]any{"resource": issuer + "/mcp", "authorization_servers": []string{issuer}})
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		issuer := "http://" + r.Host
+		writeOAuthJSON(w, map[string]any{
+			"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token",
+			"code_challenge_methods_supported": []string{"S256"},
+		})
+	})
+	remote := httptest.NewServer(mux)
+	t.Cleanup(remote.Close)
+	oauth := NewOAuth(store.Settings, "https://shinona.example.test")
+	server := settings.MCPServer{Name: "fixture", URL: remote.URL + "/mcp", OAuth: &settings.MCPOAuthConfig{ClientID: "registered"}}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	handler := oauthHandler{oauth: oauth, logger: slog.New(slog.DiscardHandler),
+		lookup: func(_ context.Context, account, name string) (settings.MCPServer, bool) {
+			return server, account == owner && name == server.Name
+		},
+	}
+	request := httptest.NewRequestWithContext(auth.WithUser(ctx, auth.User{ID: owner}), http.MethodPost,
+		"/auth/mcp/start", strings.NewReader(`{"name":"fixture"}`))
+	response := httptest.NewRecorder()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		handler.start(response, request)
+	}()
+	select {
+	case <-discovering:
+	case <-ctx.Done():
+		t.Fatal("OAuth discovery did not start")
+	}
+	if err := oauth.ApplyServerChanges(ctx, "other", func() ([]string, error) { return []string{server.Name}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+		t.Fatal("another account canceled discovery")
+	default:
+	}
+	if err := oauth.Disconnect(ctx, owner, server.Name); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+		var body struct{ Code, URL string }
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusConflict ||
+			body.Code != "MCP_OAUTH_START_FAILED" || body.URL != "" || response.Header().Get("Set-Cookie") != "" {
+			t.Fatalf("invalidated discovery returned HTTP %d with body %s", response.Code, response.Body)
+		}
+	case <-ctx.Done():
+		t.Fatal("disconnect did not interrupt discovery")
+	}
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		t.Fatal("discovery request remained open on the OAuth server")
+	}
+	if state, destination, err := oauth.Start(ctx, owner, server, ""); err != nil || state == "" || destination == "" {
+		t.Fatalf("explicit reconnect did not start a new flow: %v", err)
 	}
 }
 
