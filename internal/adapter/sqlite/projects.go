@@ -87,6 +87,16 @@ func (r *ProjectStore) RenameProject(ctx context.Context, ownerID, id, name stri
 
 func (r *ProjectStore) RemoveProject(ctx context.Context, ownerID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The current provider may only have cleaned up one control plane.
+		// Keep any remaining binding until its remote sandbox can be removed.
+		var retained bool
+		if err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM e2b_project_workspaces WHERE owner_id = ? AND project_id = ?)`, ownerID, id).
+			Row().Scan(&retained); err != nil {
+			return err
+		}
+		if retained {
+			return run.ErrProjectCleanupRequired
+		}
 		if err := tx.Model(&sessionRow{}).Where("owner_id = ? AND project_id = ?", ownerID, id).
 			UpdateColumn("project_id", "").Error; err != nil {
 			return err

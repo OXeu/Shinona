@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +22,53 @@ import (
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
+
+func TestRemovingProjectPreservesSandboxOnPreviousE2BControlPlane(t *testing.T) {
+	var destroyed atomic.Bool
+	previous := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/sandboxes/original-box" {
+			t.Errorf("unexpected E2B request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		destroyed.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(previous.Close)
+	app, db, query := settingsTestApp(t, settings.Values{
+		settings.E2BAPIKey: "fixture", settings.E2BBaseURL: "https://current.example.test",
+	})
+	ctx := t.Context()
+	project := run.Project{ID: "fixture-project", OwnerID: "alice", Name: "Fixture"}
+	if err := db.Projects.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Projects.SaveProjectSandboxConfig(ctx, project.OwnerID, project.ID, run.ProjectSandboxConfig{Provider: sandbox.ProviderE2B}); err != nil {
+		t.Fatal(err)
+	}
+	if saved, err := db.E2B.SaveE2BSandbox(ctx, project.OwnerID, project.ID, previous.URL, "", "original-box", []byte("{}")); err != nil || !saved {
+		t.Fatalf("save original E2B binding: %t, %v", saved, err)
+	}
+	path := "/projects/" + project.ID
+	if response := query(project.OwnerID, http.MethodDelete, path, nil); !strings.Contains(response, "PROJECT_SANDBOX_CLEANUP_REQUIRED") {
+		t.Fatalf("delete project with an unreachable original control plane: %s", response)
+	}
+	if _, err := db.Projects.Project(ctx, project.OwnerID, project.ID); err != nil {
+		t.Fatalf("project was lost when cleanup could not finish: %v", err)
+	}
+	if id, _, err := db.E2B.E2BSandbox(ctx, project.OwnerID, project.ID, previous.URL); err != nil || id != "original-box" || destroyed.Load() {
+		t.Fatalf("original E2B workspace was not retained for retry: %q, %v", id, err)
+	}
+	if _, err := app.Update(ctx, []settings.Change{{Key: settings.E2BBaseURL, Value: new(previous.URL)}}); err != nil {
+		t.Fatal(err)
+	}
+	if response := query(project.OwnerID, http.MethodDelete, path, nil); response != "" || !destroyed.Load() {
+		t.Fatalf("retry did not delete the project and its workspace: %s", response)
+	}
+	if _, err := db.Projects.Project(ctx, project.OwnerID, project.ID); !errors.Is(err, run.ErrProject) {
+		t.Fatalf("deleted project still exists: %v", err)
+	}
+}
 
 func TestProjectSandboxTimeoutOverridesReachProvisioning(t *testing.T) {
 	type creation struct {

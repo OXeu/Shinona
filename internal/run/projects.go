@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	ErrProjectName   = errors.New("enter a project name between 1 and 80 characters")
-	ErrProjectExists = errors.New("a project with this name already exists")
-	ErrProject       = errors.New("project not found")
+	ErrProjectName            = errors.New("enter a project name between 1 and 80 characters")
+	ErrProjectExists          = errors.New("a project with this name already exists")
+	ErrProject                = errors.New("project not found")
+	ErrProjectCleanupRequired = errors.New("restore the original E2B control plane to clean up the remaining sandbox before removing this project")
 )
 
 type Project struct {

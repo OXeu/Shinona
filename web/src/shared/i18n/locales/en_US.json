@@ -400,6 +400,7 @@
   "sandbox.destroy": "Destroy sandbox",
   "sandbox.confirmSave": "If this project has a sandbox, applying these settings deletes its workspace files and closes its terminals. A new sandbox will be created on next use.",
   "sandbox.cleanupFailed": "Could not clean up the previous sandbox.",
+  "sandbox.cleanupRequired": "Restore the original E2B connection to clean up the remaining sandbox before removing this project.",
   "sandbox.confirmSwitchAfterCleanupFailure": "The previous sandbox could not be cleaned up. If you continue, the project will use the new provider and the old workspace may remain on its original provider.",
   "sandbox.switchAnyway": "Switch anyway",
   "sandbox.confirmRecreate": "Recreating the sandbox permanently deletes its workspace files and closes its terminals.",

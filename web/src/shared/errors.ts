@@ -47,6 +47,7 @@ const errorKeys: Readonly<Partial<Record<string, MessageKey>>> = {
   SANDBOX_POLICY_UNAVAILABLE: 'sandbox.policyUnavailable',
   SANDBOX_PROVIDER_UNAVAILABLE: 'sandbox.providerUnavailable',
   PROJECT_SANDBOX_CLEANUP_FAILED: 'sandbox.cleanupFailed',
+  PROJECT_SANDBOX_CLEANUP_REQUIRED: 'sandbox.cleanupRequired',
   INVALID_PROJECT_SANDBOX: 'sandbox.invalidConfig',
   ADMIN_REQUIRED: 'settings.adminRequired',
   INVALID_SETTING_CHANGES: 'settings.invalidChanges',

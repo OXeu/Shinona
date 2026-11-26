@@ -124,6 +124,15 @@ func TestWorkspaceRootIsSharedOnlyWithinTheOwnersProject(t *testing.T) {
 	if saved, err := repo.E2B.SaveE2BSandbox(ctx, "owner", "project", "fixture", "", "box", []byte("{}")); err != nil || !saved {
 		t.Fatalf("fixture binding: %t, %v", saved, err)
 	}
+	if err := repo.Projects.RemoveProject(ctx, "owner", "project"); !errors.Is(err, run.ErrProjectCleanupRequired) {
+		t.Fatalf("remove project before sandbox cleanup: %v", err)
+	}
+	if selection, err := repo.Projects.WorkspaceSelection(ctx, "owner", "project-session"); err != nil || selection != (run.WorkspaceSelection{ProjectID: "project", Root: "src"}) {
+		t.Fatalf("rejected removal changed the session workspace: %+v, %v", selection, err)
+	}
+	if err := repo.E2B.DeleteE2BSandbox(ctx, "owner", "project", "fixture", "box"); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.Projects.RemoveProject(ctx, "owner", "project"); err != nil {
 		t.Fatal(err)
 	}

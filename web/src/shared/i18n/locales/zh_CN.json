@@ -400,6 +400,7 @@
   "sandbox.destroy": "销毁沙箱",
   "sandbox.confirmSave": "如果此项目已有沙箱，应用这些设置会删除工作区文件并关闭终端。下次使用时将创建新沙箱。",
   "sandbox.cleanupFailed": "无法清理原沙箱。",
+  "sandbox.cleanupRequired": "此项目仍有 E2B 沙箱。请恢复原 E2B 连接并清理沙箱，再移除项目。",
   "sandbox.confirmSwitchAfterCleanupFailure": "无法清理原沙箱。继续后，项目将使用新的沙箱提供方，旧工作区可能仍保留在原提供方。",
   "sandbox.switchAnyway": "仍然切换",
   "sandbox.confirmRecreate": "重建沙箱会永久删除工作区文件并关闭终端。",
