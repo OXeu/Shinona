@@ -27,7 +27,7 @@ type runtime struct {
 	*sshRuntime
 }
 
-func newRuntime(ctx context.Context, repo runtimeRepository, workspaces e2b.WorkspaceStore, environment environment) (*runtime, error) {
+func newRuntime(ctx context.Context, repo runtimeRepository, workspaces e2b.WorkspaceStore, environment environment, workspaceCleanup time.Duration) (*runtime, error) {
 	origin, err := webOrigin(environment.value("SHINONA_WEB_ORIGIN", "http://127.0.0.1:5173"))
 	if err != nil {
 		return nil, err
@@ -40,7 +40,7 @@ func newRuntime(ctx context.Context, repo runtimeRepository, workspaces e2b.Work
 	if err != nil {
 		return nil, err
 	}
-	sshSettings, err := newSSHRuntime(repo, environment)
+	sshSettings, err := newSSHRuntime(repo, environment, workspaceCleanup)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func newRuntime(ctx context.Context, repo runtimeRepository, workspaces e2b.Work
 	models := newModelRuntime(repo, modelPolicy, mcpSettings)
 	instance := &instanceSettings{
 		repo: repo, defaults: settings.Defaults(environment.lookup), origin: origin, publicHTTP: publicHTTP, mailConfig: mailConfig,
-		e2bStore: workspaces, buildSSH: sshSettings.sshSandboxProvider, agent: models.resolveAgent,
+		e2bStore: workspaces, e2bCleanup: workspaceCleanup, buildSSH: sshSettings.sshSandboxProvider, agent: models.resolveAgent,
 		e2bHTTP: &http.Client{
 			Timeout:       35 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

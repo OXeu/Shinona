@@ -67,7 +67,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil, run.DefaultWorkspaceTimeouts())
 	entry, err := service.CreateSession(ctx, owner, "")
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +183,10 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		run.NewWorker(repo.Conversations, repo.Projects, resolve, logger, controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(
+			repo.Conversations, repo.Projects, resolve, logger, controls, run.DefaultWorkerConcurrency,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(ctx)
 	}()
 	defer func() {
 		cancel()

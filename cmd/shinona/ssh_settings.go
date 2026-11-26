@@ -48,7 +48,7 @@ type sshRuntime struct {
 	personalConnections sshsandbox.ProjectConnections
 }
 
-func newSSHRuntime(repo settings.SSHRepository, env environment) (*sshRuntime, error) {
+func newSSHRuntime(repo settings.SSHRepository, env environment, cleanup time.Duration) (*sshRuntime, error) {
 	trusted, err := trustedSSHAddresses(env.value("SHINONA_TRUSTED_SSH_ADDRESSES", ""))
 	if err != nil {
 		return nil, err
@@ -58,7 +58,7 @@ func newSSHRuntime(repo settings.SSHRepository, env environment) (*sshRuntime, e
 		return nil, err
 	}
 	return &sshRuntime{
-		repo: repo, trusted: trusted, container: container, cleanup: sandbox.DefaultCleanupTimeout,
+		repo: repo, trusted: trusted, container: container, cleanup: cleanup,
 		providers: responsecache.New[personalSSHKey, cachedSSHProvider](sshProviderCacheSize, sshProviderCacheSize),
 	}, nil
 }

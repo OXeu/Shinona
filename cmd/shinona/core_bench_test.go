@@ -112,7 +112,7 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target) *be
 		}
 		return target, nil
 	}
-	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil, run.DefaultWorkspaceTimeouts())
 	b.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
@@ -174,7 +174,7 @@ func (*benchmarkAPI) requestBody(b testing.TB, value any) []byte {
 
 func (a *benchmarkAPI) post(b testing.TB, path string, body []byte, status int) benchmarkResponse {
 	b.Helper()
-	ctx, cancel := context.WithTimeout(b.Context(), run.ProjectSandboxTimeout+5*time.Second)
+	ctx, cancel := context.WithTimeout(b.Context(), run.DefaultWorkspaceTimeouts().Lifecycle+5*time.Second)
 	defer cancel()
 	response, err := a.measuredRequest(ctx, a.Client(), http.MethodPost, path, body, status, nil)
 	if err != nil {
@@ -247,7 +247,7 @@ func (a *benchmarkAPI) measuredRequest(ctx context.Context, client *http.Client,
 
 func (a *benchmarkAPI) rest(b *testing.B, method, path string, body []byte, status int, result any) benchmarkResponse {
 	b.Helper()
-	ctx, cancel := context.WithTimeout(b.Context(), run.ProjectSandboxTimeout+5*time.Second)
+	ctx, cancel := context.WithTimeout(b.Context(), run.DefaultWorkspaceTimeouts().Lifecycle+5*time.Second)
 	defer cancel()
 	response, err := a.measuredRequest(ctx, a.Client(), method, path, body, status, nil)
 	if err != nil {
@@ -626,7 +626,10 @@ func benchmarkSteering(b *testing.B) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(a.repo.Conversations, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(
+			a.repo.Conversations, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(ctx)
 	}()
 	b.Cleanup(func() {
 		cancel()

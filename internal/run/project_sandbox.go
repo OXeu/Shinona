@@ -18,9 +18,6 @@ var (
 	templateName             = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,254}$`)
 )
 
-// ProjectSandboxTimeout bounds provider lifecycle requests, including image pulls.
-const ProjectSandboxTimeout = 2 * time.Minute
-
 type ProjectSandboxConfig struct {
 	Provider       string
 	Template       string
@@ -90,6 +87,8 @@ func (c ProjectSandboxConfig) effective(target Target) ProjectSandboxConfig {
 }
 
 func (s *Service) ProjectSandbox(ctx context.Context, owner, id string) (ProjectSandbox, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.workspace.Operation)
+	defer cancel()
 	project, config, err := s.projectSandboxConfig(ctx, owner, id)
 	if err != nil {
 		return ProjectSandbox{}, err
@@ -111,9 +110,7 @@ func (s *Service) ProjectSandbox(ctx context.Context, owner, id string) (Project
 			result.Status.State = sandbox.ProjectNone
 			return result, nil
 		}
-		check, cancel := context.WithTimeout(ctx, workspaceTimeout)
-		defer cancel()
-		status, err := provider.ProjectStatus(check, sandbox.Spec{OwnerID: owner, ProjectID: id})
+		status, err := provider.ProjectStatus(ctx, sandbox.Spec{OwnerID: owner, ProjectID: id})
 		if err == nil {
 			result.Status = status
 		} else {
@@ -169,14 +166,14 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 				return err
 			}
 		}
-		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), completionWriteTimeout)
 		defer cancel()
 		return s.stores.Projects.SaveProjectSandboxConfig(save, owner, id, next)
 	})
 }
 
 func (s *Service) cleanPreviousSandbox(ctx context.Context, name string, spec sandbox.Spec) error {
-	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.workspace.Operation)
 	defer cancel()
 	previous, err := s.resolve(ctx, spec.OwnerID, name)
 	if err != nil {
@@ -242,7 +239,7 @@ func (s *Service) provisionProjectSandbox(ctx context.Context, name string, prov
 	if err != nil {
 		return err
 	}
-	closeTerminalResource(ctx, ws.Close)
+	_ = s.workspace.closeResource(ctx, ws.Close)
 	return nil
 }
 
@@ -268,7 +265,7 @@ func (s *Service) changeProjectSandbox(ctx context.Context, owner, id string, ch
 		return ErrWorkspaceBusy
 	}
 	defer release()
-	ctx, cancel := context.WithTimeout(ctx, ProjectSandboxTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.workspace.Lifecycle)
 	defer cancel()
 	_, config, err := s.projectSandboxConfig(ctx, owner, id)
 	if err != nil {

@@ -89,7 +89,7 @@ func TestPiDeliversSteeringBatchesAcrossModelRequests(t *testing.T) {
 		return run.Target{Name: "demo", Provider: demo.Provider{},
 			ResolveAgent: func(context.Context, string) (run.Agent, error) { return New(endpoint, "fixture", nil), nil }}, nil
 	}
-	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil, run.DefaultWorkspaceTimeouts())
 	const owner, prompt = "owner", "Inspect the test."
 	if err := repo.Accounts.CreatePasswordUser(lifetime, auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
 		t.Fatal(err)
@@ -105,7 +105,10 @@ func TestPiDeliversSteeringBatchesAcrossModelRequests(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository, repo.Projects, resolve, slog.New(slog.DiscardHandler), controls, 1).Serve(lifetime)
+		run.NewWorker(
+			repository, repo.Projects, resolve, slog.New(slog.DiscardHandler), controls, 1,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(lifetime)
 	}()
 	defer func() {
 		cancel()

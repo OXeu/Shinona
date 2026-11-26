@@ -19,9 +19,10 @@ const (
 )
 
 var (
-	ErrTerminalUnavailable = errors.New("terminal is unavailable for this workspace")
-	ErrTerminalNotFound    = errors.New("terminal does not exist in this conversation")
-	ErrTerminalLimit       = errors.New("terminal limit reached")
+	ErrTerminalUnavailable  = errors.New("terminal is unavailable for this workspace")
+	ErrTerminalNotFound     = errors.New("terminal does not exist in this conversation")
+	ErrTerminalLimit        = errors.New("terminal limit reached")
+	errTerminalStartTimeout = errors.New("terminal startup timed out")
 )
 
 type TerminalTab struct {
@@ -43,7 +44,7 @@ type TerminalSession struct {
 	tab     TerminalTab
 	project string
 	ctx     context.Context
-	cancel  context.CancelFunc
+	cancel  context.CancelCauseFunc
 	done    chan struct{}
 	mu      sync.Mutex
 	shell   sandbox.Terminal
@@ -79,6 +80,8 @@ func (s *Service) Terminals(ctx context.Context, owner, id string) ([]TerminalTa
 }
 
 func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string) (TerminalTab, error) {
+	ctx, cancelRequest := context.WithTimeout(ctx, s.workspace.Operation)
+	defer cancelRequest()
 	pool := &s.terminals
 	key := sessionKey{owner, id}
 	start := pool.beginStart(key)
@@ -126,7 +129,7 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 	if len(tabs) != 0 {
 		number = tabs[len(tabs)-1].tab.Number + 1
 	}
-	shellCtx, cancel := context.WithCancel(lifetime)
+	shellCtx, cancel := context.WithCancelCause(lifetime)
 	entry := &TerminalSession{
 		tab: TerminalTab{ID: s.newID(), Number: number}, ctx: shellCtx, cancel: cancel,
 		project: spec.ProjectID, state: TerminalStarting, changed: make(chan struct{}), done: make(chan struct{}),
@@ -138,7 +141,7 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 	pool.tabs[key] = append(tabs, entry)
 	pool.running[entry] = key
 	spec.RunID = entry.tab.ID
-	go pool.runTerminal(key, entry, provider, spec)
+	go pool.runTerminal(key, entry, provider, spec, s.workspace)
 	return entry.tab, nil
 }
 
@@ -171,9 +174,9 @@ func (p *terminalRegistry) endStart(key sessionKey, start *terminalStarts) {
 	}
 }
 
-func (p *terminalRegistry) runTerminal(key sessionKey, entry *TerminalSession, provider sandbox.ProjectProvider, spec sandbox.Spec) {
+func (p *terminalRegistry) runTerminal(key sessionKey, entry *TerminalSession, provider sandbox.ProjectProvider, spec sandbox.Spec, limits WorkspaceTimeouts) {
 	defer func() {
-		entry.cancel()
+		entry.cancel(context.Canceled)
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.removeTab(key, entry)
@@ -183,10 +186,13 @@ func (p *terminalRegistry) runTerminal(key sessionKey, entry *TerminalSession, p
 			close(p.drained)
 		}
 	}()
-	err := entry.run(provider, spec)
+	err := entry.run(provider, spec, limits)
 	entry.mu.Lock()
 	entry.state = TerminalExited
 	failed := err != nil && !errors.Is(err, io.EOF) && entry.ctx.Err() == nil
+	if cause := context.Cause(entry.ctx); errors.Is(cause, errTerminalStartTimeout) {
+		err, failed = cause, true
+	}
 	if failed {
 		entry.state = TerminalFailed
 	}
@@ -203,7 +209,7 @@ func (p *terminalRegistry) stopProject(ctx context.Context, owner, project strin
 	var closing []*TerminalSession
 	for entry, key := range p.running {
 		if key.owner == owner && entry.project == project {
-			entry.cancel()
+			entry.cancel(context.Canceled)
 			closing = append(closing, entry)
 		}
 	}
@@ -244,7 +250,7 @@ func (s *Service) StopTerminal(ctx context.Context, owner, id, terminalID string
 		if entry.tab.ID != terminalID {
 			continue
 		}
-		entry.cancel()
+		entry.cancel(context.Canceled)
 		s.terminals.removeTab(key, entry)
 		return nil
 	}
@@ -274,7 +280,7 @@ func (p *terminalRegistry) closeSession(key sessionKey) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, entry := range p.tabs[key] {
-		entry.cancel()
+		entry.cancel(context.Canceled)
 	}
 	delete(p.tabs, key)
 	delete(p.starts, key)
@@ -287,7 +293,7 @@ func (s *Service) CloseTerminals(ctx context.Context) error {
 		p.closed = true
 		p.drained = make(chan struct{})
 		for entry := range p.running {
-			entry.cancel()
+			entry.cancel(context.Canceled)
 		}
 		clear(p.tabs)
 		clear(p.starts)
@@ -320,7 +326,7 @@ func (s *Service) AccountDeleted(owner string) {
 			continue
 		}
 		for _, entry := range tabs {
-			entry.cancel()
+			entry.cancel(context.Canceled)
 		}
 		delete(p.tabs, key)
 	}
@@ -331,8 +337,11 @@ func (s *Service) AccountDeleted(owner string) {
 	}
 }
 
-func (t *TerminalSession) run(provider sandbox.ProjectProvider, spec sandbox.Spec) error {
+func (t *TerminalSession) run(provider sandbox.ProjectProvider, spec sandbox.Spec, limits WorkspaceTimeouts) error {
 	ctx, phases := timing.WithRecorder(t.ctx)
+	// Keep the context used to open the PTY for the shell's lifetime.
+	startup := time.AfterFunc(limits.Lifecycle, func() { t.cancel(errTerminalStartTimeout) })
+	defer startup.Stop()
 	acquire := timing.Start(ctx, "sandbox_acquire")
 	workspace, err := provider.Acquire(ctx, spec)
 	acquire()
@@ -340,20 +349,28 @@ func (t *TerminalSession) run(provider sandbox.ProjectProvider, spec sandbox.Spe
 		slog.Info("terminal startup timing", "phases", phases)
 		return err
 	}
-	defer closeTerminalResource(t.ctx, workspace.Close)
+	defer func() { _ = limits.closeResource(t.ctx, workspace.Close) }()
 	terminal, ok := workspace.(sandbox.TerminalWorkspace)
 	if !ok {
+		startup.Stop()
 		slog.Info("terminal startup timing", "phases", phases)
 		return ErrTerminalUnavailable
 	}
 	open := timing.Start(ctx, "pty_open")
 	shell, err := terminal.OpenTerminal(ctx, sandbox.TerminalSize{Cols: 80, Rows: 24})
+	startedInTime := startup.Stop()
 	open()
 	slog.Info("terminal startup timing", "phases", phases)
 	if err != nil {
 		return err
 	}
-	defer closeTerminalResource(t.ctx, shell.Close)
+	defer func() { _ = limits.closeResource(t.ctx, shell.Close) }()
+	if !startedInTime {
+		<-ctx.Done()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t.mu.Lock()
 	t.shell = shell
 	t.state = TerminalRunning
@@ -370,12 +387,6 @@ func (t *TerminalSession) run(provider sandbox.ProjectProvider, spec sandbox.Spe
 			return err
 		}
 	}
-}
-
-func closeTerminalResource(ctx context.Context, close func(context.Context) error) {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	_ = close(cleanup)
 }
 
 func (t *TerminalSession) signal() {

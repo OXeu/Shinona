@@ -4,10 +4,95 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/OXeu/shinona/internal/sandbox"
 )
+
+func TestWorkspaceSharesDeadlineAcrossOpenAndUseAndBoundsCleanup(t *testing.T) {
+	for _, name := range []string{"inspect", "mutate"} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := t.Context()
+				start := time.Now()
+				limits := WorkspaceTimeouts{Operation: 10 * time.Second, Cleanup: 2 * time.Second}
+				box := timedWorkspace{close: func(ctx context.Context) error {
+					if now := time.Now(); now.Sub(start) != limits.Operation || ctx.Err() != nil {
+						t.Errorf("cleanup started at %v with error %v", now.Sub(start), ctx.Err())
+					}
+					<-ctx.Done()
+					if got := time.Since(start); got != limits.Operation+limits.Cleanup {
+						t.Errorf("cleanup finished at %v", got)
+					}
+					return ctx.Err()
+				}}
+				provider := timedWorkspaceProvider{open: func(ctx context.Context) (sandbox.Workspace, error) {
+					if deadline, ok := ctx.Deadline(); !ok || !deadline.Equal(start.Add(limits.Operation)) {
+						t.Errorf("open deadline = %s, %t", deadline, ok)
+					}
+					time.Sleep(4 * time.Second)
+					return box, nil
+				}}
+				repo := workspaceTestRepository{projects: map[sessionKey]string{{owner: "owner", id: "session"}: ""}}
+				resolve := func(context.Context, string, string) (Target, error) { return Target{Provider: provider}, nil }
+				service := NewService(ServiceStores{Sessions: repo, Projects: repo}, resolve, func() string { return "lease" }, &Controls{}, nil, limits)
+				open := service.InspectWorkspace
+				if name == "mutate" {
+					open = service.WithWorkspace
+				}
+				err := open(ctx, "owner", "session", func(ctx context.Context, _ sandbox.Workspace) error {
+					<-ctx.Done()
+					if got := time.Since(start); got != limits.Operation {
+						t.Errorf("workspace use finished at %v", got)
+					}
+					return ctx.Err()
+				})
+				if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != limits.Operation+limits.Cleanup {
+					t.Fatalf("operation finished after %v with %v", time.Since(start), err)
+				}
+			})
+		})
+	}
+}
+
+func TestProjectSandboxUsesConfiguredLifecycleTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		limits := WorkspaceTimeouts{Operation: time.Second, Lifecycle: 3 * time.Second}
+		repo := workspaceTestRepository{}
+		start := time.Now()
+		provider := timedWorkspaceProvider{destroy: func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}}
+		resolve := func(context.Context, string, string) (Target, error) { return Target{Provider: provider}, nil }
+		service := NewService(ServiceStores{Projects: repo}, resolve, func() string { return "lease" }, &Controls{}, nil, limits)
+		if err := service.ResetProjectSandbox(t.Context(), "owner", "", false); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != limits.Lifecycle {
+			t.Fatalf("project reset finished after %v with %v", time.Since(start), err)
+		}
+	})
+}
+
+type timedWorkspaceProvider struct {
+	sandbox.ManagedProjectProvider
+	open    func(context.Context) (sandbox.Workspace, error)
+	destroy func(context.Context) error
+}
+
+func (p timedWorkspaceProvider) OpenProject(ctx context.Context, _ sandbox.Spec) (sandbox.Workspace, error) {
+	return p.open(ctx)
+}
+
+func (p timedWorkspaceProvider) DestroyProject(ctx context.Context, _ sandbox.Spec) error {
+	return p.destroy(ctx)
+}
+
+type timedWorkspace struct {
+	sandbox.Workspace
+	close func(context.Context) error
+}
+
+func (w timedWorkspace) Close(ctx context.Context) error { return w.close(ctx) }
 
 func TestInspectWorkspaceBorrowsOnlyTheSessionsLiveLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -20,7 +105,7 @@ func TestInspectWorkspaceBorrowsOnlyTheSessionsLiveLease(t *testing.T) {
 	}
 	defer unlock()
 	repo := workspaceTestRepository{projects: map[sessionKey]string{{owner: "owner", id: "session"}: ""}}
-	service := NewService(ServiceStores{Sessions: repo, Projects: repo}, nil, nil, controls, nil)
+	service := NewService(ServiceStores{Sessions: repo, Projects: repo}, nil, nil, controls, nil, DefaultWorkspaceTimeouts())
 	unexpectedUse := func(context.Context, sandbox.Workspace) error {
 		t.Fatal("inspected an unavailable workspace")
 		return nil
@@ -95,7 +180,7 @@ func TestInspectWorkspaceBorrowsTheSharedProjectLease(t *testing.T) {
 			resolve := func(context.Context, string, string) (Target, error) {
 				return Target{Provider: workspaceTestProvider{}}, nil
 			}
-			service := NewService(ServiceStores{Sessions: repo, Projects: repo}, resolve, func() string { return "test-lease" }, controls, nil)
+			service := NewService(ServiceStores{Sessions: repo, Projects: repo}, resolve, func() string { return "test-lease" }, controls, nil, DefaultWorkspaceTimeouts())
 			box := &stubWorkspace{}
 			defer controls.publishWorkspace(active, box, &project)()
 			if err := service.InspectWorkspace(ctx, "owner", "second", func(_ context.Context, ws sandbox.Workspace) error {
@@ -138,7 +223,7 @@ func TestInspectWorkspaceAllowsConcurrentRetainedReads(t *testing.T) {
 	resolve := func(context.Context, string, string) (Target, error) {
 		return Target{Provider: workspaceTestProvider{}}, nil
 	}
-	service := NewService(ServiceStores{Sessions: repo, Projects: repo}, resolve, func() string { return "test-lease" }, &Controls{}, nil)
+	service := NewService(ServiceStores{Sessions: repo, Projects: repo}, resolve, func() string { return "test-lease" }, &Controls{}, nil, DefaultWorkspaceTimeouts())
 	entered := make(chan struct{})
 	first := make(chan error, 1)
 	go func() {

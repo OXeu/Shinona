@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	cleanupTimeout           = 10 * time.Second
+	completionWriteTimeout   = 10 * time.Second
 	queueInterval            = 5 * time.Second
 	DefaultWorkerConcurrency = 4
 )
@@ -32,6 +32,7 @@ type Worker struct {
 	logger      *slog.Logger
 	controls    *Controls
 	parallelism int
+	workspace   WorkspaceTimeouts
 }
 
 type workerEvent uint8
@@ -41,8 +42,13 @@ const (
 	completionFinished
 )
 
-func NewWorker(repo WorkerRepository, projects ProjectSandboxRepository, resolve ResolveTarget, logger *slog.Logger, controls *Controls, parallelism int) *Worker {
-	return &Worker{repo: repo, projects: projects, resolve: resolve, logger: logger, controls: controls, parallelism: max(1, parallelism)}
+func NewWorker(repo WorkerRepository, projects ProjectSandboxRepository, resolve ResolveTarget, logger *slog.Logger,
+	controls *Controls, parallelism int, workspace WorkspaceTimeouts,
+) *Worker {
+	return &Worker{
+		repo: repo, projects: projects, resolve: resolve, logger: logger,
+		controls: controls, parallelism: max(1, parallelism), workspace: workspace,
+	}
 }
 
 func (w *Worker) Serve(ctx context.Context) {
@@ -121,7 +127,7 @@ func (w *Worker) execute(ctx context.Context, active *activeTurn, releaseExecuti
 	}
 	releaseExecution()
 	for {
-		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), completionWriteTimeout)
 		err := w.repo.Complete(saveCtx, item.ID, completion)
 		cancel()
 		if err == nil || errors.Is(err, ErrNotRunning) {
@@ -189,15 +195,17 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (_ Result, err err
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
+	startup, cancelStartup := context.WithTimeout(ctx, w.workspace.Lifecycle)
+	defer cancelStartup()
 	item := active.item
-	spec, release, err := lockSessionProject(ctx, w.repo, item.OwnerID, item.SessionID, func(key sandbox.ProjectKey) (func(), error) {
-		return w.controls.leases.Acquire(ctx, key, false)
+	spec, release, err := lockSessionProject(startup, w.repo, item.OwnerID, item.SessionID, func(key sandbox.ProjectKey) (func(), error) {
+		return w.controls.leases.Acquire(startup, key, false)
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("lock workspace project: %w", err)
 	}
 	defer release()
-	spec, target, err := projectTarget(ctx, w.projects, w.resolve, spec, item.Backend, true)
+	spec, target, err := projectTarget(startup, w.projects, w.resolve, spec, item.Backend, true)
 	if err != nil {
 		return Result{}, fmt.Errorf("load workspace project: %w", err)
 	}
@@ -211,26 +219,37 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (_ Result, err err
 	if !slices.Contains(target.policies(item.OwnerID), spec.Policy) {
 		return Result{}, ErrPolicy
 	}
-	agent, err := target.ResolveAgent(ctx, item.OwnerID)
+	agent, err := target.ResolveAgent(startup, item.OwnerID)
 	if err != nil {
 		return Result{}, err
 	}
-	history, err := w.repo.History(ctx, item, 0)
+	history, err := w.repo.History(startup, item, 0)
 	if err != nil {
 		return Result{}, fmt.Errorf("load conversation: %w", err)
 	}
-	workspace, err := target.Provider.Acquire(ctx, spec)
-	if err != nil {
-		return Result{}, fmt.Errorf("%w: %w", errWorkspaceSetup, err)
+	if err := startup.Err(); err != nil {
+		return Result{}, err
 	}
-
-	detach := w.controls.publishWorkspace(active, workspace, projectID)
+	// Providers can use Acquire's context to maintain the lease after startup.
+	lease, cancelLease := context.WithCancel(ctx)
+	defer cancelLease()
+	stopStartup := context.AfterFunc(startup, cancelLease)
+	defer stopStartup()
+	workspace, err := target.Provider.Acquire(lease, spec)
+	stopStartup()
+	startupErr := startup.Err()
+	cancelStartup()
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: %w", errWorkspaceSetup, errors.Join(err, startupErr))
+	}
 	defer func() {
-		detach()
-		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-		defer cancel()
-		err = errors.Join(err, workspace.Close(closeCtx))
+		err = errors.Join(err, w.workspace.closeResource(ctx, workspace.Close))
 	}()
+	if startupErr != nil {
+		return Result{}, startupErr
+	}
+	detach := w.controls.publishWorkspace(active, workspace, projectID)
+	defer detach()
 	return agent.Run(ctx, Input{
 		OwnerID: item.OwnerID, SessionID: item.SessionID, Prompt: item.Prompt, History: history, Payload: item.Payload, Steering: &active.steering,
 		ReportParts:   func(parts []TurnPart) { w.controls.reportParts(active, parts) },

@@ -106,7 +106,7 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 		return run.Target{Name: "test", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository.RunStores(), resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repository.RunStores(), resolve, uuid.NewString, controls, nil, run.DefaultWorkspaceTimeouts())
 	session, err := service.CreateSession(ctx, "owner", "")
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,10 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository.Conversations, repository.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(
+			repository.Conversations, repository.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(ctx)
 	}()
 	defer func() {
 		cancel()
@@ -245,7 +248,7 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository.RunStores(), resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repository.RunStores(), resolve, uuid.NewString, controls, nil, run.DefaultWorkspaceTimeouts())
 	session, err := service.CreateSession(ctx, "owner", "")
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +266,10 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository.Conversations, repository.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(
+			repository.Conversations, repository.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(ctx)
 	}()
 	defer func() {
 		cancel()
@@ -325,7 +331,7 @@ func TestWorkerStopsRunningTurnAndRetainsQueue(t *testing.T) {
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository.RunStores(), resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repository.RunStores(), resolve, uuid.NewString, controls, nil, run.DefaultWorkspaceTimeouts())
 	session, err := service.CreateSession(ctx, "owner", "")
 	if err != nil {
 		t.Fatal(err)
@@ -341,7 +347,10 @@ func TestWorkerStopsRunningTurnAndRetainsQueue(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository.Conversations, repository.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(
+			repository.Conversations, repository.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(ctx)
 	}()
 	defer func() {
 		cancel()

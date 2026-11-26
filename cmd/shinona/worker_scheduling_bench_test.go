@@ -65,7 +65,10 @@ func TestWorkerWakesAndRunsIndependentWorkspaces(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repo, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(
+			repo, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(ctx)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -164,7 +167,10 @@ func benchmarkWorkerPair(b *testing.B, sameSession bool) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repo, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(
+			repo, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(ctx)
 	}()
 	b.Cleanup(func() {
 		cancel()

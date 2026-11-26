@@ -157,6 +157,26 @@ func cacheBudget(e environment, key string, fallbackBytes int) (int, error) {
 	return value * mib, err
 }
 
+func workspaceTimeouts(e environment) (run.WorkspaceTimeouts, error) {
+	limits := run.DefaultWorkspaceTimeouts()
+	for _, option := range []struct {
+		key     string
+		timeout *time.Duration
+		maximum int
+	}{
+		{"SHINONA_WORKSPACE_OPERATION_TIMEOUT_SECONDS", &limits.Operation, 600},
+		{"SHINONA_PROJECT_SANDBOX_TIMEOUT_SECONDS", &limits.Lifecycle, 900},
+		{"SHINONA_WORKSPACE_CLEANUP_TIMEOUT_SECONDS", &limits.Cleanup, 60},
+	} {
+		seconds, err := e.boundedInt(option.key, int(*option.timeout/time.Second), 1, option.maximum)
+		if err != nil {
+			return run.WorkspaceTimeouts{}, err
+		}
+		*option.timeout = time.Duration(seconds) * time.Second
+	}
+	return limits, nil
+}
+
 func trustedProxyNetworks(raw string) ([]netip.Prefix, error) {
 	var networks []netip.Prefix
 	for _, entry := range strings.Fields(strings.ReplaceAll(raw, ",", " ")) {
@@ -169,7 +189,7 @@ func trustedProxyNetworks(raw string) ([]netip.Prefix, error) {
 	return networks, nil
 }
 
-func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfig, client *http.Client, store e2b.WorkspaceStore) (sandbox.Provider, error) {
+func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfig, client *http.Client, store e2b.WorkspaceStore, cleanup time.Duration) (sandbox.Provider, error) {
 	key := values[settings.E2BAPIKey]
 	if key == "" {
 		return nil, nil
@@ -179,7 +199,7 @@ func e2bSandboxProvider(values settings.Values, defaults run.ProjectSandboxConfi
 		ProxyURL: values[settings.E2BProxyURL], Domain: values[settings.E2BDomain],
 		Timeout: time.Duration(defaults.TimeoutSeconds) * time.Second, OnTimeout: defaults.OnTimeout,
 		APIVersion: values[settings.E2BAPIVersion], WorkspaceUser: values[settings.E2BWorkspaceUser],
-		WorkDirectory: values[settings.E2BWorkDirectory],
+		WorkDirectory: values[settings.E2BWorkDirectory], CleanupTimeout: cleanup,
 	}, client, store)
 	if err != nil {
 		return nil, settings.Invalid("INVALID_E2B_CONFIG", err.Error())

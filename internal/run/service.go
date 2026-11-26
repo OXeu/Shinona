@@ -17,6 +17,7 @@ type Service struct {
 	projectTargets ListProjectTargets
 	newID          func() string
 	controls       *Controls
+	workspace      WorkspaceTimeouts
 	projectChanges keylock.Locks[sandbox.ProjectKey]
 	terminals      terminalRegistry
 }
@@ -26,8 +27,8 @@ type Settings struct {
 	Selected  sandbox.Policy
 }
 
-func NewService(stores ServiceStores, resolve ResolveTarget, newID func() string, controls *Controls, projectTargets ListProjectTargets) *Service {
-	return &Service{stores: stores, resolve: resolve, newID: newID, controls: controls, projectTargets: projectTargets}
+func NewService(stores ServiceStores, resolve ResolveTarget, newID func() string, controls *Controls, projectTargets ListProjectTargets, workspace WorkspaceTimeouts) *Service {
+	return &Service{stores: stores, resolve: resolve, newID: newID, controls: controls, projectTargets: projectTargets, workspace: workspace}
 }
 
 func (s *Service) CreateSession(ctx context.Context, owner, projectID string) (Session, error) {

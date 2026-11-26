@@ -50,7 +50,10 @@ func TestPendingMessageActions(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(a.repo.Conversations, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(
+			a.repo.Conversations, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(ctx)
 	}()
 	defer func() { cancel(); <-done }()
 	var input run.Input

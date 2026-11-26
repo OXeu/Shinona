@@ -54,6 +54,24 @@ func TestOpenDatabaseRejectsInvalidReadConnections(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTimeoutsReadStartupOverrides(t *testing.T) {
+	const operation = "SHINONA_WORKSPACE_OPERATION_TIMEOUT_SECONDS"
+	const lifecycle = "SHINONA_PROJECT_SANDBOX_TIMEOUT_SECONDS"
+	const cleanup = "SHINONA_WORKSPACE_CLEANUP_TIMEOUT_SECONDS"
+	t.Setenv(operation, "")
+	t.Setenv(lifecycle, "150")
+	t.Setenv(cleanup, "")
+	config := environment{operation: "30", cleanup: "8"}
+	limits, err := workspaceTimeouts(config)
+	if err != nil || limits.Operation != 30*time.Second || limits.Lifecycle != 150*time.Second || limits.Cleanup != 8*time.Second {
+		t.Fatalf("configured workspace timeouts = %+v, %v", limits, err)
+	}
+	t.Setenv(cleanup, "0")
+	if _, err := workspaceTimeouts(config); err == nil {
+		t.Fatal("accepted a zero workspace cleanup timeout")
+	}
+}
+
 func TestAuthLimitsReadStartupOverrides(t *testing.T) {
 	const passwordKey = "SHINONA_AUTH_PASSWORD_CONCURRENCY"
 	const rateKey = "SHINONA_AUTH_RATE_LIMIT_ENTRIES"

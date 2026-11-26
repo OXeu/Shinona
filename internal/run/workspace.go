@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -15,7 +16,15 @@ var (
 	ErrWorkspaceBusy        = errors.New("the workspace is busy")
 )
 
-const workspaceTimeout = 15 * time.Second
+type WorkspaceTimeouts struct {
+	Operation time.Duration
+	Lifecycle time.Duration
+	Cleanup   time.Duration
+}
+
+func DefaultWorkspaceTimeouts() WorkspaceTimeouts {
+	return WorkspaceTimeouts{Operation: 15 * time.Second, Lifecycle: 2 * time.Minute, Cleanup: sandbox.DefaultCleanupTimeout}
+}
 
 type liveWorkspace struct {
 	workspace sandbox.Workspace
@@ -87,7 +96,7 @@ func (s *Service) borrowWorkspace(ctx context.Context, owner, id string) (*liveW
 // InspectWorkspace can borrow a live lease for the same project. Between
 // turns, several readers may open the retained workspace concurrently.
 func (s *Service) InspectWorkspace(ctx context.Context, owner, id string, inspect func(context.Context, sandbox.Workspace) error) error {
-	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.workspace.Operation)
 	defer cancel()
 	live, err := s.borrowWorkspace(ctx, owner, id)
 	if err != nil {
@@ -109,6 +118,8 @@ func (s *Service) InspectWorkspace(ctx context.Context, owner, id string, inspec
 // WithWorkspace shares the lease gate with agent execution. It reopens the
 // retained workspace for an account's session or project.
 func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(context.Context, sandbox.Workspace) error) error {
+	ctx, cancel := context.WithTimeout(ctx, s.workspace.Operation)
+	defer cancel()
 	return s.withWorkspace(ctx, owner, id, false, use)
 }
 
@@ -137,8 +148,6 @@ func lockSessionProject(ctx context.Context, repo sessionProjectReader, owner, i
 }
 
 func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly bool, use func(context.Context, sandbox.Workspace) error) (err error) {
-	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
-	defer cancel()
 	acquired := sync.OnceFunc(timing.Start(ctx, "workspace_acquire"))
 	defer acquired()
 	resolve := sync.OnceFunc(timing.Start(ctx, "workspace_resolve"))
@@ -174,10 +183,8 @@ func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly 
 		return err
 	}
 	defer func() {
-		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer stop()
 		release := timing.Start(ctx, "workspace_release")
-		closeErr := ws.Close(cleanup)
+		closeErr := s.workspace.closeResource(ctx, ws.Close)
 		release()
 		// Keep an acknowledged operation successful even if lease cleanup fails.
 		if err != nil {
@@ -185,6 +192,16 @@ func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly 
 		}
 	}()
 	return use(ctx, ws)
+}
+
+func (limits WorkspaceTimeouts) closeResource(ctx context.Context, close func(context.Context) error) error {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), limits.Cleanup)
+	defer cancel()
+	err := close(cleanup)
+	if err != nil {
+		slog.Warn("close workspace resource", "error", err)
+	}
+	return err
 }
 
 func workspaceAvailability(err error) error {

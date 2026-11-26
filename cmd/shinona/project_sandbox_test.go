@@ -53,7 +53,7 @@ func TestProjectSandboxTimeoutOverridesReachProvisioning(t *testing.T) {
 		settings.E2BTemplate: "instance-template", settings.E2BTimeout: "480", settings.E2BOnTimeout: sandbox.TimeoutPause,
 	})
 	controls := &run.Controls{}
-	service := run.NewService(db.RunStores(), app.ResolveForAccount, uuid.NewString, controls, app.ProjectTargets)
+	service := run.NewService(db.RunStores(), app.ResolveForAccount, uuid.NewString, controls, app.ProjectTargets, run.DefaultWorkspaceTimeouts())
 	api := gin.New()
 	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler), rest.DefaultConfig())
 	const owner = "alice"

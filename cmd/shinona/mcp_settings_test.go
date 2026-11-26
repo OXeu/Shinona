@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
@@ -39,7 +40,7 @@ func TestMCPSettingsBelongToTheAccount(t *testing.T) {
 	if response := query("alice", http.MethodPut, serversPath, input); !strings.Contains(response, `"name":"renamed"`) || !strings.Contains(response, `"hasToken":true`) {
 		t.Fatalf("renaming lost the account's token: %s", response)
 	}
-	reloaded, err := newRuntime(ctx, repo.Settings, repo.E2B, nil)
+	reloaded, err := newRuntime(ctx, repo.Settings, repo.E2B, nil, run.DefaultWorkspaceTimeouts().Cleanup)
 	if err != nil {
 		t.Fatal(err)
 	}

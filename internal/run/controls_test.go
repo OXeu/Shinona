@@ -46,10 +46,10 @@ func TestAccountDeletedStopsOnlyOwnedWork(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 	t.Cleanup(active.cancel)
-	owned, cancelOwned := context.WithCancel(t.Context())
-	other, cancelOther := context.WithCancel(t.Context())
-	t.Cleanup(cancelOwned)
-	t.Cleanup(cancelOther)
+	owned, cancelOwned := context.WithCancelCause(t.Context())
+	other, cancelOther := context.WithCancelCause(t.Context())
+	t.Cleanup(func() { cancelOwned(nil) })
+	t.Cleanup(func() { cancelOther(nil) })
 	service := &Service{controls: controls}
 	service.terminals.tabs = map[sessionKey][]*TerminalSession{
 		{owner: "owner", id: "session"}: {{ctx: owned, cancel: cancelOwned}},

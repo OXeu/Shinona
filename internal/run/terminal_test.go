@@ -21,7 +21,7 @@ func TestTerminalStartDoesNotBlockRegistryAndArchiveInvalidatesIt(t *testing.T) 
 		service := NewService(ServiceStores{Sessions: repo, Projects: repo}, func(context.Context, string, string) (Target, error) {
 			<-resolve
 			return Target{Provider: workspaceTestProvider{}}, nil
-		}, nil, &Controls{}, nil)
+		}, nil, &Controls{}, nil, DefaultWorkspaceTimeouts())
 		started := make(chan error, 1)
 		go func() {
 			_, err := service.StartTerminal(t.Context(), t.Context(), owner, session)
@@ -53,7 +53,7 @@ func TestTerminalExitReleasesQuotaAndShutdownHasDeadline(t *testing.T) {
 		}, func() string {
 			nextID++
 			return fmt.Sprint(nextID)
-		}, &Controls{}, nil)
+		}, &Controls{}, nil, DefaultWorkspaceTimeouts())
 		start := func() (TerminalTab, error) {
 			return service.StartTerminal(t.Context(), t.Context(), owner, session)
 		}
@@ -100,6 +100,89 @@ func (p pendingTerminalProvider) Acquire(context.Context, sandbox.Spec) (sandbox
 	<-p.acquire
 	return &stubWorkspace{}, nil
 }
+
+func TestTerminalStartupDeadlineCoversAcquireAndOpen(t *testing.T) {
+	for _, stage := range []string{"acquire", "open", "running"} {
+		t.Run(stage, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const owner, session = "owner", "session"
+				limits := DefaultWorkspaceTimeouts()
+				limits.Lifecycle = time.Second
+				repo := workspaceTestRepository{projects: map[sessionKey]string{{owner, session}: ""}}
+				box := &startupWorkspace{open: func(ctx context.Context) (sandbox.Terminal, error) {
+					if stage == "open" {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}
+					return startupTerminal{ctx: ctx}, nil
+				}}
+				provider := startupProvider{acquire: func(ctx context.Context) (sandbox.Workspace, error) {
+					if stage == "acquire" {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}
+					return box, nil
+				}}
+				resolve := func(context.Context, string, string) (Target, error) { return Target{Provider: provider}, nil }
+				service := NewService(ServiceStores{Sessions: repo, Projects: repo}, resolve, func() string { return "tab" }, &Controls{}, nil, limits)
+				tab, err := service.StartTerminal(t.Context(), t.Context(), owner, session)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = service.CloseTerminals(t.Context()) }()
+				entry, err := service.Terminal(t.Context(), owner, session, tab.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				time.Sleep(limits.Lifecycle + time.Millisecond)
+				synctest.Wait()
+				tabs, err := service.Terminals(t.Context(), owner, session)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _, state, _ := entry.Output(0, nil)
+				if stage == "running" {
+					if state != TerminalRunning || len(tabs) != 1 {
+						t.Fatalf("startup timeout ended a running shell: %s, %v", state, tabs)
+					}
+				} else if state != TerminalFailed || len(tabs) != 0 {
+					t.Fatalf("stalled %s did not fail and release its tab: %s, %v", stage, state, tabs)
+				}
+			})
+		})
+	}
+}
+
+type startupProvider struct {
+	workspaceTestProvider
+	acquire func(context.Context) (sandbox.Workspace, error)
+}
+
+func (p startupProvider) Acquire(ctx context.Context, _ sandbox.Spec) (sandbox.Workspace, error) {
+	return p.acquire(ctx)
+}
+
+type startupWorkspace struct {
+	stubWorkspace
+	open func(context.Context) (sandbox.Terminal, error)
+}
+
+func (w startupWorkspace) OpenTerminal(ctx context.Context, _ sandbox.TerminalSize) (sandbox.Terminal, error) {
+	return w.open(ctx)
+}
+
+type startupTerminal struct {
+	sandbox.Terminal
+	ctx context.Context
+}
+
+func (t startupTerminal) Read([]byte) (int, error) {
+	<-t.ctx.Done()
+	return 0, t.ctx.Err()
+}
+
+func (startupTerminal) Close(context.Context) error { return nil }
 
 func TestTerminalOutputResumesAtRetainedHistory(t *testing.T) {
 	tab := TerminalSession{state: TerminalRunning, changed: make(chan struct{})}

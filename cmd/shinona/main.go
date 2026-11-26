@@ -61,6 +61,10 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	if err != nil {
 		return err
 	}
+	workspace, err := workspaceTimeouts(environment)
+	if err != nil {
+		return err
+	}
 	address, err := listenAddress(environment)
 	if err != nil {
 		return err
@@ -89,7 +93,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		return fmt.Errorf("recover interrupted runs: %w", err)
 	}
 
-	config, err := newRuntime(ctx, repository.Settings, repository.E2B, environment)
+	config, err := newRuntime(ctx, repository.Settings, repository.E2B, environment, workspace.Cleanup)
 	if err != nil {
 		return err
 	}
@@ -101,7 +105,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	lifetime, stop := context.WithCancel(ctx)
 	defer stop()
 	controls := &run.Controls{}
-	service := run.NewService(repository.RunStores(), config.ResolveForAccount, uuid.NewString, controls, config.ProjectTargets)
+	service := run.NewService(repository.RunStores(), config.ResolveForAccount, uuid.NewString, controls, config.ProjectTargets, workspace)
 
 	authConfig := func() httpauth.Config {
 		current := config.Auth()
@@ -113,17 +117,19 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	router := newAPIRouter(lifetime, config.origin.String(), service, config, authHandler, logger, routesConfig)
 	config.oauth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)
+	// Keep other routes' write deadline when workspace limits are lowered.
+	writeWindow := max(run.DefaultWorkspaceTimeouts().Lifecycle, max(workspace.Operation, workspace.Lifecycle)+workspace.Cleanup)
 	server := &http.Server{
 		Handler:           httpserver.AuthenticatedServerTiming(allowedHost(router, config.Host)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      run.ProjectSandboxTimeout + 15*time.Second,
+		WriteTimeout:      writeWindow + 15*time.Second,
 	}
 
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		run.NewWorker(repository.Conversations, repository.Projects, config.ResolveForAccount, logger, controls, parallelism).Serve(lifetime)
+		run.NewWorker(repository.Conversations, repository.Projects, config.ResolveForAccount, logger, controls, parallelism, workspace).Serve(lifetime)
 	}()
 
 	serverDone := make(chan error, 1)

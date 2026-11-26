@@ -46,7 +46,7 @@ func TestInstanceSettingsRebaseWhileEarlierCommitAwaitsPublication(t *testing.T)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	repo := &pausedRuntimeSettingsCommit{SettingsStore: db.Settings, committed: make(chan struct{}), publish: make(chan struct{})}
-	app, err := newRuntime(ctx, repo, db.E2B, nil)
+	app, err := newRuntime(ctx, repo, db.E2B, nil, run.DefaultWorkspaceTimeouts().Cleanup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestDotEnvFallbackAndSavedOverrides(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	first, err := newRuntime(t.Context(), repository.Settings, repository.E2B, environment)
+	first, err := newRuntime(t.Context(), repository.Settings, repository.E2B, environment, run.DefaultWorkspaceTimeouts().Cleanup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestDotEnvFallbackAndSavedOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	environment["SHINONA_E2B_TEMPLATE"] = "updated-template"
-	reloaded, err := newRuntime(t.Context(), repository.Settings, repository.E2B, environment)
+	reloaded, err := newRuntime(t.Context(), repository.Settings, repository.E2B, environment, run.DefaultWorkspaceTimeouts().Cleanup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,14 +160,14 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 	if saved, err := repository.Settings.SaveSettingOverrides(ctx, 0, obsolete); err != nil || !saved {
 		t.Fatalf("seed obsolete instance overrides: %t, %v", saved, err)
 	}
-	app, err := newRuntime(ctx, repository.Settings, repository.E2B, nil)
+	app, err := newRuntime(ctx, repository.Settings, repository.E2B, nil, run.DefaultWorkspaceTimeouts().Cleanup)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if overrides, err := repository.Settings.SettingOverrides(ctx); err != nil || len(overrides.Values) != 0 {
 		t.Fatalf("obsolete instance overrides survived startup: %v", err)
 	}
-	service := run.NewService(repository.RunStores(), app.ResolveForAccount, uuid.NewString, &run.Controls{}, nil)
+	service := run.NewService(repository.RunStores(), app.ResolveForAccount, uuid.NewString, &run.Controls{}, nil, run.DefaultWorkspaceTimeouts())
 	api := gin.New()
 	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler), rest.DefaultConfig())
 	const path = "/settings/application"

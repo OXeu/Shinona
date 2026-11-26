@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/OXeu/shinona/internal/adapter/e2b"
 	"github.com/OXeu/shinona/internal/adapter/email"
@@ -29,6 +30,7 @@ type instanceSettings struct {
 	mailConfig email.ResendConfig
 	e2bHTTP    *http.Client
 	e2bStore   e2b.WorkspaceStore
+	e2bCleanup time.Duration
 	buildSSH   func(settings.Values) (sandbox.Provider, error)
 	agent      func(context.Context, string) (run.Agent, error)
 	current    atomic.Pointer[runtimeConfig]
@@ -99,7 +101,7 @@ func (r *instanceSettings) prepare(ctx context.Context, overrides settings.Value
 		settings.E2BAPIVersion, settings.E2BWorkspaceUser, settings.E2BWorkDirectory) {
 		e2bTarget.Provider = previous.e2b.Provider
 	} else {
-		e2bTarget.Provider, err = e2bSandboxProvider(values, e2bDefaults, r.e2bHTTP, r.e2bStore)
+		e2bTarget.Provider, err = e2bSandboxProvider(values, e2bDefaults, r.e2bHTTP, r.e2bStore, r.e2bCleanup)
 		if err != nil {
 			return nil, err
 		}

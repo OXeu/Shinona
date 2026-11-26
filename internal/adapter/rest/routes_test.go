@@ -64,7 +64,7 @@ func fixtureService(stores run.ServiceStores) *run.Service {
 			return demo.Agent{}, nil
 		}}, nil
 	}
-	return run.NewService(stores, resolve, uuid.NewString, &run.Controls{}, nil)
+	return run.NewService(stores, resolve, uuid.NewString, &run.Controls{}, nil, run.DefaultWorkspaceTimeouts())
 }
 
 func perform(t *testing.T, handler http.Handler, owner, method, path string, body any, want int) *httptest.ResponseRecorder {

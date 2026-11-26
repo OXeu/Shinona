@@ -45,11 +45,11 @@ func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Da
 			t.Fatal(err)
 		}
 	}
-	app, err := newRuntime(t.Context(), repo.Settings, repo.E2B, nil)
+	app, err := newRuntime(t.Context(), repo.Settings, repo.E2B, nil, run.DefaultWorkspaceTimeouts().Cleanup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := run.NewService(repo.RunStores(), app.ResolveForAccount, uuid.NewString, &run.Controls{}, app.ProjectTargets)
+	service := run.NewService(repo.RunStores(), app.ResolveForAccount, uuid.NewString, &run.Controls{}, app.ProjectTargets, run.DefaultWorkspaceTimeouts())
 	api := gin.New()
 	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler), rest.DefaultConfig())
 	query := func(owner, method, path string, body any) string {
@@ -170,7 +170,7 @@ func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: app.resolveAgent}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil, run.DefaultWorkspaceTimeouts())
 	for _, owner := range []string{"alice", "bob"} {
 		session, err := service.CreateSession(t.Context(), owner, "")
 		if err != nil {
@@ -184,7 +184,10 @@ func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repo.Conversations, repo.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(workerCtx)
+		run.NewWorker(
+			repo.Conversations, repo.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency,
+			run.DefaultWorkspaceTimeouts(),
+		).Serve(workerCtx)
 	}()
 	defer func() { cancel(); <-done }()
 	executed := map[string]bool{}

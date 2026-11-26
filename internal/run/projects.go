@@ -56,7 +56,7 @@ func (s *Service) RemoveProject(ctx context.Context, owner, id string) error {
 				return ErrProjectSandboxCleanup
 			}
 		}
-		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), completionWriteTimeout)
 		defer cancel()
 		if err := s.stores.Projects.RemoveProject(save, owner, id); err != nil {
 			return err
