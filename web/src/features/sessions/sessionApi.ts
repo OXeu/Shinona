@@ -6,6 +6,12 @@ import type { ProjectTarget } from './projectScope'
 import { decodeRunOptions, decodeSandboxSettings, decodeSessionSummary, decodeTurn } from './wire/sessionMessages'
 import { TranscriptPageSchema } from './wire/session_transfer_pb'
 
+const transcriptRequestTimeout = 15_000
+
+function transcriptRequestSignal(scope: AbortSignal): AbortSignal {
+  return AbortSignal.any([scope, AbortSignal.timeout(transcriptRequestTimeout)])
+}
+
 export type RunStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'STOPPED'
 export type Policy = 'FRESH' | 'SHARED'
 
@@ -144,7 +150,7 @@ interface TranscriptPage {
 
 async function transcriptPage(id: string, signal: AbortSignal, beforeSequence?: number): Promise<TranscriptPage> {
   const query = beforeSequence === undefined ? '' : '?beforeSequence=' + beforeSequence
-  const response = await request('/api/v1' + sessionPath(id) + '/transcript' + query, undefined, signal)
+  const response = await request('/api/v1' + sessionPath(id) + '/transcript' + query, undefined, transcriptRequestSignal(signal))
   if (response.headers.get('Content-Type')?.split(';', 1)[0] !== 'application/protobuf') {
     throw new Error('Unexpected transcript content type.')
   }
@@ -176,7 +182,7 @@ export const sessionApi = {
   archive: (id: string) =>
     apiJSON<void>(sessionPath(id), 'DELETE'),
   markRead: (id: string, through: number, throughId: string, signal: AbortSignal) =>
-    apiJSON<void>(sessionPath(id) + '/read-marker', 'PUT', signal, { through, throughId }),
+    apiJSON<void>(sessionPath(id) + '/read-marker', 'PUT', transcriptRequestSignal(signal), { through, throughId }),
   revert: (sessionId: string, turnId: string, expectedHeadId: string, signal: AbortSignal) =>
     apiJSON<{ session: SessionSummary; prompt: string; images: ImageAttachment[] }>(
       turnPath(sessionId, turnId) + '/revert', 'POST', signal, { expectedHeadId }),
