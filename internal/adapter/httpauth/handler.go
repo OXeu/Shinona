@@ -21,7 +21,8 @@ import (
 )
 
 const sessionCookie = "shinona_session"
-const flowCookie = "shinona_oauth"
+const flowCookie = "shinona_oauth_flow"
+const legacyFlowCookie = "shinona_oauth"
 const linkFlowPrefix = "link:"
 
 type OAuthProvider interface {
@@ -233,12 +234,27 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 		h.failure(w, err)
 		return
 	}
-	h.cookie(w, flowCookie, "/auth/oauth", state, int(auth.FlowLifetime.Seconds()))
+	h.writeOAuthFlowCookie(w, r, state, int(auth.FlowLifetime.Seconds()))
 	http.Redirect(w, r, config.OAuth.AuthorizationURL(state, flow), http.StatusSeeOther)
 }
 
+func oauthFlowCookie(r *http.Request) string {
+	if current := readCookie(r, flowCookie); current != "" {
+		return current
+	}
+	return readCookie(r, legacyFlowCookie)
+}
+
+func (h *Handler) writeOAuthFlowCookie(w http.ResponseWriter, r *http.Request, value string, maxAge int) {
+	h.cookie(w, flowCookie, "/auth", value, maxAge)
+	// Complete or replace flows that were issued before the account route moved.
+	if readCookie(r, legacyFlowCookie) != "" {
+		h.cookie(w, legacyFlowCookie, "/auth/oauth", "", -1)
+	}
+}
+
 func (h *Handler) cancelPreviousOAuthFlow(r *http.Request) error {
-	previous, _ := strings.CutPrefix(readCookie(r, flowCookie), linkFlowPrefix)
+	previous, _ := strings.CutPrefix(oauthFlowCookie(r), linkFlowPrefix)
 	if previous == "" {
 		return nil
 	}
@@ -250,13 +266,13 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	state := r.URL.Query().Get("state")
-	cookie, link := strings.CutPrefix(readCookie(r, flowCookie), linkFlowPrefix)
+	cookie, link := strings.CutPrefix(oauthFlowCookie(r), linkFlowPrefix)
 	config := h.config()
 	if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(cookie)) != 1 {
 		h.redirectOAuthResult(w, r, link, auth.ErrCredentials)
 		return
 	}
-	h.cookie(w, flowCookie, "/auth/oauth", "", -1)
+	h.writeOAuthFlowCookie(w, r, "", -1)
 	err := h.finishOAuth(w, r, state, config, link)
 	if err != nil {
 		h.logger.Warn("OAuth callback failed", "link", link, "failure", httpserver.OAuthFailure(err))

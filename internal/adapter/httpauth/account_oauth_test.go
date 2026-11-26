@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"testing"
 
@@ -34,7 +35,7 @@ func oauthAccountHandler(service *auth.Service) *http.ServeMux {
 
 func beginAccountLink(t *testing.T, mux http.Handler, cookie *http.Cookie, password string) (string, *http.Cookie) {
 	t.Helper()
-	link := perform(t, mux, "POST", "/auth/oauth/link", `{"currentPassword":"`+password+`"}`, cookie)
+	link := perform(t, mux, "POST", "/auth/account/oauth/link", `{"currentPassword":"`+password+`"}`, cookie)
 	data := accountResponse(t, link)
 	raw, ok := data["url"].(string)
 	if !ok {
@@ -45,10 +46,59 @@ func beginAccountLink(t *testing.T, mux http.Handler, cookie *http.Cookie, passw
 		t.Fatalf("invalid authorization URL: %q", raw)
 	}
 	cookies := link.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "shinona_oauth" || !cookies[0].HttpOnly || cookies[0].Path != "/auth/oauth" {
+	if len(cookies) != 1 || cookies[0].Name != "shinona_oauth_flow" || cookies[0].Path != "/auth" ||
+		!cookies[0].HttpOnly || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteLaxMode {
 		t.Fatal("missing protected link-flow cookie")
 	}
 	return target.Query().Get("state"), cookies[0]
+}
+
+func TestAccountOAuthRouteReplacesPreviousBrowserFlow(t *testing.T) {
+	_, service, _ := accountFixture(t, nil)
+	mux := oauthAccountHandler(service)
+	const password = "member-password-42"
+	user, err := service.CreatePasswordUser(t.Context(), "existing@example.test", password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := accountCookie(t, service, user)
+	previous, cookie := beginAccountLink(t, mux, current, password)
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/auth/account/oauth/link", "/auth/oauth/link"} {
+		target := &url.URL{Scheme: "https", Host: "shinona.example.test", Path: path}
+		jar.SetCookies(target, []*http.Cookie{cookie})
+		cookies := append(jar.Cookies(target), current)
+		response := perform(t, mux, "POST", path, `{"currentPassword":"`+password+`"}`, cookies...)
+		assertStatus(t, response, http.StatusOK)
+		if flow, err := service.ConsumeFlow(t.Context(), previous); err != nil || flow != nil {
+			t.Fatalf("%s did not cancel the superseded OAuth flow: %v", path, err)
+		}
+		cookie = response.Result().Cookies()[0]
+		previous = cookie.Value[len("link:"):]
+	}
+}
+
+func TestOAuthCallbackAcceptsLegacyFlowCookie(t *testing.T) {
+	_, service, _ := accountFixture(t, nil)
+	mux := oauthAccountHandler(service)
+	state, _, err := service.BeginFlow(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := &http.Cookie{Name: "shinona_oauth", Value: state, Path: "/auth/oauth"}
+	response := perform(t, mux, "GET", "/auth/oauth/callback?code=legacy&state="+url.QueryEscape(state), "", old)
+	if got := response.Header().Get("Location"); got != "/" {
+		t.Fatalf("callback for a legacy OAuth cookie redirected to %q", got)
+	}
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == old.Name && cookie.Path == old.Path && cookie.MaxAge < 0 {
+			return
+		}
+	}
+	t.Fatal("legacy OAuth flow cookie was not cleared")
 }
 
 func TestLinkAndUnlinkOAuthOnExistingAccount(t *testing.T) {

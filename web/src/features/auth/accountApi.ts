@@ -25,7 +25,7 @@ export const accountApi = {
     requestJSON<AuthSession>('/auth/account/email/verify', { request, code }),
   oauthStatus: (signal: AbortSignal) => requestJSON<{ linked: boolean }>('/auth/account/oauth', undefined, signal),
   startOAuthLink: (currentPassword: string) =>
-    requestJSON<{ url: string }>('/auth/oauth/link', { currentPassword }),
+    requestJSON<{ url: string }>('/auth/account/oauth/link', { currentPassword }),
   unlinkOAuth: (currentPassword: string) =>
     requestJSON<AuthSession>('/auth/account/oauth/unlink', { currentPassword }),
   listUsers: (search: string, offset: number, signal: AbortSignal) => {

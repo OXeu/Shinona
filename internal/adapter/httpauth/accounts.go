@@ -22,7 +22,10 @@ func (h *Handler) accountRoutes(mux httpserver.Routes, post func(http.Handler) h
 	mux.Handle("POST /auth/account/email/start", accountPost(h.startEmailBinding))
 	mux.Handle("POST /auth/account/email/verify", accountPost(h.verifyEmailBinding))
 	mux.Handle("GET /auth/account/oauth", h.RequireUser(http.HandlerFunc(h.oauthStatus)))
-	mux.Handle("POST /auth/oauth/link", accountPost(h.startOAuthLink))
+	linkOAuth := accountPost(h.startOAuthLink)
+	mux.Handle("POST /auth/account/oauth/link", linkOAuth)
+	// A cached frontend may still post to the earlier path.
+	mux.Handle("POST /auth/oauth/link", linkOAuth)
 	mux.Handle("POST /auth/account/oauth/unlink", accountPost(h.unlinkOAuth))
 	mux.Handle("GET /auth/admin/users", h.RequireUser(http.HandlerFunc(h.accounts)))
 	mux.Handle("POST /auth/admin/users", accountPost(h.createAccount))

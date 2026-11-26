@@ -43,7 +43,7 @@ func (h *Handler) startOAuthLink(w http.ResponseWriter, r *http.Request) {
 		h.accountError(w, auth.ErrOAuthDisabled)
 		return
 	}
-	h.cookie(w, flowCookie, "/auth/oauth", linkFlowPrefix+state, int(auth.FlowLifetime.Seconds()))
+	h.writeOAuthFlowCookie(w, r, linkFlowPrefix+state, int(auth.FlowLifetime.Seconds()))
 	h.writeJSON(w, struct {
 		URL string `json:"url"`
 	}{target.String()})
