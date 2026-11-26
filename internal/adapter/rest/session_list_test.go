@@ -55,7 +55,7 @@ func TestSessionListPolls(t *testing.T) {
 	for i := range 31 {
 		session := run.Session{ID: fmt.Sprintf("history-%02d", i), OwnerID: owner, ProjectID: project.ID,
 			Title: "Recorded conversation", CreatedAt: now, UpdatedAt: now.Add(time.Duration(i) * time.Second)}
-		if err := repo.CreateSession(t.Context(), session); err != nil {
+		if err := repo.Conversations.CreateSession(t.Context(), session); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -150,10 +150,10 @@ func TestSessionListPolls(t *testing.T) {
 	if !active.Active || active.Unread {
 		t.Fatalf("unexpected active session flags: %+v", active)
 	}
-	if _, err := repo.ClaimNext(t.Context(), now); err != nil {
+	if _, err := repo.Conversations.ClaimNext(t.Context(), now); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Complete(t.Context(), turn.ID, run.Completion{Status: run.Succeeded, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := repo.Conversations.Complete(t.Context(), turn.ID, run.Completion{Status: run.Succeeded, UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	unreadTag, unread := updatedSession(activeTag)

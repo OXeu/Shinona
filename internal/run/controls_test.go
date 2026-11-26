@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-type claimRepository struct{ Repository }
+type claimRepository struct{}
 
 func (claimRepository) ClaimNext(context.Context, time.Time) (*Run, error) {
 	return &Run{ID: "turn", OwnerID: "owner", SessionID: "session"}, nil
@@ -30,7 +30,7 @@ func TestClaimedTurnHasNoExecutionDeadline(t *testing.T) {
 		if err := active.ctx.Err(); err != nil {
 			t.Fatalf("turn canceled after three minutes: %v", err)
 		}
-		if err := controls.stop(t.Context(), repository, "owner", "session", "turn"); err != nil {
+		if err := controls.stop(t.Context(), nil, "owner", "session", "turn"); err != nil {
 			t.Fatal(err)
 		}
 		if err := active.ctx.Err(); !errors.Is(err, context.Canceled) {

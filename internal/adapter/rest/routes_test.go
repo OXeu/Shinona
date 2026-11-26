@@ -16,8 +16,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/klauspost/compress/zstd"
 	"golang.org/x/sync/semaphore"
+	"github.com/klauspost/compress/zstd"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
@@ -36,7 +36,7 @@ func (fixtureApplication) ComposerOptions(context.Context) (ComposerOptions, err
 	return ComposerOptions{Models: []ModelInfo{}, MCPServers: []string{}}, nil
 }
 
-func restFixture(t *testing.T) (*sqlite.Repository, *gin.Engine) {
+func restFixture(t *testing.T) (*sqlite.Database, *gin.Engine) {
 	t.Helper()
 	repo, err := sqlite.Open(t.Context(), ":memory:")
 	if err != nil {
@@ -44,22 +44,22 @@ func restFixture(t *testing.T) (*sqlite.Repository, *gin.Engine) {
 	}
 	t.Cleanup(func() { _ = repo.Close() })
 	for _, id := range []string{"alice", "bob"} {
-		if err := repo.CreatePasswordUser(t.Context(), auth.User{ID: id, Email: id + "@example.test"}, []byte("test-hash")); err != nil {
+		if err := repo.Accounts.CreatePasswordUser(t.Context(), auth.User{ID: id, Email: id + "@example.test"}, []byte("test-hash")); err != nil {
 			t.Fatal(err)
 		}
 	}
 	router := gin.New()
-	Register(router.Group(Prefix, httpserver.Compress), fixtureService(repo), fixtureApplication{}, slog.New(slog.DiscardHandler))
+	Register(router.Group(Prefix, httpserver.Compress), fixtureService(repo.RunStores()), fixtureApplication{}, slog.New(slog.DiscardHandler))
 	return repo, router
 }
 
-func fixtureService(repo *sqlite.Repository) *run.Service {
+func fixtureService(stores run.ServiceStores) *run.Service {
 	resolve := func(context.Context, string, string) (run.Target, error) {
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) {
 			return demo.Agent{}, nil
 		}}, nil
 	}
-	return run.NewService(repo, resolve, uuid.NewString, &run.Controls{}, nil)
+	return run.NewService(stores, resolve, uuid.NewString, &run.Controls{}, nil)
 }
 
 func perform(t *testing.T, handler http.Handler, owner, method, path string, body any, want int) *httptest.ResponseRecorder {
@@ -140,10 +140,10 @@ func TestConversationLifecycleAndOwnership(t *testing.T) {
 	}
 	checkCode(t, perform(t, router, "alice", "POST", path+"/turns", body, 409), "ACTIVE_TURN")
 	now := time.Now().UTC()
-	if _, err := repo.ClaimNext(t.Context(), now); err != nil {
+	if _, err := repo.Conversations.ClaimNext(t.Context(), now); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Complete(t.Context(), first.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now,
+	if err := repo.Conversations.Complete(t.Context(), first.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now,
 		Result: run.Result{Output: "complete", Parts: []run.TurnPart{{Kind: "thinking", Text: "Review the request."}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -241,20 +241,20 @@ func TestProjectSessionsAndOwnership(t *testing.T) {
 func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 	repo, router := restFixture(t)
 	now := time.Now().UTC()
-	if err := repo.CreateSession(t.Context(), run.Session{ID: "history", OwnerID: "alice", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := repo.Conversations.CreateSession(t.Context(), run.Session{ID: "history", OwnerID: "alice", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	for i := range run.TranscriptPageSize + 1 {
 		id := fmt.Sprintf("turn-%d", i+1)
 		item := run.Run{ID: id, OwnerID: "alice", SessionID: "history", Status: run.Queued, CreatedAt: now, UpdatedAt: now}
-		if _, err := repo.Enqueue(t.Context(), item, "History", false); err != nil {
+		if _, err := repo.Conversations.Enqueue(t.Context(), item, "History", false); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := repo.ClaimNext(t.Context(), now); err != nil {
+		if _, err := repo.Conversations.ClaimNext(t.Context(), now); err != nil {
 			t.Fatal(err)
 		}
 		turn := run.Result{Output: strings.Repeat("history result\n", 500)}
-		if err := repo.Complete(t.Context(), id, run.Completion{Result: turn, Status: run.Succeeded, UpdatedAt: now}); err != nil {
+		if err := repo.Conversations.Complete(t.Context(), id, run.Completion{Result: turn, Status: run.Succeeded, UpdatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -332,7 +332,7 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 func TestFullTranscriptQueueAllowsPagedReadsAndCancellation(t *testing.T) {
 	repo, _ := restFixture(t)
 	api := &handler{
-		service: fixtureService(repo), logger: slog.New(slog.DiscardHandler),
+		service: fixtureService(repo.RunStores()), logger: slog.New(slog.DiscardHandler),
 		fullTranscript: semaphore.NewWeighted(1), pagedTranscript: semaphore.NewWeighted(1),
 	}
 	if !api.fullTranscript.TryAcquire(1) {

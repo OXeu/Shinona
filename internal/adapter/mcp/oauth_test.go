@@ -28,7 +28,7 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	for _, id := range []string{"owner", "other"} {
-		if err := store.CreatePasswordUser(ctx, auth.User{ID: id, Email: id + "@example.test"}, []byte("test-hash")); err != nil {
+		if err := store.Accounts.CreatePasswordUser(ctx, auth.User{ID: id, Email: id + "@example.test"}, []byte("test-hash")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -112,7 +112,7 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	t.Cleanup(fixture.Close)
 	server := settings.MCPServer{Name: "fixture", URL: fixture.URL + "/mcp", OAuth: &settings.MCPOAuthConfig{}}
 	lookup := func(name string) (settings.MCPServer, bool) { return server, name == server.Name }
-	oauth := NewOAuth(store, origin)
+	oauth := NewOAuth(store.Settings, origin)
 	state, destination, err := oauth.Start(ctx, "owner", server, "")
 	if err != nil {
 		t.Fatal(err)
@@ -148,11 +148,11 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveMCPGrant(ctx, "owner", server.Name, data); err != nil {
+	if err := store.Settings.SaveMCPGrant(ctx, "owner", server.Name, data); err != nil {
 		t.Fatal(err)
 	}
 	// A new OAuth instance reads the grant from SQLite after a restart.
-	oauth = NewOAuth(store, origin)
+	oauth = NewOAuth(store.Settings, origin)
 	servers := NewServers(settings.MCPConfig{server}, fixture.Client(), oauth)
 	if len(servers.Names(ctx, "owner")) != 1 || len(servers.Names(ctx, "other")) != 0 {
 		t.Fatal("tool availability must follow the requesting account")
@@ -182,13 +182,13 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveMCPGrant(ctx, "owner", server.Name, revoked); err != nil {
+	if err := store.Settings.SaveMCPGrant(ctx, "owner", server.Name, revoked); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := oauth.Token(ctx, "owner", server); !errors.Is(err, ErrOAuthRequired) {
 		t.Fatalf("invalidated refresh token was accepted: %v", err)
 	}
-	if data, err := store.MCPGrant(ctx, "owner", server.Name); err != nil || len(data) != 0 {
+	if data, err := store.Settings.MCPGrant(ctx, "owner", server.Name); err != nil || len(data) != 0 {
 		t.Fatalf("revoked grant was not removed: %v", err)
 	}
 	if err := oauth.Disconnect(ctx, "owner", server.Name); err != nil {

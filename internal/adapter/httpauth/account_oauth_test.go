@@ -155,7 +155,7 @@ func TestDeleteAccountRequiresAdminAndNotifiesOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SetAdmin(t.Context(), admin.ID, true); err != nil {
+	if err := repo.Accounts.SetAdmin(t.Context(), admin.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	const email = "deleted@example.test"

@@ -23,13 +23,13 @@ import (
 )
 
 type pausedRuntimeSettingsCommit struct {
-	*sqlite.Repository
+	*sqlite.SettingsStore
 	committed chan struct{}
 	publish   chan struct{}
 }
 
 func (repo *pausedRuntimeSettingsCommit) SaveSettingOverrides(ctx context.Context, revision int64, values settings.Values) (bool, error) {
-	saved, err := repo.Repository.SaveSettingOverrides(ctx, revision, values)
+	saved, err := repo.SettingsStore.SaveSettingOverrides(ctx, revision, values)
 	if saved && revision == 0 {
 		close(repo.committed)
 		<-repo.publish
@@ -45,8 +45,8 @@ func TestInstanceSettingsRebaseWhileEarlierCommitAwaitsPublication(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	repo := &pausedRuntimeSettingsCommit{Repository: db, committed: make(chan struct{}), publish: make(chan struct{})}
-	app, err := newRuntime(ctx, repo, nil)
+	repo := &pausedRuntimeSettingsCommit{SettingsStore: db.Settings, committed: make(chan struct{}), publish: make(chan struct{})}
+	app, err := newRuntime(ctx, repo, db.E2B, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestInstanceSettingsRebaseWhileEarlierCommitAwaitsPublication(t *testing.T)
 	case <-ctx.Done():
 		t.Fatal("the earlier update did not finish")
 	}
-	stored, err := db.SettingOverrides(ctx)
+	stored, err := db.Settings.SettingOverrides(ctx)
 	current := app.current.Load()
 	if err != nil || current.revision != 2 || stored.Revision != 2 ||
 		stored.Values[settings.MailFrom] != "one@example.test" || current.values[settings.MailFrom] != "one@example.test" ||
@@ -112,7 +112,7 @@ func TestDotEnvFallbackAndSavedOverrides(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	first, err := newRuntime(t.Context(), repository, environment)
+	first, err := newRuntime(t.Context(), repository.Settings, repository.E2B, environment)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestDotEnvFallbackAndSavedOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	environment["SHINONA_E2B_TEMPLATE"] = "updated-template"
-	reloaded, err := newRuntime(t.Context(), repository, environment)
+	reloaded, err := newRuntime(t.Context(), repository.Settings, repository.E2B, environment)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,17 +157,17 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 		"webOrigin": "https://old.example", "projectName": "Old project", "machineName": "Old machine",
 		"projectBranch": "main", "projectRemoteUrl": "invalid legacy URL",
 	}
-	if saved, err := repository.SaveSettingOverrides(ctx, 0, obsolete); err != nil || !saved {
+	if saved, err := repository.Settings.SaveSettingOverrides(ctx, 0, obsolete); err != nil || !saved {
 		t.Fatalf("seed obsolete instance overrides: %t, %v", saved, err)
 	}
-	app, err := newRuntime(ctx, repository, nil)
+	app, err := newRuntime(ctx, repository.Settings, repository.E2B, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if overrides, err := repository.SettingOverrides(ctx); err != nil || len(overrides.Values) != 0 {
+	if overrides, err := repository.Settings.SettingOverrides(ctx); err != nil || len(overrides.Values) != 0 {
 		t.Fatalf("obsolete instance overrides survived startup: %v", err)
 	}
-	service := run.NewService(repository, app.ResolveForAccount, uuid.NewString, &run.Controls{}, nil)
+	service := run.NewService(repository.RunStores(), app.ResolveForAccount, uuid.NewString, &run.Controls{}, nil)
 	api := gin.New()
 	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler))
 	const path = "/settings/application"
@@ -201,7 +201,7 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 		t.Fatalf("unexpected settings mutation result: %s", saved)
 	}
 	owner := auth.WithUser(ctx, auth.User{ID: "owner"})
-	if err := repository.CreatePasswordUser(ctx, auth.User{ID: "owner", Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+	if err := repository.Accounts.CreatePasswordUser(ctx, auth.User{ID: "owner", Email: "owner@example.test"}, []byte("test-hash")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.UpdateModelSettings(owner, []settings.Change{
@@ -224,7 +224,7 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 	if policies := app.Resolve("").Provider.Policies("owner"); len(policies) != 1 || policies[0] != sandbox.Shared {
 		t.Fatalf("E2B policies: %v", policies)
 	}
-	item, err := repository.ClaimNext(ctx, session.UpdatedAt)
+	item, err := repository.Conversations.ClaimNext(ctx, session.UpdatedAt)
 	if err != nil || item == nil || item.Backend != "e2b" || item.Policy != sandbox.Shared || app.Resolve(item.Backend).Provider == nil {
 		t.Fatalf("queued turn lost its E2B provider: %+v, %v", item, err)
 	}
@@ -234,7 +234,7 @@ func TestRuntimeSettingsAuthorizeRedactAndSwitchProviders(t *testing.T) {
 	if _, err := app.Update(ctx, []settings.Change{{Key: "SHINONA_ADDR", Value: new("127.0.0.1:9999")}}); err == nil {
 		t.Fatal("bootstrap setting was accepted")
 	}
-	persisted, err := repository.SettingOverrides(ctx)
+	persisted, err := repository.Settings.SettingOverrides(ctx)
 	if err != nil || persisted.Values["envdBrokerUrl"] != "" || persisted.Values[settings.E2BBaseURL] != "http://127.0.0.1:3000" {
 		t.Fatalf("provider settings lost or partially written: %v", err)
 	}

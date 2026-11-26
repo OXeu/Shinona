@@ -39,7 +39,7 @@ func TestMCPSettingsBelongToTheAccount(t *testing.T) {
 	if response := query("alice", http.MethodPut, serversPath, input); !strings.Contains(response, `"name":"renamed"`) || !strings.Contains(response, `"hasToken":true`) {
 		t.Fatalf("renaming lost the account's token: %s", response)
 	}
-	reloaded, err := newRuntime(ctx, repo, nil)
+	reloaded, err := newRuntime(ctx, repo.Settings, repo.E2B, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,25 +67,25 @@ func TestMCPSettingsBelongToTheAccount(t *testing.T) {
 		t.Fatalf("cannot save OAuth for second account: %s", response)
 	}
 	for _, owner := range []string{"alice", "bob"} {
-		if err := repo.SaveMCPGrant(ctx, owner, "shared-name", []byte("grant-fixture")); err != nil {
+		if err := repo.Settings.SaveMCPGrant(ctx, owner, "shared-name", []byte("grant-fixture")); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if response := query("alice", http.MethodDelete, mcpPath, nil); !strings.Contains(response, `"servers":[]`) {
 		t.Fatalf("clear personal MCP settings failed: %s", response)
 	}
-	aliceGrant, err := repo.MCPGrant(ctx, "alice", "shared-name")
+	aliceGrant, err := repo.Settings.MCPGrant(ctx, "alice", "shared-name")
 	if err != nil || aliceGrant != nil {
 		t.Fatalf("removing MCP settings retained the same account's grant: %v", err)
 	}
-	bobGrant, err := repo.MCPGrant(ctx, "bob", "shared-name")
+	bobGrant, err := repo.Settings.MCPGrant(ctx, "bob", "shared-name")
 	if err != nil || string(bobGrant) != "grant-fixture" {
 		t.Fatalf("removing MCP settings deleted another account's grant: %v", err)
 	}
 	if response := read("bob"); !strings.Contains(response, "bob.example.test") {
 		t.Fatalf("clearing alice's config changed bob's config: %s", response)
 	}
-	legacy, err := repo.SettingOverrides(ctx)
+	legacy, err := repo.Settings.SettingOverrides(ctx)
 	if err != nil || legacy.Values[settings.MCPServers] != "" {
 		t.Fatalf("account MCP writes changed instance settings: %v", err)
 	}

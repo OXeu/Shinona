@@ -48,7 +48,7 @@ func TestPasswordAndOAuthSignIn(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	service := auth.New(repo, password.Argon2id{}, uuid.NewString)
+	service := auth.New(repo.Accounts, password.Argon2id{}, uuid.NewString)
 	user, err := service.CreatePasswordUser(t.Context(), "reviewer@example.test", "example-password-42")
 	if err != nil {
 		t.Fatal(err)

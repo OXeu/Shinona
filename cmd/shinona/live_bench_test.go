@@ -169,7 +169,7 @@ func benchmarkLiveFanout(b *testing.B, viewers int) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(a.repo, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(a.repo.Conversations, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	b.Cleanup(func() {
 		cancel()

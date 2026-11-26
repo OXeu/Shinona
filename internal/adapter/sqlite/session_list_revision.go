@@ -9,7 +9,7 @@ import (
 
 // SessionListRevision covers the list projection for an account, including
 // project metadata shared by all of its filters.
-func (r *Repository) SessionListRevision(ctx context.Context, owner string) (int64, error) {
+func (r *ConversationStore) SessionListRevision(ctx context.Context, owner string) (int64, error) {
 	var revision int64
 	err := r.read.WithContext(ctx).Raw(`SELECT COALESCE(
 		(SELECT revision FROM session_list_revisions WHERE owner_id = ?), 0)`, owner).Row().Scan(&revision)

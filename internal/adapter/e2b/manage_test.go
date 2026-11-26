@@ -52,7 +52,7 @@ func TestProjectLifecycleUsesProjectTemplateAndTimeout(t *testing.T) {
 		APIKey: "fixture", BaseURL: server.URL, ProxyURL: server.URL,
 		Template: "instance-template", Timeout: 480 * time.Second, OnTimeout: sandbox.TimeoutPause,
 		WorkDirectory: "/workspace",
-	}, server.Client(), store)
+	}, server.Client(), store.E2B)
 	if err != nil {
 		t.Fatal(err)
 	}

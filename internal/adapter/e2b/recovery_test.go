@@ -152,7 +152,7 @@ func TestProjectSandboxRecovery(t *testing.T) {
 					return http.DefaultTransport.RoundTrip(req)
 				})}
 			}
-			provider, err := New(config, client, store)
+			provider, err := New(config, client, store.E2B)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -202,7 +202,7 @@ func TestProjectSandboxRecovery(t *testing.T) {
 			if err := workspace.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
-			reloaded, err := New(config, client, store)
+			reloaded, err := New(config, client, store.E2B)
 			if err != nil {
 				t.Fatal(err)
 			}

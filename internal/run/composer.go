@@ -62,6 +62,16 @@ type RetryOptions struct {
 	Model     string // Model-only override for clients that omit Selection.
 }
 
+func (o RetryOptions) Apply(previous Options) Options {
+	if o.Selection != nil {
+		return *o.Selection
+	}
+	if o.Model != "" {
+		previous.Model = o.Model
+	}
+	return previous
+}
+
 type Result struct {
 	Output           string
 	Parts            []TurnPart

@@ -18,7 +18,7 @@ func TestTerminalStartDoesNotBlockRegistryAndArchiveInvalidatesIt(t *testing.T) 
 		key := sessionKey{owner, session}
 		repo := archivingTerminalRepository{workspaceTestRepository{projects: map[sessionKey]string{key: ""}}}
 		resolve := make(chan struct{})
-		service := NewService(repo, func(context.Context, string, string) (Target, error) {
+		service := NewService(ServiceStores{Sessions: repo, Projects: repo}, func(context.Context, string, string) (Target, error) {
 			<-resolve
 			return Target{Provider: workspaceTestProvider{}}, nil
 		}, nil, &Controls{}, nil)
@@ -48,7 +48,7 @@ func TestTerminalExitReleasesQuotaAndShutdownHasDeadline(t *testing.T) {
 		repo := workspaceTestRepository{projects: map[sessionKey]string{key: ""}}
 		acquire := make(chan struct{})
 		nextID := 0
-		service := NewService(repo, func(context.Context, string, string) (Target, error) {
+		service := NewService(ServiceStores{Sessions: repo, Projects: repo}, func(context.Context, string, string) (Target, error) {
 			return Target{Provider: pendingTerminalProvider{acquire: acquire}}, nil
 		}, func() string {
 			nextID++

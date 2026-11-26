@@ -26,15 +26,16 @@ var errWorkspaceSetup = errors.New("could not prepare the sandbox")
 // Worker dispatches a bounded number of turns. Claims preserve ordering within
 // each session and avoid filling execution slots with the same workspace.
 type Worker struct {
-	repo        Repository
+	repo        WorkerRepository
+	projects    ProjectSandboxRepository
 	resolve     ResolveTarget
 	logger      *slog.Logger
 	controls    *Controls
 	parallelism int
 }
 
-func NewWorker(repo Repository, resolve ResolveTarget, logger *slog.Logger, controls *Controls, parallelism int) *Worker {
-	return &Worker{repo: repo, resolve: resolve, logger: logger, controls: controls, parallelism: max(1, parallelism)}
+func NewWorker(repo WorkerRepository, projects ProjectSandboxRepository, resolve ResolveTarget, logger *slog.Logger, controls *Controls, parallelism int) *Worker {
+	return &Worker{repo: repo, projects: projects, resolve: resolve, logger: logger, controls: controls, parallelism: max(1, parallelism)}
 }
 
 func (w *Worker) Serve(ctx context.Context) {
@@ -178,7 +179,7 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (_ Result, err err
 		return Result{}, fmt.Errorf("lock workspace project: %w", err)
 	}
 	defer release()
-	spec, target, err := projectTarget(ctx, w.repo, w.resolve, spec, item.Backend, true)
+	spec, target, err := projectTarget(ctx, w.projects, w.resolve, spec, item.Backend, true)
 	if err != nil {
 		return Result{}, fmt.Errorf("load workspace project: %w", err)
 	}

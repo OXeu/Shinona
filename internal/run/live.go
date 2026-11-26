@@ -33,7 +33,7 @@ type SessionWatch struct {
 }
 
 func (s *Service) WatchSession(ctx context.Context, owner, id string) (*SessionWatch, error) {
-	if _, err := s.repo.SessionProject(ctx, owner, id); err != nil {
+	if _, err := s.stores.Sessions.SessionProject(ctx, owner, id); err != nil {
 		return nil, err
 	}
 	return s.controls.watch(sessionKey{owner: owner, id: id}), nil

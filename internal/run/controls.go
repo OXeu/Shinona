@@ -54,7 +54,7 @@ func (c *Controls) queueWake() chan struct{} {
 	return c.wake
 }
 
-func (c *Controls) claim(ctx context.Context, repo Repository) (*activeTurn, error) {
+func (c *Controls) claim(ctx context.Context, repo turnClaimer) (*activeTurn, error) {
 	c.claiming.Lock()
 	defer c.claiming.Unlock()
 	item, err := repo.ClaimNext(ctx, time.Now().UTC())
@@ -101,7 +101,7 @@ func (c *Controls) updateSteering(owner, session, id string, durable bool, chang
 	return nil
 }
 
-func (c *Controls) stop(ctx context.Context, repo Repository, owner, session, id string) error {
+func (c *Controls) stop(ctx context.Context, repo queuedTurnStopper, owner, session, id string) error {
 	key := sessionKey{owner: owner, id: session}
 	if c.cancelActive(key, id) {
 		return nil

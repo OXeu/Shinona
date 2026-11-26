@@ -66,7 +66,7 @@ func (s *Service) borrowWorkspace(ctx context.Context, owner, id string) (*liveW
 	if !shared {
 		return nil, nil
 	}
-	projectID, err := s.repo.SessionProject(ctx, owner, id)
+	projectID, err := s.stores.Sessions.SessionProject(ctx, owner, id)
 	if errors.Is(err, ErrSession) {
 		return nil, ErrWorkspaceUnavailable
 	}
@@ -114,7 +114,7 @@ func (s *Service) WithWorkspace(ctx context.Context, owner, id string, use func(
 
 // A project deletion can move a session to the default project while a
 // request waits for its gate. Verify membership after acquiring the gate.
-func lockSessionProject(ctx context.Context, repo Repository, owner, id string, acquire func(sandbox.ProjectKey) (func(), error)) (sandbox.Spec, func(), error) {
+func lockSessionProject(ctx context.Context, repo sessionProjectReader, owner, id string, acquire func(sandbox.ProjectKey) (func(), error)) (sandbox.Spec, func(), error) {
 	for {
 		project, err := repo.SessionProject(ctx, owner, id)
 		if err != nil {
@@ -143,7 +143,7 @@ func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly 
 	defer acquired()
 	resolve := sync.OnceFunc(timing.Start(ctx, "workspace_resolve"))
 	defer resolve()
-	spec, release, err := lockSessionProject(ctx, s.repo, owner, id, func(key sandbox.ProjectKey) (func(), error) {
+	spec, release, err := lockSessionProject(ctx, s.stores.Sessions, owner, id, func(key sandbox.ProjectKey) (func(), error) {
 		if release, ok := s.controls.leases.TryAcquire(key, readOnly); ok {
 			return release, nil
 		}
@@ -156,7 +156,7 @@ func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly 
 		return err
 	}
 	defer release()
-	spec, target, err := projectTarget(ctx, s.repo, s.resolve, spec, "", false)
+	spec, target, err := projectTarget(ctx, s.stores.Projects, s.resolve, spec, "", false)
 	resolve()
 	if err != nil {
 		return err

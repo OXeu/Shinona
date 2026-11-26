@@ -25,7 +25,7 @@ func (sshServerRow) TableName() string { return "ssh_servers" }
 
 const sshServerOrder = "name COLLATE NOCASE, id"
 
-func (r *Repository) SSHServers(ctx context.Context, owner string) ([]settings.SSHServerInfo, error) {
+func (r *SettingsStore) SSHServers(ctx context.Context, owner string) ([]settings.SSHServerInfo, error) {
 	servers := make([]settings.SSHServerInfo, 0)
 	err := r.read.WithContext(ctx).Model(&sshServerRow{}).Select("id", "name", "address", "user", "host_fingerprint", "template").
 		Where("owner_id = ?", owner).Order(sshServerOrder).Find(&servers).Error
@@ -35,17 +35,17 @@ func (r *Repository) SSHServers(ctx context.Context, owner string) ([]settings.S
 	return servers, nil
 }
 
-func (r *Repository) DefaultSSHServer(ctx context.Context, owner string) (settings.SSHServer, error) {
+func (r *SettingsStore) DefaultSSHServer(ctx context.Context, owner string) (settings.SSHServer, error) {
 	record, err := readSSHServer(r.read.WithContext(ctx).Where("owner_id = ?", owner).Order(sshServerOrder))
 	return record.server(), err
 }
 
-func (r *Repository) SSHServer(ctx context.Context, owner, id string) (settings.SSHServer, error) {
+func (r *SettingsStore) SSHServer(ctx context.Context, owner, id string) (settings.SSHServer, error) {
 	record, err := findSSHServer(r.read.WithContext(ctx), owner, id)
 	return record.server(), err
 }
 
-func (r *Repository) SaveSSHServer(ctx context.Context, owner string, server settings.SSHServer, create bool) error {
+func (r *SettingsStore) SaveSSHServer(ctx context.Context, owner string, server settings.SSHServer, create bool) error {
 	db := r.db.WithContext(ctx)
 	if create {
 		result := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "owner_id"}, {Name: "name"}}, DoNothing: true}).Create(&sshServerRow{
@@ -80,7 +80,7 @@ func (r *Repository) SaveSSHServer(ctx context.Context, owner string, server set
 	})
 }
 
-func (r *Repository) RemoveSSHServer(ctx context.Context, owner, id string) error {
+func (r *SettingsStore) RemoveSSHServer(ctx context.Context, owner, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		record, err := findSSHServer(tx, owner, id)
 		if err != nil {

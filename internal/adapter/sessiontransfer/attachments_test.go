@@ -24,11 +24,11 @@ func TestAttachmentServesOnlyTheOwnersVisibleTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	if err := repo.CreatePasswordUser(ctx, auth.User{ID: "owner", Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+	if err := repo.Accounts.CreatePasswordUser(ctx, auth.User{ID: "owner", Email: "owner@example.test"}, []byte("test-hash")); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := repo.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := repo.Conversations.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	var pngFile bytes.Buffer
@@ -36,20 +36,20 @@ func TestAttachmentServesOnlyTheOwnersVisibleTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	attachment := run.Image{Name: "fixture.png", MediaType: "image/png", Data: base64.StdEncoding.EncodeToString(pngFile.Bytes())}
-	_, err = repo.Enqueue(ctx, run.Run{
+	_, err = repo.Conversations.Enqueue(ctx, run.Run{
 		ID: "turn", OwnerID: "owner", SessionID: "session", Status: run.Queued, CreatedAt: now, UpdatedAt: now,
 		Payload: run.Payload{Images: []run.Image{attachment}},
 	}, "Fixture", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed, err := repo.ClaimNext(ctx, now); err != nil || claimed == nil || claimed.ID != "turn" {
+	if claimed, err := repo.Conversations.ClaimNext(ctx, now); err != nil || claimed == nil || claimed.ID != "turn" {
 		t.Fatalf("claim fixture turn: %v, %v", claimed, err)
 	}
-	if err := repo.Complete(ctx, "turn", run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
+	if err := repo.Conversations.Complete(ctx, "turn", run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	service := run.NewService(repo, nil, nil, &run.Controls{}, nil)
+	service := run.NewService(repo.RunStores(), nil, nil, &run.Controls{}, nil)
 	mux := http.NewServeMux()
 	mux.Handle("GET "+sessiontransfer.AttachmentPath, sessiontransfer.Attachment(service, slog.New(slog.DiscardHandler)))
 	requestImage := func(owner, session, index, tag string) *httptest.ResponseRecorder {
@@ -80,7 +80,7 @@ func TestAttachmentServesOnlyTheOwnersVisibleTurn(t *testing.T) {
 			t.Fatalf("forbidden attachment request %v returned %d", request, result.Code)
 		}
 	}
-	if _, err := repo.RevertTurn(ctx, "owner", "session", "turn", "turn", now); err != nil {
+	if _, err := repo.Conversations.RevertTurn(ctx, "owner", "session", "turn", "turn", now); err != nil {
 		t.Fatal(err)
 	}
 	if result := requestImage("owner", "session", "0", tag); result.Code != http.StatusNotFound {

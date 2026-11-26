@@ -28,7 +28,7 @@ type mcpServerSecretRow struct {
 
 func (mcpServerSecretRow) TableName() string { return "mcp_server_secrets" }
 
-func (r *Repository) MCPConfig(ctx context.Context, owner string) (settings.MCPConfig, error) {
+func (r *SettingsStore) MCPConfig(ctx context.Context, owner string) (settings.MCPConfig, error) {
 	var rows []struct {
 		Name          string
 		URL           string
@@ -57,7 +57,7 @@ func (r *Repository) MCPConfig(ctx context.Context, owner string) (settings.MCPC
 	return servers, servers.Validate()
 }
 
-func (r *Repository) SaveMCPConfig(ctx context.Context, owner string, config settings.MCPConfig, invalidated []string) error {
+func (r *SettingsStore) SaveMCPConfig(ctx context.Context, owner string, config settings.MCPConfig, invalidated []string) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
@@ -107,4 +107,4 @@ func insertMCPConfig(tx *gorm.DB, owner string, config settings.MCPConfig) error
 	return nil
 }
 
-var _ settings.MCPRepository = (*Repository)(nil)
+var _ settings.MCPRepository = (*SettingsStore)(nil)

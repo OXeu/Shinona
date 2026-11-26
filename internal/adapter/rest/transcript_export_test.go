@@ -144,7 +144,7 @@ func TestTranscriptExportReportsErrorsBeforeAndAfterResponseStarts(t *testing.T)
 func TestTranscriptExportDeadlineIncludesWaitingForSlot(t *testing.T) {
 	repo, _ := restFixture(t)
 	api := &handler{
-		service: fixtureService(repo), logger: slog.New(slog.DiscardHandler), fullTranscript: semaphore.NewWeighted(1),
+		service: fixtureService(repo.RunStores()), logger: slog.New(slog.DiscardHandler), fullTranscript: semaphore.NewWeighted(1),
 	}
 	if !api.fullTranscript.TryAcquire(1) {
 		t.Fatal("could not hold the full-transcript slot")

@@ -9,7 +9,7 @@ import (
 )
 
 type completingRepository struct {
-	Repository
+	WorkerRepository
 	writes chan Completion
 }
 
@@ -48,7 +48,7 @@ func TestWorkerRetriesCompletionAfterPanic(t *testing.T) {
 		active.ctx, active.cancel = context.WithCancel(t.Context())
 		defer active.cancel()
 		controls := &Controls{active: map[sessionKey]*activeTurn{active.key(): active}}
-		worker := NewWorker(repo, nil, slog.New(slog.DiscardHandler), controls, DefaultWorkerConcurrency)
+		worker := NewWorker(repo, nil, nil, slog.New(slog.DiscardHandler), controls, DefaultWorkerConcurrency)
 		done := make(chan struct{})
 		go func() {
 			defer close(done)

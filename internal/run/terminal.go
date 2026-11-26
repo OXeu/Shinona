@@ -65,7 +65,7 @@ type terminalRegistry struct {
 type terminalStarts struct{ count int }
 
 func (s *Service) Terminals(ctx context.Context, owner, id string) ([]TerminalTab, error) {
-	if _, err := s.repo.SessionProject(ctx, owner, id); err != nil {
+	if _, err := s.stores.Sessions.SessionProject(ctx, owner, id); err != nil {
 		return nil, err
 	}
 	s.terminals.mu.Lock()
@@ -86,7 +86,7 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 		return TerminalTab{}, ErrTerminalUnavailable
 	}
 	defer pool.endStart(key, start)
-	spec, release, err := lockSessionProject(ctx, s.repo, owner, id, func(key sandbox.ProjectKey) (func(), error) {
+	spec, release, err := lockSessionProject(ctx, s.stores.Sessions, owner, id, func(key sandbox.ProjectKey) (func(), error) {
 		if release, ok := s.projectChanges.TryAcquire(key, true); ok {
 			return release, nil
 		}
@@ -96,7 +96,7 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 		return TerminalTab{}, err
 	}
 	defer release()
-	spec, target, err := projectTarget(ctx, s.repo, s.resolve, spec, "", true)
+	spec, target, err := projectTarget(ctx, s.stores.Projects, s.resolve, spec, "", true)
 	if err != nil {
 		return TerminalTab{}, err
 	}
@@ -219,7 +219,7 @@ func (p *terminalRegistry) stopProject(ctx context.Context, owner, project strin
 }
 
 func (s *Service) Terminal(ctx context.Context, owner, id, terminalID string) (*TerminalSession, error) {
-	if _, err := s.repo.SessionProject(ctx, owner, id); err != nil {
+	if _, err := s.stores.Sessions.SessionProject(ctx, owner, id); err != nil {
 		return nil, err
 	}
 	s.terminals.mu.Lock()
@@ -233,7 +233,7 @@ func (s *Service) Terminal(ctx context.Context, owner, id, terminalID string) (*
 }
 
 func (s *Service) StopTerminal(ctx context.Context, owner, id, terminalID string) error {
-	if _, err := s.repo.SessionProject(ctx, owner, id); err != nil {
+	if _, err := s.stores.Sessions.SessionProject(ctx, owner, id); err != nil {
 		return err
 	}
 	s.terminals.mu.Lock()

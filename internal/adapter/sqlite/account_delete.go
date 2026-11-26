@@ -8,7 +8,7 @@ import (
 	"github.com/OXeu/shinona/internal/auth"
 )
 
-func (r *Repository) DeleteAccount(ctx context.Context, actor, target string) error {
+func (r *AccountStore) DeleteAccount(ctx context.Context, actor, target string) error {
 	done := r.sessions.change("", target)
 	defer done()
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

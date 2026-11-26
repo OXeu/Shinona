@@ -58,7 +58,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	}
 	t.Cleanup(func() { _ = repo.Close() })
 	const owner = "owner"
-	if err := repo.CreatePasswordUser(ctx, auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+	if err := repo.Accounts.CreatePasswordUser(ctx, auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.DiscardHandler)
@@ -67,7 +67,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repo, resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil)
 	entry, err := service.CreateSession(ctx, owner, "")
 	if err != nil {
 		t.Fatal(err)
@@ -77,16 +77,16 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	var known []*sessionpb.TurnVersion
 	for sequence := 1; sequence <= run.TranscriptPageSize+earlier; sequence++ {
 		id := fmt.Sprintf("earlier-%d", sequence)
-		if _, err := repo.Enqueue(ctx, run.Run{
+		if _, err := repo.Conversations.Enqueue(ctx, run.Run{
 			ID: id, OwnerID: owner, SessionID: entry.ID, Policy: sandbox.Fresh, Prompt: "Prior turn",
 			Status: run.Queued, CreatedAt: now, UpdatedAt: now,
 		}, "Prior", false); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := repo.ClaimNext(ctx, now); err != nil {
+		if _, err := repo.Conversations.ClaimNext(ctx, now); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.Complete(ctx, id, run.Completion{
+		if err := repo.Conversations.Complete(ctx, id, run.Completion{
 			Result: run.Result{Output: "Prior reply."}, Status: run.Succeeded, UpdatedAt: now,
 		}); err != nil {
 			t.Fatal(err)
@@ -183,7 +183,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		run.NewWorker(repo, resolve, logger, controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(repo.Conversations, repo.Projects, resolve, logger, controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	defer func() {
 		cancel()

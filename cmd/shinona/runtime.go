@@ -17,7 +17,6 @@ type runtimeRepository interface {
 	settings.ModelRepository
 	settings.MCPRepository
 	settings.SSHRepository
-	e2b.WorkspaceStore
 	mcp.OAuthStore
 }
 
@@ -28,7 +27,7 @@ type runtime struct {
 	*sshRuntime
 }
 
-func newRuntime(ctx context.Context, repo runtimeRepository, environment environment) (*runtime, error) {
+func newRuntime(ctx context.Context, repo runtimeRepository, workspaces e2b.WorkspaceStore, environment environment) (*runtime, error) {
 	origin, err := webOrigin(environment.value("SHINONA_WEB_ORIGIN", "http://127.0.0.1:5173"))
 	if err != nil {
 		return nil, err
@@ -46,7 +45,7 @@ func newRuntime(ctx context.Context, repo runtimeRepository, environment environ
 	models := newModelRuntime(repo, modelPolicy, mcpSettings)
 	instance := &instanceSettings{
 		repo: repo, defaults: settings.Defaults(environment.lookup), origin: origin, publicHTTP: publicHTTP,
-		e2bStore: repo, buildSSH: sshSettings.sshSandboxProvider, agent: models.resolveAgent,
+		e2bStore: workspaces, buildSSH: sshSettings.sshSandboxProvider, agent: models.resolveAgent,
 		e2bHTTP: &http.Client{
 			Timeout:       35 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

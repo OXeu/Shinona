@@ -53,7 +53,7 @@ func migrateWorkspaceRoots(db *gorm.DB) error {
 	})
 }
 
-func (r *Repository) WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error) {
+func (r *ProjectStore) WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error) {
 	var record workspaceRootRow
 	err := r.read.WithContext(ctx).Model(&sessionRow{}).
 		Select("COALESCE(roots.root, '') AS root").
@@ -66,7 +66,7 @@ func (r *Repository) WorkspaceRoot(ctx context.Context, ownerID, sessionID strin
 	return record.Root, err
 }
 
-func (r *Repository) SetWorkspaceRoot(ctx context.Context, ownerID, sessionID, projectID, root string) error {
+func (r *ProjectStore) SetWorkspaceRoot(ctx context.Context, ownerID, sessionID, projectID, root string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		current, err := sessionProject(tx, ownerID, sessionID)
 		if err != nil {

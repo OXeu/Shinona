@@ -85,7 +85,7 @@ func benchmarkSessionListPoll(b *testing.B) {
 		for b.Loop() {
 			title := titles[iteration%len(titles)]
 			b.StopTimer()
-			if _, err := a.repo.UpdateSession(b.Context(), a.owner, session, run.SessionChanges{Title: &title}); err != nil {
+			if _, err := a.repo.Conversations.UpdateSession(b.Context(), a.owner, session, run.SessionChanges{Title: &title}); err != nil {
 				b.Fatal(err)
 			}
 			b.StartTimer()

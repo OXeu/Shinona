@@ -37,17 +37,17 @@ func (a benchmarkTimedAgent) Run(ctx context.Context, input run.Input, _ sandbox
 }
 
 type benchmarkSchedulingRepository struct {
-	run.Repository
+	run.WorkerRepository
 	completions chan run.Status
 }
 
 type schedulingTestRepository struct {
-	run.Repository
+	run.WorkerRepository
 	idle chan struct{}
 }
 
 func (r schedulingTestRepository) ClaimNext(ctx context.Context, now time.Time) (*run.Run, error) {
-	item, err := r.Repository.ClaimNext(ctx, now)
+	item, err := r.WorkerRepository.ClaimNext(ctx, now)
 	if item == nil && err == nil {
 		select {
 		case r.idle <- struct{}{}:
@@ -61,11 +61,11 @@ func TestWorkerWakesAndRunsIndependentWorkspaces(t *testing.T) {
 	agent := benchmarkSteeringAgent{input: make(chan run.Input, 4), release: make(chan struct{})}
 	a := newCoreBenchmarkAPI(t, agent)
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
-	repo := schedulingTestRepository{a.repo, make(chan struct{}, 1)}
+	repo := schedulingTestRepository{a.repo.Conversations, make(chan struct{}, 1)}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repo, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(repo, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -80,7 +80,7 @@ func TestWorkerWakesAndRunsIndependentWorkspaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	account, err := auth.New(a.repo, password.Argon2id{}, uuid.NewString).
+	account, err := auth.New(a.repo.Accounts, password.Argon2id{}, uuid.NewString).
 		CreatePasswordUser(ctx, "parallel@example.invalid", "local benchmark password")
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestWorkerWakesAndRunsIndependentWorkspaces(t *testing.T) {
 }
 
 func (r benchmarkSchedulingRepository) Complete(ctx context.Context, id string, completion run.Completion) error {
-	err := r.Repository.Complete(ctx, id, completion)
+	err := r.WorkerRepository.Complete(ctx, id, completion)
 	if err != nil {
 		r.completions <- run.Failed
 	} else {
@@ -152,19 +152,19 @@ func benchmarkWorkerPair(b *testing.B, sameSession bool) {
 	a := newCoreBenchmarkAPI(b, agent)
 	secondOwner := a.owner
 	if !sameSession {
-		accounts := auth.New(a.repo, password.Argon2id{}, uuid.NewString)
+		accounts := auth.New(a.repo.Accounts, password.Argon2id{}, uuid.NewString)
 		account, err := accounts.CreatePasswordUser(b.Context(), "second-benchmark@example.invalid", "local benchmark password")
 		if err != nil {
 			b.Fatal(err)
 		}
 		secondOwner = account.ID
 	}
-	repo := benchmarkSchedulingRepository{Repository: a.repo, completions: make(chan run.Status, 2)}
+	repo := benchmarkSchedulingRepository{WorkerRepository: a.repo.Conversations, completions: make(chan run.Status, 2)}
 	ctx, cancel := context.WithCancel(b.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repo, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(repo, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	b.Cleanup(func() {
 		cancel()

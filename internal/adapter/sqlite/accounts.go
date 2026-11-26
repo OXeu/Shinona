@@ -36,7 +36,7 @@ type emailChallengeRow struct {
 
 func (emailChallengeRow) TableName() string { return "account_email_challenges" }
 
-func (r *Repository) UpdateProfile(ctx context.Context, owner string, change auth.ProfileChange) (auth.User, error) {
+func (r *AccountStore) UpdateProfile(ctx context.Context, owner string, change auth.ProfileChange) (auth.User, error) {
 	done := r.sessions.change("", owner)
 	defer done()
 	var row userRow
@@ -61,7 +61,7 @@ func (r *Repository) UpdateProfile(ctx context.Context, owner string, change aut
 	return row.user(), err
 }
 
-func (r *Repository) AccountAvatar(ctx context.Context, owner, version string) (*auth.Avatar, error) {
+func (r *AccountStore) AccountAvatar(ctx context.Context, owner, version string) (*auth.Avatar, error) {
 	var row avatarRow
 	err := r.read.WithContext(ctx).First(&row, "owner_id = ? AND version = ?", owner, version).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -73,7 +73,7 @@ func (r *Repository) AccountAvatar(ctx context.Context, owner, version string) (
 	return &auth.Avatar{Version: row.Version, MediaType: row.MediaType, Data: row.Data}, nil
 }
 
-func (r *Repository) AccountCredentials(ctx context.Context, owner, sessionKey string, now time.Time) (auth.CredentialState, error) {
+func (r *AccountStore) AccountCredentials(ctx context.Context, owner, sessionKey string, now time.Time) (auth.CredentialState, error) {
 	return accountCredentials(r.read.WithContext(ctx), owner, sessionKey, now)
 }
 
@@ -103,7 +103,7 @@ func ensureCredentials(tx *gorm.DB, state auth.CredentialState, sessionKey strin
 	return nil
 }
 
-func (r *Repository) ChangePassword(ctx context.Context, state auth.CredentialState, sessionKey string, hash []byte, now time.Time) error {
+func (r *AccountStore) ChangePassword(ctx context.Context, state auth.CredentialState, sessionKey string, hash []byte, now time.Time) error {
 	done := r.sessions.change("", state.User.ID)
 	defer done()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -122,7 +122,7 @@ func (r *Repository) ChangePassword(ctx context.Context, state auth.CredentialSt
 	return err
 }
 
-func (r *Repository) SaveEmailChallenge(ctx context.Context, state auth.CredentialState, input auth.EmailChallenge) error {
+func (r *AccountStore) SaveEmailChallenge(ctx context.Context, state auth.CredentialState, input auth.EmailChallenge) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := ensureCredentials(tx, state, input.SessionKey, input.SentAt); err != nil {
 			return err
@@ -146,7 +146,7 @@ func (r *Repository) SaveEmailChallenge(ctx context.Context, state auth.Credenti
 	})
 }
 
-func (r *Repository) VerifyEmailChallenge(ctx context.Context, owner, sessionKey, id, codeHash string, now time.Time) error {
+func (r *AccountStore) VerifyEmailChallenge(ctx context.Context, owner, sessionKey, id, codeHash string, now time.Time) error {
 	done := r.sessions.change("", owner)
 	defer done()
 	var rejected error
@@ -185,7 +185,7 @@ func (r *Repository) VerifyEmailChallenge(ctx context.Context, owner, sessionKey
 	return rejected
 }
 
-func (r *Repository) ListAccounts(ctx context.Context, search string, offset, limit int) (auth.AccountPage, error) {
+func (r *AccountStore) ListAccounts(ctx context.Context, search string, offset, limit int) (auth.AccountPage, error) {
 	page := auth.AccountPage{Users: make([]auth.User, 0)}
 	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		query := tx.Model(&userRow{})
@@ -209,7 +209,7 @@ func (r *Repository) ListAccounts(ctx context.Context, search string, offset, li
 	return page, err
 }
 
-func (r *Repository) CreateManagedAccount(ctx context.Context, actor string, user auth.User, hash []byte) error {
+func (r *AccountStore) CreateManagedAccount(ctx context.Context, actor string, user auth.User, hash []byte) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := ensureAdmin(tx, actor); err != nil {
 			return err
@@ -218,7 +218,7 @@ func (r *Repository) CreateManagedAccount(ctx context.Context, actor string, use
 	})
 }
 
-func (r *Repository) SetAccountAccess(ctx context.Context, actor, target string, access auth.AccountAccess) (auth.User, error) {
+func (r *AccountStore) SetAccountAccess(ctx context.Context, actor, target string, access auth.AccountAccess) (auth.User, error) {
 	done := r.sessions.change("", target)
 	defer done()
 	var row userRow

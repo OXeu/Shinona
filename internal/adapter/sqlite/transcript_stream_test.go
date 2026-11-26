@@ -19,20 +19,20 @@ func TestTranscriptStreamReadsOrderedBatchesFromOneSnapshot(t *testing.T) {
 	now := time.Now().UTC()
 	const owner, session = "owner", "session"
 	seedAccounts(t, repo, owner)
-	if err := repo.CreateSession(ctx, run.Session{ID: session, OwnerID: owner, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := repo.Conversations.CreateSession(ctx, run.Session{ID: session, OwnerID: owner, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	const count = 2*run.TranscriptPageSize + 1
 	for i := 1; i <= count; i++ {
 		item := run.Run{ID: fmt.Sprint(i), OwnerID: owner, SessionID: session, Prompt: "fixture",
 			Status: run.Queued, CreatedAt: now, UpdatedAt: now, Payload: run.Payload{Options: run.Options{Model: fmt.Sprint(i)}}}
-		if _, err := repo.Enqueue(ctx, item, "Fixture", false); err != nil {
+		if _, err := repo.Conversations.Enqueue(ctx, item, "Fixture", false); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := repo.ClaimNext(ctx, now); err != nil {
+		if _, err := repo.Conversations.ClaimNext(ctx, now); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.Complete(ctx, item.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
+		if err := repo.Conversations.Complete(ctx, item.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -41,7 +41,7 @@ func TestTranscriptStreamReadsOrderedBatchesFromOneSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	var batches, sequence int
-	err = repo.StreamTranscript(ctx, owner, session, func(stream run.TranscriptStream) error {
+	err = repo.Conversations.StreamTranscript(ctx, owner, session, func(stream run.TranscriptStream) error {
 		if inUse := reader.Stats().InUse; inUse != 0 {
 			t.Fatalf("export retained %d database readers while writing", inUse)
 		}
@@ -69,7 +69,7 @@ func TestTranscriptStreamReadsOrderedBatchesFromOneSnapshot(t *testing.T) {
 			if batches == 1 {
 				// Commit a revert on the separate writer while the export is
 				// reading. The remaining batches must keep the old snapshot.
-				if _, err := repo.RevertTurn(ctx, owner, session, fmt.Sprint(count-1), fmt.Sprint(count), now); err != nil {
+				if _, err := repo.Conversations.RevertTurn(ctx, owner, session, fmt.Sprint(count-1), fmt.Sprint(count), now); err != nil {
 					return err
 				}
 			}
@@ -78,7 +78,7 @@ func TestTranscriptStreamReadsOrderedBatchesFromOneSnapshot(t *testing.T) {
 	if err != nil || batches != 3 || sequence != count {
 		t.Fatalf("stream ended after %d batches and %d turns: %v", batches, sequence, err)
 	}
-	current, err := repo.Transcript(ctx, owner, session, count)
+	current, err := repo.Conversations.Transcript(ctx, owner, session, count)
 	if err != nil || current == nil || len(current.Turns) != count-2 {
 		t.Fatalf("reverted transcript did not commit independently: %+v, %v", current, err)
 	}

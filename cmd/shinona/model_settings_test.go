@@ -24,7 +24,7 @@ import (
 	"github.com/OXeu/shinona/internal/settings"
 )
 
-func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Repository, func(string, string, string, any) string) {
+func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Database, func(string, string, string, any) string) {
 	t.Helper()
 	repo, err := sqlite.Open(t.Context(), ":memory:")
 	if err != nil {
@@ -36,20 +36,20 @@ func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Re
 		}
 	})
 	if legacy != nil {
-		if saved, err := repo.SaveSettingOverrides(t.Context(), 0, legacy); err != nil || !saved {
+		if saved, err := repo.Settings.SaveSettingOverrides(t.Context(), 0, legacy); err != nil || !saved {
 			t.Fatalf("seed instance overrides: %t, %v", saved, err)
 		}
 	}
 	for _, id := range []string{"alice", "bob"} {
-		if err := repo.CreatePasswordUser(t.Context(), auth.User{ID: id, Email: id + "@example.test"}, []byte("test-hash")); err != nil {
+		if err := repo.Accounts.CreatePasswordUser(t.Context(), auth.User{ID: id, Email: id + "@example.test"}, []byte("test-hash")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	app, err := newRuntime(t.Context(), repo, nil)
+	app, err := newRuntime(t.Context(), repo.Settings, repo.E2B, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := run.NewService(repo, app.ResolveForAccount, uuid.NewString, &run.Controls{}, app.ProjectTargets)
+	service := run.NewService(repo.RunStores(), app.ResolveForAccount, uuid.NewString, &run.Controls{}, app.ProjectTargets)
 	api := gin.New()
 	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler))
 	query := func(owner, method, path string, body any) string {
@@ -99,7 +99,7 @@ func TestModelSettingsKeepTrustedOriginsWithWrappedTransport(t *testing.T) {
 	if response := save("https://127.0.0.1:43211/v1"); !strings.Contains(response, "PRIVATE_ENDPOINT") {
 		t.Fatalf("a different private origin was accepted: %s", response)
 	}
-	if values, err := repo.ModelSettings(t.Context(), "alice"); err != nil || values[settings.ModelBaseURL] != trusted+"/v1" {
+	if values, err := repo.Settings.ModelSettings(t.Context(), "alice"); err != nil || values[settings.ModelBaseURL] != trusted+"/v1" {
 		t.Fatalf("failed validation changed the stored base URL: %v", err)
 	}
 }
@@ -170,7 +170,7 @@ func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: app.resolveAgent}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repo, resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil)
 	for _, owner := range []string{"alice", "bob"} {
 		session, err := service.CreateSession(t.Context(), owner, "")
 		if err != nil {
@@ -184,7 +184,7 @@ func TestAccountModelSettingsReachComposerAndWorker(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repo, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(workerCtx)
+		run.NewWorker(repo.Conversations, repo.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(workerCtx)
 	}()
 	defer func() { cancel(); <-done }()
 	executed := map[string]bool{}

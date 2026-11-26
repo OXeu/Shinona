@@ -56,6 +56,20 @@ type Session struct {
 	Unread      bool
 }
 
+func (s Session) TitleAfterAppend(firstTitle string) string {
+	if s.TurnCount == 0 && !s.CustomTitle {
+		return firstTitle
+	}
+	return s.Title
+}
+
+func (s Session) TitleAfterRemoval(remaining int) string {
+	if remaining == 0 && !s.CustomTitle {
+		return DefaultSessionTitle
+	}
+	return s.Title
+}
+
 type SessionChanges struct {
 	Title  *string
 	Pinned *bool
@@ -63,7 +77,17 @@ type SessionChanges struct {
 
 const TranscriptPageSize = 30
 const MaxLiveTranscriptTurns = 256
-const MaxActiveSessionTurns = 8
+const maxActiveSessionTurns = 8
+
+func CheckTurnAdmission(active int64, queue bool) error {
+	if active > 0 && !queue {
+		return ErrActiveRun
+	}
+	if active >= maxActiveSessionTurns {
+		return ErrQueueFull
+	}
+	return nil
+}
 
 const MaxTranscriptExportTurns = 5000
 
@@ -163,46 +187,6 @@ type TokenUsage struct {
 	Input  int32 `json:"input"`
 	Cached int32 `json:"cached"`
 	Output int32 `json:"output"`
-}
-
-type Repository interface {
-	CreateSession(context.Context, Session) error
-	RecentSessions(ctx context.Context, ownerID string, projectID *string, limit int) ([]Session, error)
-	SessionListRevision(ctx context.Context, ownerID string) (int64, error)
-	CreateProject(context.Context, Project) error
-	Projects(ctx context.Context, ownerID string) ([]Project, error)
-	Project(ctx context.Context, ownerID, id string) (Project, error)
-	ProjectSandboxConfig(ctx context.Context, ownerID, projectID string) (*ProjectSandboxConfig, error)
-	RememberProjectSandboxProvider(ctx context.Context, ownerID, projectID, provider string) error
-	SaveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config ProjectSandboxConfig) error
-	RenameProject(ctx context.Context, ownerID, id, name string) (Project, error)
-	RemoveProject(ctx context.Context, ownerID, id string) error
-	Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*Transcript, error)
-	TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*Transcript, error)
-	StreamTranscript(ctx context.Context, ownerID, sessionID string, write func(TranscriptStream) error) error
-	Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*Image, error)
-	AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error)
-	SessionProject(ctx context.Context, ownerID, sessionID string) (string, error)
-	WorkspaceRoot(ctx context.Context, ownerID, sessionID string) (string, error)
-	SetWorkspaceRoot(ctx context.Context, ownerID, sessionID, projectID, root string) error
-	UpdateSession(ctx context.Context, ownerID, sessionID string, changes SessionChanges) (Session, error)
-	ArchiveSession(ctx context.Context, ownerID, sessionID string, now time.Time) error
-	MarkSessionRead(ctx context.Context, ownerID, sessionID string, through int, throughID string) error
-	RevertTurn(ctx context.Context, ownerID, sessionID, turnID, expectedHeadID string, now time.Time) (RevertedTurn, error)
-	// Enqueue checks ownership and the per-session queue bound atomically.
-	Enqueue(ctx context.Context, item Run, firstTitle string, queue bool) (Run, error)
-	// EnqueueRetry also verifies that the retry target is still the latest failed turn.
-	EnqueueRetry(ctx context.Context, item Run, options RetryOptions) (Run, error)
-	StopQueued(ctx context.Context, ownerID, sessionID, id string, now time.Time) error
-	TakeQueued(ctx context.Context, ownerID, sessionID, id string, textOnly bool, now time.Time) (PendingDraft, error)
-	History(ctx context.Context, turn Run, limit int) ([]Exchange, error)
-	ComposerDefaults(ctx context.Context, ownerID string) (*ComposerDefaults, error)
-	SaveComposerDefaults(ctx context.Context, ownerID string, defaults ComposerDefaults) error
-	Policy(ctx context.Context, ownerID string) (sandbox.Policy, error)
-	SetPolicy(ctx context.Context, ownerID string, choice sandbox.Policy) error
-	ClaimNext(ctx context.Context, now time.Time) (*Run, error)
-	Complete(ctx context.Context, id string, completion Completion) error
-	FailInterrupted(ctx context.Context, now time.Time) error
 }
 
 type Agent interface {

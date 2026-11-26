@@ -26,7 +26,7 @@ import (
 
 type benchmarkSandboxProvider struct {
 	name string
-	open func(*testing.B, *sqlite.Repository) sandbox.ManagedProjectProvider
+	open func(*testing.B, *sqlite.Database) sandbox.ManagedProjectProvider
 }
 
 func BenchmarkSandboxAPI(b *testing.B) {
@@ -60,7 +60,7 @@ func BenchmarkSandboxAPI(b *testing.B) {
 	}
 }
 
-func benchmarkSSHProvider(b *testing.B, _ *sqlite.Repository) sandbox.ManagedProjectProvider {
+func benchmarkSSHProvider(b *testing.B, _ *sqlite.Database) sandbox.ManagedProjectProvider {
 	b.Helper()
 	address := os.Getenv("SHINONA_BENCH_SSH_ADDRESS")
 	if address == "" {
@@ -79,7 +79,7 @@ func benchmarkSSHProvider(b *testing.B, _ *sqlite.Repository) sandbox.ManagedPro
 	return provider
 }
 
-func benchmarkE2BProvider(b *testing.B, repo *sqlite.Repository) sandbox.ManagedProjectProvider {
+func benchmarkE2BProvider(b *testing.B, repo *sqlite.Database) sandbox.ManagedProjectProvider {
 	b.Helper()
 	key := os.Getenv("SHINONA_BENCH_E2B_API_KEY")
 	if key == "" {
@@ -94,7 +94,7 @@ func benchmarkE2BProvider(b *testing.B, repo *sqlite.Repository) sandbox.Managed
 		BaseURL:  os.Getenv("SHINONA_BENCH_E2B_API_URL"),
 		ProxyURL: os.Getenv("SHINONA_BENCH_E2B_PROXY_URL"),
 		Domain:   os.Getenv("SHINONA_BENCH_E2B_DOMAIN"),
-	}, nil, repo)
+	}, nil, repo.E2B)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -107,14 +107,14 @@ type benchmarkSandbox struct {
 	spec     sandbox.Spec
 }
 
-func newBenchmarkSandbox(b *testing.B, repo *sqlite.Repository, name string, provider sandbox.ManagedProjectProvider) *benchmarkSandbox {
+func newBenchmarkSandbox(b *testing.B, repo *sqlite.Database, name string, provider sandbox.ManagedProjectProvider) *benchmarkSandbox {
 	b.Helper()
 	api := newBenchmarkAPI(b, repo, benchmarkTarget(name, provider, demo.Agent{}))
 	project, err := api.service.CreateProject(b.Context(), api.owner, "Sandbox benchmark")
 	if err != nil {
 		b.Fatal(err)
 	}
-	if err := repo.SaveProjectSandboxConfig(b.Context(), api.owner, project.ID, run.ProjectSandboxConfig{Provider: name}); err != nil {
+	if err := repo.Projects.SaveProjectSandboxConfig(b.Context(), api.owner, project.ID, run.ProjectSandboxConfig{Provider: name}); err != nil {
 		b.Fatal(err)
 	}
 	spec := sandbox.Spec{OwnerID: api.owner, ProjectID: project.ID, Policy: sandbox.Shared}
@@ -237,7 +237,7 @@ func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
 		printf 'modified\n' >> src/file-1.txt
 		printf 'untracked\n' > src/local.txt
 	`)
-	if err := s.repo.SetWorkspaceRoot(b.Context(), s.owner, session, s.spec.ProjectID, "benchmark-repo"); err != nil {
+	if err := s.repo.Projects.SetWorkspaceRoot(b.Context(), s.owner, session, s.spec.ProjectID, "benchmark-repo"); err != nil {
 		b.Fatal(err)
 	}
 	return session

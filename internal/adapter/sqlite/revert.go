@@ -10,7 +10,7 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
-func (r *Repository) RevertTurn(ctx context.Context, ownerID, sessionID, turnID, expectedHeadID string, now time.Time) (run.RevertedTurn, error) {
+func (r *ConversationStore) RevertTurn(ctx context.Context, ownerID, sessionID, turnID, expectedHeadID string, now time.Time) (run.RevertedTurn, error) {
 	var result run.RevertedTurn
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
@@ -55,9 +55,7 @@ func (r *Repository) RevertTurn(ctx context.Context, ownerID, sessionID, turnID,
 		}
 		session.ReadThrough = min(session.ReadThrough, session.TurnCount)
 		session.UpdatedAt = now
-		if session.TurnCount == 0 && !session.CustomTitle {
-			session.Title = run.DefaultSessionTitle
-		}
+		session.Title = describeSession(session).TitleAfterRemoval(session.TurnCount)
 		if err := sessionScope(tx, ownerID).Where("id = ?", sessionID).UpdateColumns(map[string]any{
 			"turn_count": session.TurnCount, "read_through": session.ReadThrough,
 			"updated_at": session.UpdatedAt, "title": session.Title,

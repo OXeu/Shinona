@@ -19,7 +19,7 @@ type composerDefaultsRow struct {
 
 func (composerDefaultsRow) TableName() string { return "composer_defaults" }
 
-func (r *Repository) ComposerDefaults(ctx context.Context, ownerID string) (*run.ComposerDefaults, error) {
+func (r *SettingsStore) ComposerDefaults(ctx context.Context, ownerID string) (*run.ComposerDefaults, error) {
 	var record composerDefaultsRow
 	err := r.read.WithContext(ctx).Take(&record, "owner_id = ?", ownerID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -31,7 +31,7 @@ func (r *Repository) ComposerDefaults(ctx context.Context, ownerID string) (*run
 	return &run.ComposerDefaults{Model: record.Model, Permission: record.Permission, Thinking: record.Thinking}, nil
 }
 
-func (r *Repository) SaveComposerDefaults(ctx context.Context, ownerID string, defaults run.ComposerDefaults) error {
+func (r *SettingsStore) SaveComposerDefaults(ctx context.Context, ownerID string, defaults run.ComposerDefaults) error {
 	record := composerDefaultsRow{OwnerID: ownerID, Model: defaults.Model, Permission: defaults.Permission, Thinking: defaults.Thinking}
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "owner_id"}}, DoUpdates: clause.AssignmentColumns([]string{"model", "permission", "thinking"}),

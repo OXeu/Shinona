@@ -65,7 +65,7 @@ func (c *latestTranscriptCache) discard(entry *latestTranscriptPage) {
 	c.entries.DeleteIf(entry.key, func(current *latestTranscriptPage) bool { return current == entry })
 }
 
-func (r *Repository) validateCachedTranscript(ctx context.Context, key latestTranscriptKey, page *latestTranscriptPage) (*run.Transcript, bool, error) {
+func (r *ConversationStore) validateCachedTranscript(ctx context.Context, key latestTranscriptKey, page *latestTranscriptPage) (*run.Transcript, bool, error) {
 	var current struct {
 		Session sessionRow `gorm:"embedded"`
 		HeadID  string

@@ -10,7 +10,7 @@ import (
 	"github.com/OXeu/shinona/internal/auth"
 )
 
-func (r *Repository) HasOAuthIdentity(ctx context.Context, owner string) (bool, error) {
+func (r *AccountStore) HasOAuthIdentity(ctx context.Context, owner string) (bool, error) {
 	return hasOAuthIdentity(r.read.WithContext(ctx), owner)
 }
 
@@ -23,7 +23,7 @@ func hasOAuthIdentity(db *gorm.DB, owner string) (bool, error) {
 	return err == nil, err
 }
 
-func (r *Repository) LinkOAuthIdentity(ctx context.Context, owner, sessionKey string, identity auth.Identity, now time.Time) error {
+func (r *AccountStore) LinkOAuthIdentity(ctx context.Context, owner, sessionKey string, identity auth.Identity, now time.Time) error {
 	done := r.sessions.change("", owner)
 	defer done()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -53,7 +53,7 @@ func (r *Repository) LinkOAuthIdentity(ctx context.Context, owner, sessionKey st
 	return err
 }
 
-func (r *Repository) UnlinkOAuthIdentity(ctx context.Context, state auth.CredentialState, sessionKey string, now time.Time) error {
+func (r *AccountStore) UnlinkOAuthIdentity(ctx context.Context, state auth.CredentialState, sessionKey string, now time.Time) error {
 	done := r.sessions.change("", state.User.ID)
 	defer done()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

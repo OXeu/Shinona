@@ -20,7 +20,7 @@ func TestInspectWorkspaceBorrowsOnlyTheSessionsLiveLease(t *testing.T) {
 	}
 	defer unlock()
 	repo := workspaceTestRepository{projects: map[sessionKey]string{{owner: "owner", id: "session"}: ""}}
-	service := NewService(repo, nil, nil, controls, nil)
+	service := NewService(ServiceStores{Sessions: repo, Projects: repo}, nil, nil, controls, nil)
 	unexpectedUse := func(context.Context, sandbox.Workspace) error {
 		t.Fatal("inspected an unavailable workspace")
 		return nil
@@ -95,7 +95,7 @@ func TestInspectWorkspaceBorrowsTheSharedProjectLease(t *testing.T) {
 			resolve := func(context.Context, string, string) (Target, error) {
 				return Target{Provider: workspaceTestProvider{}}, nil
 			}
-			service := NewService(repo, resolve, func() string { return "test-lease" }, controls, nil)
+			service := NewService(ServiceStores{Sessions: repo, Projects: repo}, resolve, func() string { return "test-lease" }, controls, nil)
 			box := &stubWorkspace{}
 			defer controls.publishWorkspace(active, box, &project)()
 			if err := service.InspectWorkspace(ctx, "owner", "second", func(_ context.Context, ws sandbox.Workspace) error {
@@ -138,7 +138,7 @@ func TestInspectWorkspaceAllowsConcurrentRetainedReads(t *testing.T) {
 	resolve := func(context.Context, string, string) (Target, error) {
 		return Target{Provider: workspaceTestProvider{}}, nil
 	}
-	service := NewService(repo, resolve, func() string { return "test-lease" }, &Controls{}, nil)
+	service := NewService(ServiceStores{Sessions: repo, Projects: repo}, resolve, func() string { return "test-lease" }, &Controls{}, nil)
 	entered := make(chan struct{})
 	first := make(chan error, 1)
 	go func() {
@@ -173,7 +173,8 @@ func TestInspectWorkspaceAllowsConcurrentRetainedReads(t *testing.T) {
 }
 
 type workspaceTestRepository struct {
-	Repository
+	SessionRepository
+	ProjectRepository
 	projects map[sessionKey]string
 }
 

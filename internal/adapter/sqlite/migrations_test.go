@@ -12,7 +12,7 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
-func openSchemaFixture(t *testing.T, filename string, version int) *Repository {
+func openSchemaFixture(t *testing.T, filename string, version int) *Database {
 	t.Helper()
 	dsn, _, err := databaseDSNs(filename)
 	if err != nil {
@@ -26,10 +26,10 @@ func openSchemaFixture(t *testing.T, filename string, version int) *Repository {
 	if err := migrateTo(db.WithContext(t.Context()), version); err != nil {
 		t.Fatal(err)
 	}
-	return newRepository(db)
+	return newDatabase(db, db)
 }
 
-func markUnversioned(t *testing.T, repo *Repository) {
+func markUnversioned(t *testing.T, repo *Database) {
 	t.Helper()
 	if err := repo.db.Exec("PRAGMA user_version = 0").Error; err != nil {
 		t.Fatal(err)
@@ -42,12 +42,12 @@ func TestMigratesAuthenticationTimeFromLegacyExpiry(t *testing.T) {
 	old := openSchemaFixture(t, filename, 3)
 	const owner, key = "owner", "legacy-session"
 	user := auth.User{ID: owner, Email: "owner@example.com", Name: "Owner"}
-	if err := old.CreatePasswordUser(ctx, user, []byte("stored-hash")); err != nil {
+	if err := old.Accounts.CreatePasswordUser(ctx, user, []byte("stored-hash")); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	signedIn := now.Add(-2 * time.Hour)
-	if err := old.SaveSession(ctx, key, owner, signedIn.Add(auth.SessionLifetime)); err != nil {
+	if err := old.Accounts.SaveSession(ctx, key, owner, signedIn.Add(auth.SessionLifetime)); err != nil {
 		t.Fatal(err)
 	}
 	if err := old.db.Exec("ALTER TABLE login_sessions DROP COLUMN authenticated_at").Error; err != nil {
@@ -61,7 +61,7 @@ func TestMigratesAuthenticationTimeFromLegacyExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	state, err := repo.AccountCredentials(ctx, owner, key, now)
+	state, err := repo.Accounts.AccountCredentials(ctx, owner, key, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestMigratesInlineAttachmentsWithoutChangingHistory(t *testing.T) {
 	old := openSchemaFixture(t, filename, 2)
 	seedAccounts(t, old, "owner")
 	now := time.Now().UTC()
-	if err := old.CreateSession(ctx, run.Session{OwnerID: "owner", ID: "session", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := old.Conversations.CreateSession(ctx, run.Session{OwnerID: "owner", ID: "session", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err := old.db.Create(&row{ID: "turn", OwnerID: "owner", SessionID: "session", Sequence: 1, Status: run.Succeeded,
@@ -102,12 +102,12 @@ func TestMigratesInlineAttachmentsWithoutChangingHistory(t *testing.T) {
 		Row().Scan(&retained); err != nil || retained != "keep" {
 		t.Fatalf("migration lost extension fields or kept inline bytes: %q, %v", retained, err)
 	}
-	image, err := repo.Attachment(ctx, "owner", "session", "turn", 0)
+	image, err := repo.Conversations.Attachment(ctx, "owner", "session", "turn", 0)
 	if err != nil || image == nil || image.Data != encoded || image.Name != "shot.png" {
 		t.Fatalf("migrated attachment: %+v, %v", image, err)
 	}
 	turn := run.Run{OwnerID: "owner", SessionID: "session", Sequence: 2}
-	history, err := repo.History(ctx, turn, 0)
+	history, err := repo.Conversations.History(ctx, turn, 0)
 	if err != nil || len(history) != 1 || len(history[0].Images) != 1 || history[0].Images[0].Data != encoded {
 		t.Fatalf("migrated history: %+v, %v", history, err)
 	}
@@ -125,14 +125,14 @@ func TestOwnershipMigrationKeepsValidDataAndRemovesLegacyGuards(t *testing.T) {
 	repo := openSchemaFixture(t, filepath.Join(t.TempDir(), "v5.db"), 5)
 	seedAccounts(t, repo, "owner", "other")
 	now := time.Now().UTC()
-	if err := repo.CreateProject(ctx, run.Project{ID: "project", OwnerID: "owner", Name: "Project"}); err != nil {
+	if err := repo.Projects.CreateProject(ctx, run.Project{ID: "project", OwnerID: "owner", Name: "Project"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", ProjectID: "project", Title: "Saved"}); err != nil {
+	if err := repo.Conversations.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", ProjectID: "project", Title: "Saved"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, binding := range []string{"project", "", "deleted-project"} {
-		if saved, err := repo.SaveE2BSandbox(ctx, "owner", binding, "endpoint", "", "box", []byte("credentials")); err != nil || !saved {
+		if saved, err := repo.E2B.SaveE2BSandbox(ctx, "owner", binding, "endpoint", "", "box", []byte("credentials")); err != nil || !saved {
 			t.Fatalf("fixture binding %q: %t, %v", binding, saved, err)
 		}
 	}
@@ -157,7 +157,7 @@ func TestOwnershipMigrationKeepsValidDataAndRemovesLegacyGuards(t *testing.T) {
 			BEGIN INSERT INTO projects (id, owner_id, name) VALUES (NEW.id, 'owner', 'Imported'); END;`).Error; err != nil {
 		t.Fatal(err)
 	}
-	expectedRevision, err := repo.SessionListRevision(ctx, "owner")
+	expectedRevision, err := repo.Conversations.SessionListRevision(ctx, "owner")
 	if err != nil || expectedRevision == 0 {
 		t.Fatalf("fixture revision = %d, %v", expectedRevision, err)
 	}
@@ -167,10 +167,10 @@ func TestOwnershipMigrationKeepsValidDataAndRemovesLegacyGuards(t *testing.T) {
 	if version, err := schemaVersion(repo.db); err != nil || version != 6 {
 		t.Fatalf("schema version = %d, %v", version, err)
 	}
-	if revision, err := repo.SessionListRevision(ctx, "owner"); err != nil || revision != expectedRevision {
+	if revision, err := repo.Conversations.SessionListRevision(ctx, "owner"); err != nil || revision != expectedRevision {
 		t.Fatalf("migration changed preserved revision: %d, %v", revision, err)
 	}
-	if revision, err := repo.SessionListRevision(ctx, "gone"); err != nil || revision != 0 {
+	if revision, err := repo.Conversations.SessionListRevision(ctx, "gone"); err != nil || revision != 0 {
 		t.Fatalf("orphaned revision survived: %d, %v", revision, err)
 	}
 	if repo.db.Migrator().HasTable("deleted_accounts") || !repo.db.Migrator().HasIndex(&row{}, "extra_turn_index") {
@@ -185,12 +185,12 @@ func TestOwnershipMigrationKeepsValidDataAndRemovesLegacyGuards(t *testing.T) {
 		t.Fatalf("migration did not preserve custom schema references: %q, %v", projectName, err)
 	}
 	for key, owner := range map[string]string{"anonymous": "", "linked": "owner"} {
-		flow, err := repo.ConsumeFlow(ctx, key, now)
+		flow, err := repo.Accounts.ConsumeFlow(ctx, key, now)
 		if err != nil || flow == nil || flow.OwnerID != owner || flow.Verifier != "verifier" {
 			t.Fatalf("migrated flow %s: %+v, %v", key, flow, err)
 		}
 	}
-	if count, err := repo.AdoptLegacy(ctx, "owner"); err != nil || count != 1 {
+	if count, err := repo.Conversations.AdoptLegacy(ctx, "owner"); err != nil || count != 1 {
 		t.Fatalf("legacy adoption = %d, %v", count, err)
 	}
 	var boxes []e2bWorkspaceRow
@@ -198,7 +198,7 @@ func TestOwnershipMigrationKeepsValidDataAndRemovesLegacyGuards(t *testing.T) {
 		boxes[0].ProjectID != "" || boxes[1].ProjectID != "project" || string(boxes[1].Credentials) != "credentials" {
 		t.Fatalf("migration did not preserve existing E2B bindings: %d rows, %v", len(boxes), err)
 	}
-	if _, err := repo.SaveE2BSandbox(ctx, "other", "project", "endpoint", "", "box", []byte("credentials")); err == nil {
+	if _, err := repo.E2B.SaveE2BSandbox(ctx, "other", "project", "endpoint", "", "box", []byte("credentials")); err == nil {
 		t.Fatal("migration did not restore foreign key enforcement on the writer")
 	}
 }
@@ -207,7 +207,7 @@ func TestOwnershipMigrationRollsBackInvalidReferences(t *testing.T) {
 	ctx := t.Context()
 	repo := openSchemaFixture(t, filepath.Join(t.TempDir(), "v5.db"), 5)
 	seedAccounts(t, repo, "owner", "other")
-	if err := repo.CreateProject(ctx, run.Project{ID: "project", OwnerID: "owner", Name: "Project"}); err != nil {
+	if err := repo.Projects.CreateProject(ctx, run.Project{ID: "project", OwnerID: "owner", Name: "Project"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.db.Create(&sessionRow{ID: "session", OwnerID: "other", ProjectID: "project", Title: "Recoverable"}).Error; err != nil {
@@ -266,7 +266,7 @@ func TestOwnershipMigrationRunsOnceOnConcurrentOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	sessions, err := repo.RecentSessions(ctx, "owner", nil, 10)
+	sessions, err := repo.Conversations.RecentSessions(ctx, "owner", nil, 10)
 	if err != nil || len(sessions) != 1 || sessions[0].ID != "session" {
 		t.Fatalf("concurrent upgrades changed the session data: %+v, %v", sessions, err)
 	}

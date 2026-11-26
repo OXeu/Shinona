@@ -17,7 +17,7 @@ const maxWorkspaceRoot = 1024
 // WorkspaceRoot returns the working directory shared by the session's project.
 // An empty result selects the project workspace root.
 func (s *Service) WorkspaceRoot(ctx context.Context, owner, sessionID string) (string, error) {
-	return s.repo.WorkspaceRoot(ctx, owner, sessionID)
+	return s.stores.Projects.WorkspaceRoot(ctx, owner, sessionID)
 }
 
 // SetWorkspaceRoot records the directory that changes, history, and commits use
@@ -29,7 +29,7 @@ func (s *Service) SetWorkspaceRoot(ctx context.Context, owner, sessionID, root s
 	if root != "" && !validWorkspaceRoot(root) {
 		return "", ErrWorkspaceRoot
 	}
-	projectID, err := s.repo.SessionProject(ctx, owner, sessionID)
+	projectID, err := s.stores.Sessions.SessionProject(ctx, owner, sessionID)
 	if err != nil {
 		return "", err
 	}
@@ -38,7 +38,7 @@ func (s *Service) SetWorkspaceRoot(ctx context.Context, owner, sessionID, root s
 			return "", err
 		}
 	}
-	if err := s.repo.SetWorkspaceRoot(ctx, owner, sessionID, projectID, root); err != nil {
+	if err := s.stores.Projects.SetWorkspaceRoot(ctx, owner, sessionID, projectID, root); err != nil {
 		return "", err
 	}
 	return root, nil

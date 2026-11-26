@@ -71,7 +71,7 @@ func BenchmarkCoreAPI(b *testing.B) {
 
 type benchmarkAPI struct {
 	*httptest.Server
-	repo       *sqlite.Repository
+	repo       *sqlite.Database
 	service    *run.Service
 	controls   *run.Controls
 	resolve    run.ResolveTarget
@@ -81,7 +81,7 @@ type benchmarkAPI struct {
 	accounts   *auth.Service
 }
 
-func benchmarkRepository(b testing.TB) *sqlite.Repository {
+func benchmarkRepository(b testing.TB) *sqlite.Database {
 	b.Helper()
 	repo, err := sqlite.Open(b.Context(), filepath.Join(b.TempDir(), "benchmark.db"))
 	if err != nil {
@@ -95,7 +95,7 @@ func benchmarkRepository(b testing.TB) *sqlite.Repository {
 	return repo
 }
 
-func newBenchmarkAPI(b testing.TB, repo *sqlite.Repository, target run.Target) *benchmarkAPI {
+func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target) *benchmarkAPI {
 	b.Helper()
 	ctx := b.Context()
 	logger := slog.New(slog.DiscardHandler)
@@ -106,7 +106,7 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Repository, target run.Target) *
 		}
 		return target, nil
 	}
-	service := run.NewService(repo, resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil)
 	b.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
@@ -114,7 +114,7 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Repository, target run.Target) *
 			b.Error(err)
 		}
 	})
-	accounts := auth.New(repo, password.Argon2id{}, uuid.NewString)
+	accounts := auth.New(repo.Accounts, password.Argon2id{}, uuid.NewString)
 	const email, secret = "benchmark@example.invalid", "local benchmark password"
 	owner, err := accounts.CreatePasswordUser(ctx, email, secret)
 	if err != nil {
@@ -309,11 +309,11 @@ func (a *benchmarkAPI) completedTurnWithPayload(b testing.TB, session, prompt st
 	if err != nil {
 		b.Fatal(err)
 	}
-	item, err := a.repo.ClaimNext(ctx, time.Now())
+	item, err := a.repo.Conversations.ClaimNext(ctx, time.Now())
 	if err != nil || item == nil || item.ID != queued.ID {
 		b.Fatalf("claim fixture turn %s: %v, %v", queued.ID, item, err)
 	}
-	if err := a.repo.Complete(ctx, item.ID, run.Completion{Result: result, Status: run.Succeeded, UpdatedAt: time.Now()}); err != nil {
+	if err := a.repo.Conversations.Complete(ctx, item.ID, run.Completion{Result: result, Status: run.Succeeded, UpdatedAt: time.Now()}); err != nil {
 		b.Fatal(err)
 	}
 	return *item
@@ -555,7 +555,7 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 				slowestServerTiming = response.header.Values("Server-Timing")
 			}
 		}
-		if err := a.repo.StopQueued(b.Context(), a.owner, session, result.ID, time.Now()); err != nil {
+		if err := a.repo.Conversations.StopQueued(b.Context(), a.owner, session, result.ID, time.Now()); err != nil {
 			b.Fatal(err)
 		}
 		b.StartTimer()
@@ -576,7 +576,7 @@ func (a *benchmarkAPI) claimTurn(b *testing.B, session string) {
 	if _, err := a.service.Submit(b.Context(), a.owner, session, benchmarkPrompt, run.Payload{}, false); err != nil {
 		b.Fatal(err)
 	}
-	item, err := a.repo.ClaimNext(b.Context(), time.Now())
+	item, err := a.repo.Conversations.ClaimNext(b.Context(), time.Now())
 	if err != nil || item == nil || item.SessionID != session {
 		b.Fatalf("claim active turn: %v, %v", item, err)
 	}
@@ -617,7 +617,7 @@ func benchmarkSteering(b *testing.B) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(a.repo, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(a.repo.Conversations, a.repo.Projects, a.resolve, a.logger, a.controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	b.Cleanup(func() {
 		cancel()

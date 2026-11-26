@@ -49,7 +49,7 @@ func execute(ctx context.Context, logger *slog.Logger, args []string) error {
 		if err != nil {
 			return err
 		}
-		service := auth.New(repository, hasher, uuid.NewString)
+		service := auth.New(repository.Accounts, hasher, uuid.NewString)
 		user, err := service.CreatePasswordUser(ctx, args[1], value)
 		if err != nil {
 			return err
@@ -57,9 +57,9 @@ func execute(ctx context.Context, logger *slog.Logger, args []string) error {
 		_, err = fmt.Fprintf(os.Stdout, "Created %s (%s)\n", user.Email, user.ID)
 		return err
 	case "grant-admin", "revoke-admin":
-		return repository.SetAdmin(ctx, args[1], args[0] == "grant-admin")
+		return repository.Accounts.SetAdmin(ctx, args[1], args[0] == "grant-admin")
 	default:
-		count, err := repository.AdoptLegacy(ctx, args[1])
+		count, err := repository.Conversations.AdoptLegacy(ctx, args[1])
 		if err != nil {
 			return err
 		}

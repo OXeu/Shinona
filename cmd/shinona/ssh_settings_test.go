@@ -57,7 +57,7 @@ func TestSSHMetadataEditDoesNotOverwriteConcurrentKeyRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	paused := &pausedSSHMetadataWrite{SSHRepository: repo, started: make(chan struct{}), resume: make(chan struct{})}
+	paused := &pausedSSHMetadataWrite{SSHRepository: repo.Settings, started: make(chan struct{}), resume: make(chan struct{})}
 	app.sshRuntime.repo = paused
 	release := sync.OnceFunc(func() { close(paused.resume) })
 	defer release()
@@ -95,7 +95,7 @@ func TestSSHMetadataEditDoesNotOverwriteConcurrentKeyRotation(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the metadata update did not finish")
 	}
-	server, err := repo.SSHServer(ctx, "alice", saved.ID)
+	server, err := repo.Settings.SSHServer(ctx, "alice", saved.ID)
 	if err != nil || server.Name != mutated.Name || server.PrivateKey != strings.TrimSpace(newKey) {
 		t.Fatalf("SSH metadata save lost an update or rewrote the key: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 	if bob := list("bob"); strings.Contains(bob, "East") || strings.Contains(bob, "West") || strings.Contains(bob, "errors") {
 		t.Fatalf("cross-account SSH servers: %s", bob)
 	}
-	defaultServer, err := repo.DefaultSSHServer(t.Context(), "alice")
+	defaultServer, err := repo.Settings.DefaultSSHServer(t.Context(), "alice")
 	if err != nil || defaultServer.ID != first || defaultServer.PrivateKey != key {
 		t.Fatal("default SSH server did not resolve with the expected credential")
 	}
@@ -149,7 +149,7 @@ func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 	if response := query("alice", http.MethodPut, "/projects/default/sandbox/config", sandboxInput(provider, "")); response != "" {
 		t.Fatalf("select SSH server: %s", response)
 	}
-	config, err := repo.ProjectSandboxConfig(t.Context(), "alice", "")
+	config, err := repo.Projects.ProjectSandboxConfig(t.Context(), "alice", "")
 	if err != nil || config == nil || *config != (run.ProjectSandboxConfig{Provider: provider}) {
 		t.Fatalf("project SSH setting: %+v, %v", config, err)
 	}
@@ -167,7 +167,7 @@ func TestAccountsCanBindAndSelectMultipleSSHServers(t *testing.T) {
 	if response := query("alice", http.MethodPut, serversPath, input); !strings.Contains(response, "West renamed") {
 		t.Fatalf("edit server without replacing its key: %s", response)
 	}
-	stored, err := repo.SSHServer(t.Context(), "alice", second)
+	stored, err := repo.Settings.SSHServer(t.Context(), "alice", second)
 	if err != nil || stored.PrivateKey != key || stored.Address != input["address"] ||
 		stored.User != input["user"] || stored.HostFingerprint != input["hostFingerprint"] {
 		t.Fatal("editing an in-use SSH server did not update its connection settings and preserve its key")
@@ -200,7 +200,7 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	if response := query("alice", http.MethodPost, testConnection, input); response != "" {
 		t.Fatalf("test draft with reachability, authentication and Docker: %s", response)
 	}
-	if servers, err := repo.SSHServers(t.Context(), "alice"); err != nil || len(servers) != 0 {
+	if servers, err := repo.Settings.SSHServers(t.Context(), "alice"); err != nil || len(servers) != 0 {
 		t.Fatalf("test should not save the draft: %v", err)
 	}
 
@@ -265,13 +265,13 @@ func TestSSHConnectionAndSwitchAfterCleanupFailure(t *testing.T) {
 	if response := query("alice", http.MethodPut, saveSandbox, sandboxInput("e2b", "ssh")); !strings.Contains(response, "INVALID_PROJECT_SANDBOX") {
 		t.Fatalf("skip cleanup for a different provider: %s", response)
 	}
-	if config, err := repo.ProjectSandboxConfig(t.Context(), "alice", ""); err != nil || config == nil || config.Provider != provider {
+	if config, err := repo.Projects.ProjectSandboxConfig(t.Context(), "alice", ""); err != nil || config == nil || config.Provider != provider {
 		t.Fatalf("project should still use the previous provider: %+v, %v", config, err)
 	}
 	if response := query("alice", http.MethodPut, saveSandbox, sandboxInput("e2b", provider)); response != "" {
 		t.Fatalf("switch to E2B after confirming cleanup can be skipped: %s", response)
 	}
-	if config, err := repo.ProjectSandboxConfig(t.Context(), "alice", ""); err != nil || config == nil || config.Provider != "e2b" {
+	if config, err := repo.Projects.ProjectSandboxConfig(t.Context(), "alice", ""); err != nil || config == nil || config.Provider != "e2b" {
 		t.Fatalf("project should now use E2B: %+v, %v", config, err)
 	}
 }
@@ -299,7 +299,7 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 		PrivateKey: key,
 	}
 	for _, owner := range []string{"alice", "bob"} {
-		if err := repo.SaveSSHServer(t.Context(), owner, server, true); err != nil {
+		if err := repo.Settings.SaveSSHServer(t.Context(), owner, server, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -426,7 +426,7 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	release("alice", true)
 	conn = nextConnection()
 
-	if err := repo.SaveProjectSandboxConfig(t.Context(), "alice", "", run.ProjectSandboxConfig{Provider: settings.SSHProviderPrefix + server.ID}); err != nil {
+	if err := repo.Projects.SaveProjectSandboxConfig(t.Context(), "alice", "", run.ProjectSandboxConfig{Provider: settings.SSHProviderPrefix + server.ID}); err != nil {
 		t.Fatal(err)
 	}
 	var session struct{ ID string }
@@ -464,7 +464,7 @@ func TestRetainedSSHWorkspaceReusesConnection(t *testing.T) {
 	release("bob", true)
 	nextConnection()
 	server.User = "new-user"
-	if err := repo.SaveSSHServer(t.Context(), "alice", server, false); err != nil {
+	if err := repo.Settings.SaveSSHServer(t.Context(), "alice", server, false); err != nil {
 		t.Fatal(err)
 	}
 	release("alice", true)

@@ -58,7 +58,7 @@ func benchmarkAuthSession(b *testing.B) {
 		for i := 0; b.Loop(); i++ {
 			b.StopTimer()
 			// SetAdmin invalidates all cached sessions for this owner.
-			if err := a.repo.SetAdmin(b.Context(), a.owner, i%2 == 0); err != nil {
+			if err := a.repo.Accounts.SetAdmin(b.Context(), a.owner, i%2 == 0); err != nil {
 				b.Fatal(err)
 			}
 			b.StartTimer()
@@ -95,7 +95,7 @@ func benchmarkAuthSession(b *testing.B) {
 		stopped := make(chan error, 1)
 		// Guarantee an owner invalidation before the readers start. Keep
 		// invalidating their populated entries throughout the timed window.
-		if err := a.repo.SetAdmin(b.Context(), a.owner, true); err != nil {
+		if err := a.repo.Accounts.SetAdmin(b.Context(), a.owner, true); err != nil {
 			b.Fatal(err)
 		}
 		go func() {
@@ -105,7 +105,7 @@ func benchmarkAuthSession(b *testing.B) {
 			for {
 				select {
 				case <-ticker.C:
-					if err := a.repo.SetAdmin(b.Context(), a.owner, admin); err != nil {
+					if err := a.repo.Accounts.SetAdmin(b.Context(), a.owner, admin); err != nil {
 						stopped <- err
 						return
 					}

@@ -83,15 +83,15 @@ func TestPiDeliversSteeringBatchesAcrossModelRequests(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	repository := steeringRepository{Repository: repo, complete: make(chan run.Completion, 1)}
+	repository := steeringRepository{ConversationStore: repo.Conversations, complete: make(chan run.Completion, 1)}
 	controls := &run.Controls{}
 	resolve := func(context.Context, string, string) (run.Target, error) {
 		return run.Target{Name: "demo", Provider: demo.Provider{},
 			ResolveAgent: func(context.Context, string) (run.Agent, error) { return New(endpoint, "fixture", nil), nil }}, nil
 	}
-	service := run.NewService(repository, resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil)
 	const owner, prompt = "owner", "Inspect the test."
-	if err := repo.CreatePasswordUser(lifetime, auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+	if err := repo.Accounts.CreatePasswordUser(lifetime, auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
 		t.Fatal(err)
 	}
 	session, err := service.CreateSession(lifetime, owner, "")
@@ -105,7 +105,7 @@ func TestPiDeliversSteeringBatchesAcrossModelRequests(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls, 1).Serve(lifetime)
+		run.NewWorker(repository, repo.Projects, resolve, slog.New(slog.DiscardHandler), controls, 1).Serve(lifetime)
 	}()
 	defer func() {
 		cancel()
@@ -164,12 +164,12 @@ func TestPiDeliversSteeringBatchesAcrossModelRequests(t *testing.T) {
 }
 
 type steeringRepository struct {
-	*sqlite.Repository
+	*sqlite.ConversationStore
 	complete chan run.Completion
 }
 
 func (r steeringRepository) Complete(ctx context.Context, id string, completion run.Completion) error {
-	if err := r.Repository.Complete(ctx, id, completion); err != nil {
+	if err := r.ConversationStore.Complete(ctx, id, completion); err != nil {
 		return err
 	}
 	r.complete <- completion

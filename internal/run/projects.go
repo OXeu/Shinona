@@ -28,7 +28,7 @@ func (s *Service) CreateProject(ctx context.Context, owner, name string) (Projec
 		return Project{}, err
 	}
 	project := Project{ID: s.newID(), OwnerID: owner, Name: name}
-	if err := s.repo.CreateProject(ctx, project); err != nil {
+	if err := s.stores.Projects.CreateProject(ctx, project); err != nil {
 		return Project{}, err
 	}
 	return project, nil
@@ -39,7 +39,7 @@ func (s *Service) RenameProject(ctx context.Context, owner, id, name string) (Pr
 	if err != nil {
 		return Project{}, err
 	}
-	return s.repo.RenameProject(ctx, owner, id, name)
+	return s.stores.Projects.RenameProject(ctx, owner, id, name)
 }
 
 func (s *Service) RemoveProject(ctx context.Context, owner, id string) error {
@@ -58,7 +58,7 @@ func (s *Service) RemoveProject(ctx context.Context, owner, id string) error {
 		}
 		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
-		if err := s.repo.RemoveProject(save, owner, id); err != nil {
+		if err := s.stores.Projects.RemoveProject(save, owner, id); err != nil {
 			return err
 		}
 		s.controls.changedAccount(owner)
@@ -67,7 +67,7 @@ func (s *Service) RemoveProject(ctx context.Context, owner, id string) error {
 }
 
 func (s *Service) Projects(ctx context.Context, owner string) ([]Project, error) {
-	return s.repo.Projects(ctx, owner)
+	return s.stores.Projects.Projects(ctx, owner)
 }
 
 func projectName(name string) (string, error) {

@@ -37,16 +37,7 @@ type ProjectSandbox struct {
 	Status        sandbox.ProjectStatus
 }
 
-func sessionSandbox(ctx context.Context, repo Repository, resolve ResolveTarget, owner, session, backend string, provision bool) (sandbox.Spec, Target, error) {
-	project, err := repo.SessionProject(ctx, owner, session)
-	if err != nil {
-		return sandbox.Spec{}, Target{}, err
-	}
-	spec := sandbox.Spec{OwnerID: owner, SessionID: session, ProjectID: project, Policy: sandbox.Shared}
-	return projectTarget(ctx, repo, resolve, spec, backend, provision)
-}
-
-func projectTarget(ctx context.Context, repo Repository, resolve ResolveTarget, spec sandbox.Spec, backend string, provision bool) (sandbox.Spec, Target, error) {
+func projectTarget(ctx context.Context, repo ProjectSandboxRepository, resolve ResolveTarget, spec sandbox.Spec, backend string, provision bool) (sandbox.Spec, Target, error) {
 	config, err := repo.ProjectSandboxConfig(ctx, spec.OwnerID, spec.ProjectID)
 	if err != nil {
 		return sandbox.Spec{}, Target{}, err
@@ -172,7 +163,7 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 		}
 		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
-		return s.repo.SaveProjectSandboxConfig(save, owner, id, next)
+		return s.stores.Projects.SaveProjectSandboxConfig(save, owner, id, next)
 	})
 }
 
@@ -222,7 +213,7 @@ func (s *Service) CreateProjectSandbox(ctx context.Context, owner, id string) er
 
 func (s *Service) provisionProjectSandbox(ctx context.Context, name string, provider sandbox.ManagedProjectProvider, config ProjectSandboxConfig, spec sandbox.Spec) error {
 	if config.Provider == "" {
-		if err := s.repo.RememberProjectSandboxProvider(ctx, spec.OwnerID, spec.ProjectID, name); err != nil {
+		if err := s.stores.Projects.RememberProjectSandboxProvider(ctx, spec.OwnerID, spec.ProjectID, name); err != nil {
 			return err
 		}
 		target, err := s.resolve(ctx, spec.OwnerID, name)
@@ -246,12 +237,12 @@ func (s *Service) projectSandboxConfig(ctx context.Context, owner, id string) (P
 	project := Project{OwnerID: owner}
 	if id != "" {
 		var err error
-		project, err = s.repo.Project(ctx, owner, id)
+		project, err = s.stores.Projects.Project(ctx, owner, id)
 		if err != nil {
 			return Project{}, ProjectSandboxConfig{}, err
 		}
 	}
-	config, err := s.repo.ProjectSandboxConfig(ctx, owner, id)
+	config, err := s.stores.Projects.ProjectSandboxConfig(ctx, owner, id)
 	if config == nil || err != nil {
 		return project, ProjectSandboxConfig{}, err
 	}

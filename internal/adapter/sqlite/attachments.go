@@ -104,7 +104,7 @@ func hydrateRunAttachments(db *gorm.DB, turns []row) error {
 	return nil
 }
 
-func (r *Repository) Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*run.Image, error) {
+func (r *ConversationStore) Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*run.Image, error) {
 	if index < 0 || index >= run.MaxImages {
 		return nil, nil
 	}
@@ -132,7 +132,7 @@ func (r *Repository) Attachment(ctx context.Context, ownerID, sessionID, turnID 
 	return &image, nil
 }
 
-func (r *Repository) AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error) {
+func (r *ConversationStore) AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error) {
 	var found struct{ ID string }
 	err := attachmentTurn(r.read.WithContext(ctx), ownerID, sessionID, turnID).Select("id").Take(&found).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {

@@ -20,7 +20,7 @@ type projectSandboxRow struct {
 
 func (projectSandboxRow) TableName() string { return "project_sandbox_settings" }
 
-func (r *Repository) ProjectSandboxConfig(ctx context.Context, ownerID, projectID string) (*run.ProjectSandboxConfig, error) {
+func (r *ProjectStore) ProjectSandboxConfig(ctx context.Context, ownerID, projectID string) (*run.ProjectSandboxConfig, error) {
 	var record projectSandboxRow
 	err := r.read.WithContext(ctx).Take(&record, "owner_id = ? AND project_id = ?", ownerID, projectID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -29,19 +29,19 @@ func (r *Repository) ProjectSandboxConfig(ctx context.Context, ownerID, projectI
 	return &record.ProjectSandboxConfig, err
 }
 
-func (r *Repository) SaveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config run.ProjectSandboxConfig) error {
+func (r *ProjectStore) SaveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config run.ProjectSandboxConfig) error {
 	return r.saveProjectSandboxConfig(ctx, ownerID, projectID, config, clause.OnConflict{
 		Columns:   []clause.Column{{Name: "owner_id"}, {Name: "project_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"provider", "template", "timeout_seconds", "on_timeout"}),
 	})
 }
 
-func (r *Repository) RememberProjectSandboxProvider(ctx context.Context, ownerID, projectID, provider string) error {
+func (r *ProjectStore) RememberProjectSandboxProvider(ctx context.Context, ownerID, projectID, provider string) error {
 	return r.saveProjectSandboxConfig(ctx, ownerID, projectID, run.ProjectSandboxConfig{Provider: provider},
 		clause.OnConflict{DoNothing: true})
 }
 
-func (r *Repository) saveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config run.ProjectSandboxConfig, conflict clause.OnConflict) error {
+func (r *ProjectStore) saveProjectSandboxConfig(ctx context.Context, ownerID, projectID string, config run.ProjectSandboxConfig, conflict clause.OnConflict) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if id, personal := strings.CutPrefix(config.Provider, settings.SSHProviderPrefix); personal {
 			if _, err := findSSHServer(tx.Omit("private_key"), ownerID, id); err != nil {

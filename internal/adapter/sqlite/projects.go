@@ -10,6 +10,8 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
+type ProjectStore struct{ pools }
+
 type projectRow struct {
 	ID      string `gorm:"primaryKey"`
 	OwnerID string `gorm:"not null;uniqueIndex:idx_projects_owner_name"`
@@ -18,7 +20,7 @@ type projectRow struct {
 
 func (projectRow) TableName() string { return "projects" }
 
-func (r *Repository) CreateProject(ctx context.Context, project run.Project) error {
+func (r *ProjectStore) CreateProject(ctx context.Context, project run.Project) error {
 	record := projectRow(project)
 	result := r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "owner_id"}, {Name: "name"}}, DoNothing: true,
@@ -32,7 +34,7 @@ func (r *Repository) CreateProject(ctx context.Context, project run.Project) err
 	return nil
 }
 
-func (r *Repository) Projects(ctx context.Context, ownerID string) ([]run.Project, error) {
+func (r *ProjectStore) Projects(ctx context.Context, ownerID string) ([]run.Project, error) {
 	var records []projectRow
 	if err := r.read.WithContext(ctx).Where("owner_id = ?", ownerID).Order("name COLLATE NOCASE, id").Find(&records).Error; err != nil {
 		return nil, err
@@ -44,7 +46,7 @@ func (r *Repository) Projects(ctx context.Context, ownerID string) ([]run.Projec
 	return projects, nil
 }
 
-func (r *Repository) Project(ctx context.Context, ownerID, id string) (run.Project, error) {
+func (r *ProjectStore) Project(ctx context.Context, ownerID, id string) (run.Project, error) {
 	var record projectRow
 	err := r.read.WithContext(ctx).Take(&record, "owner_id = ? AND id = ?", ownerID, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -53,7 +55,7 @@ func (r *Repository) Project(ctx context.Context, ownerID, id string) (run.Proje
 	return run.Project(record), err
 }
 
-func (r *Repository) RenameProject(ctx context.Context, ownerID, id, name string) (run.Project, error) {
+func (r *ProjectStore) RenameProject(ctx context.Context, ownerID, id, name string) (run.Project, error) {
 	var project projectRow
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		err := tx.Take(&project, "owner_id = ? AND id = ?", ownerID, id).Error
@@ -79,7 +81,7 @@ func (r *Repository) RenameProject(ctx context.Context, ownerID, id, name string
 	return run.Project(project), err
 }
 
-func (r *Repository) RemoveProject(ctx context.Context, ownerID, id string) error {
+func (r *ProjectStore) RemoveProject(ctx context.Context, ownerID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&sessionRow{}).Where("owner_id = ? AND project_id = ?", ownerID, id).
 			UpdateColumn("project_id", "").Error; err != nil {

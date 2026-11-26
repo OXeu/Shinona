@@ -10,7 +10,7 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
-func (r *Repository) StreamTranscript(ctx context.Context, owner, id string, write func(run.TranscriptStream) error) error {
+func (r *ConversationStore) StreamTranscript(ctx context.Context, owner, id string, write func(run.TranscriptStream) error) error {
 	var stream run.TranscriptStream
 	var ids []string
 	var pending []transcriptRow

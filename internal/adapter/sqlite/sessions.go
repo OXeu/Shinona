@@ -9,12 +9,15 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/OXeu/shinona/internal/run"
-	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/timing"
 )
+
+type ConversationStore struct {
+	pools
+	latest latestTranscriptCache
+}
 
 type sessionRow struct {
 	ID          string    `gorm:"primaryKey;index:idx_sessions_recent,priority:4,sort:desc"`
@@ -33,14 +36,7 @@ type sessionRow struct {
 
 func (sessionRow) TableName() string { return "agent_sessions" }
 
-type settingsRow struct {
-	OwnerID string         `gorm:"primaryKey"`
-	Policy  sandbox.Policy `gorm:"not null"`
-}
-
-func (settingsRow) TableName() string { return "sandbox_settings" }
-
-func (r *Repository) CreateSession(ctx context.Context, session run.Session) error {
+func (r *ConversationStore) CreateSession(ctx context.Context, session run.Session) error {
 	record := sessionRow{
 		ID: session.ID, OwnerID: session.OwnerID, ProjectID: session.ProjectID, Title: session.Title, CustomTitle: session.CustomTitle, TurnCount: session.TurnCount,
 		CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt, Pinned: session.Pinned,
@@ -86,11 +82,11 @@ func describeSession(record sessionRow) run.Session {
 	}
 }
 
-func (r *Repository) RecentSessions(ctx context.Context, ownerID string, projectID *string, limit int) ([]run.Session, error) {
+func (r *ConversationStore) RecentSessions(ctx context.Context, ownerID string, projectID *string, limit int) ([]run.Session, error) {
 	return r.recentSessions(ctx, ownerID, projectID, limit, 0)
 }
 
-func (r *Repository) recentSessions(ctx context.Context, ownerID string, projectID *string, limit, offset int) ([]run.Session, error) {
+func (r *ConversationStore) recentSessions(ctx context.Context, ownerID string, projectID *string, limit, offset int) ([]run.Session, error) {
 	var records []sessionRow
 	query := sessionScope(r.read.WithContext(ctx), ownerID)
 	if projectID != nil {
@@ -105,7 +101,7 @@ func (r *Repository) recentSessions(ctx context.Context, ownerID string, project
 	return sessions, err
 }
 
-func (r *Repository) SessionProject(ctx context.Context, ownerID, sessionID string) (string, error) {
+func (r *ConversationStore) SessionProject(ctx context.Context, ownerID, sessionID string) (string, error) {
 	return sessionProject(r.read.WithContext(ctx), ownerID, sessionID)
 }
 
@@ -118,11 +114,11 @@ func sessionProject(db *gorm.DB, ownerID, sessionID string) (string, error) {
 	return record.ProjectID, err
 }
 
-func (r *Repository) Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*run.Transcript, error) {
+func (r *ConversationStore) Transcript(ctx context.Context, ownerID, sessionID string, limit int) (*run.Transcript, error) {
 	return r.transcript(ctx, ownerID, sessionID, transcriptWindow{limit: limit})
 }
 
-func (r *Repository) TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*run.Transcript, error) {
+func (r *ConversationStore) TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*run.Transcript, error) {
 	window := transcriptWindow{limit: run.TranscriptPageSize, before: beforeSequence, paged: true}
 	if beforeSequence != 0 {
 		return r.transcript(ctx, ownerID, sessionID, window)
@@ -175,7 +171,7 @@ func (record *transcriptRow) turn() (run.Run, error) {
 	return turn, nil
 }
 
-func (r *Repository) transcript(ctx context.Context, ownerID, sessionID string, window transcriptWindow) (*run.Transcript, error) {
+func (r *ConversationStore) transcript(ctx context.Context, ownerID, sessionID string, window transcriptWindow) (*run.Transcript, error) {
 	var result *run.Transcript
 	var turns []transcriptRow
 	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -240,7 +236,7 @@ func decodeTranscriptRows(ctx context.Context, turns []transcriptRow) ([]run.Run
 	return result, nil
 }
 
-func (r *Repository) UpdateSession(ctx context.Context, ownerID, sessionID string, changes run.SessionChanges) (run.Session, error) {
+func (r *ConversationStore) UpdateSession(ctx context.Context, ownerID, sessionID string, changes run.SessionChanges) (run.Session, error) {
 	var record sessionRow
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		updates := make(map[string]any)
@@ -265,7 +261,7 @@ func (r *Repository) UpdateSession(ctx context.Context, ownerID, sessionID strin
 	return describeSession(record), err
 }
 
-func (r *Repository) ArchiveSession(ctx context.Context, ownerID, sessionID string, now time.Time) error {
+func (r *ConversationStore) ArchiveSession(ctx context.Context, ownerID, sessionID string, now time.Time) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var record sessionRow
 		err := withActivity(sessionScope(tx, ownerID)).First(&record, "id = ?", sessionID).Error
@@ -282,7 +278,7 @@ func (r *Repository) ArchiveSession(ctx context.Context, ownerID, sessionID stri
 	})
 }
 
-func (r *Repository) MarkSessionRead(ctx context.Context, ownerID, sessionID string, through int, throughID string) error {
+func (r *ConversationStore) MarkSessionRead(ctx context.Context, ownerID, sessionID string, through int, throughID string) error {
 	db := r.db.WithContext(ctx)
 	seen := conversationTurns(db, ownerID, sessionID).Select("1").
 		Where("sequence = ? AND status IN ?", through, []run.Status{run.Succeeded, run.Failed, run.Stopped})
@@ -293,15 +289,15 @@ func (r *Repository) MarkSessionRead(ctx context.Context, ownerID, sessionID str
 		Where("EXISTS (?)", seen).UpdateColumn("read_through", through).Error
 }
 
-func (r *Repository) Enqueue(ctx context.Context, item run.Run, firstTitle string, queue bool) (run.Run, error) {
+func (r *ConversationStore) Enqueue(ctx context.Context, item run.Run, firstTitle string, queue bool) (run.Run, error) {
 	return r.enqueue(ctx, item, firstTitle, queue, nil)
 }
 
-func (r *Repository) EnqueueRetry(ctx context.Context, item run.Run, options run.RetryOptions) (run.Run, error) {
+func (r *ConversationStore) EnqueueRetry(ctx context.Context, item run.Run, options run.RetryOptions) (run.Run, error) {
 	return r.enqueue(ctx, item, "", false, &options)
 }
 
-func (r *Repository) enqueue(ctx context.Context, item run.Run, firstTitle string, queue bool, retry *run.RetryOptions) (run.Run, error) {
+func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitle string, queue bool, retry *run.RetryOptions) (run.Run, error) {
 	defer timing.Start(ctx, "sqlite_enqueue")()
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
@@ -318,11 +314,8 @@ func (r *Repository) enqueue(ctx context.Context, item run.Run, firstTitle strin
 			Count(&active).Error; err != nil {
 			return err
 		}
-		if active > 0 && !queue {
-			return run.ErrActiveRun
-		}
-		if active >= run.MaxActiveSessionTurns {
-			return run.ErrQueueFull
+		if err := run.CheckTurnAdmission(active, queue); err != nil {
+			return err
 		}
 		if retry != nil {
 			var previous [1]row
@@ -338,11 +331,7 @@ func (r *Repository) enqueue(ctx context.Context, item run.Run, firstTitle strin
 				return err
 			}
 			item.Prompt, item.Payload = previous[0].Prompt, previous[0].Payload
-			if retry.Selection != nil {
-				item.Payload.Options = *retry.Selection
-			} else if retry.Model != "" {
-				item.Payload.Options.Model = retry.Model
-			}
+			item.Payload.Options = retry.Apply(item.Payload.Options)
 		}
 
 		item.Sequence = session.TurnCount + 1
@@ -358,15 +347,15 @@ func (r *Repository) enqueue(ctx context.Context, item run.Run, firstTitle strin
 			return err
 		}
 		updates := map[string]any{"turn_count": item.Sequence, "updated_at": item.UpdatedAt}
-		if item.Sequence == 1 && !session.CustomTitle {
-			updates["title"] = firstTitle
+		if title := describeSession(session).TitleAfterAppend(firstTitle); title != session.Title {
+			updates["title"] = title
 		}
 		return tx.Model(&session).Updates(updates).Error
 	})
 	return item, err
 }
 
-func (r *Repository) StopQueued(ctx context.Context, owner, sessionID, id string, now time.Time) error {
+func (r *ConversationStore) StopQueued(ctx context.Context, owner, sessionID, id string, now time.Time) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&row{}).
 			Where("owner_id = ? AND session_id = ? AND id = ? AND status = ?", owner, sessionID, id, run.Queued).
@@ -381,7 +370,7 @@ func (r *Repository) StopQueued(ctx context.Context, owner, sessionID, id string
 	})
 }
 
-func (r *Repository) TakeQueued(ctx context.Context, owner, sessionID, id string, textOnly bool, now time.Time) (run.PendingDraft, error) {
+func (r *ConversationStore) TakeQueued(ctx context.Context, owner, sessionID, id string, textOnly bool, now time.Time) (run.PendingDraft, error) {
 	var draft run.PendingDraft
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
@@ -423,8 +412,8 @@ func (r *Repository) TakeQueued(ctx context.Context, owner, sessionID, id string
 			}
 			updates["turn_count"] = sequence
 			updates["read_through"] = min(session.ReadThrough, sequence)
-			if sequence == 0 && !session.CustomTitle {
-				updates["title"] = run.DefaultSessionTitle
+			if title := describeSession(session).TitleAfterRemoval(sequence); title != session.Title {
+				updates["title"] = title
 			}
 		}
 		draft = run.PendingDraft{Prompt: item.Prompt, Images: item.Payload.Images}
@@ -442,7 +431,7 @@ func lastTurnSequence(db *gorm.DB, owner, sessionID string) (int, error) {
 	return last.Sequence, err
 }
 
-func (r *Repository) History(ctx context.Context, turn run.Run, limit int) ([]run.Exchange, error) {
+func (r *ConversationStore) History(ctx context.Context, turn run.Run, limit int) ([]run.Exchange, error) {
 	var records []row
 	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := historyQuery(tx, turn, limit).Find(&records).Error; err != nil {
@@ -485,24 +474,8 @@ func historyQuery(db *gorm.DB, turn run.Run, limit int) *gorm.DB {
 	return query
 }
 
-func (r *Repository) Policy(ctx context.Context, ownerID string) (sandbox.Policy, error) {
-	var record settingsRow
-	err := r.read.WithContext(ctx).First(&record, "owner_id = ?", ownerID).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", nil
-	}
-	return record.Policy, err
-}
-
-func (r *Repository) SetPolicy(ctx context.Context, ownerID string, choice sandbox.Policy) error {
-	record := settingsRow{OwnerID: ownerID, Policy: choice}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "owner_id"}}, DoUpdates: clause.AssignmentColumns([]string{"policy"}),
-	}).Create(&record).Error
-}
-
 // AdoptLegacy explicitly assigns unowned runs from the pre-login schema.
-func (r *Repository) AdoptLegacy(ctx context.Context, ownerID string) (int, error) {
+func (r *ConversationStore) AdoptLegacy(ctx context.Context, ownerID string) (int, error) {
 	var count int
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.First(&userRow{}, "id = ?", ownerID).Error; err != nil {

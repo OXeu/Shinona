@@ -42,7 +42,7 @@ func TestWALMaintenanceReusesLogWithoutWriterAutoCheckpoint(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 		now := time.Now().UTC()
 		id := fmt.Sprintf("checkpoint-%d", i)
-		if err := repo.CreateSession(ctx, run.Session{ID: id, OwnerID: "owner", CreatedAt: now, UpdatedAt: now}); err != nil {
+		if err := repo.Conversations.CreateSession(ctx, run.Session{ID: id, OwnerID: "owner", CreatedAt: now, UpdatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 		after := logSize()

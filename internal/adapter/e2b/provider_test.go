@@ -110,7 +110,7 @@ func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 	database := filepath.Join(t.TempDir(), "shinona.db")
 	repo := openStore(t, database)
 	config := Config{APIKey: "cloud-key", Template: "base", BaseURL: "https://api.e2b.app"}
-	provider, err := New(config, dataClient, repo)
+	provider, err := New(config, dataClient, repo.E2B)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 	if err := repo.Close(); err != nil {
 		t.Fatal(err)
 	}
-	provider, err = New(config, dataClient, openStore(t, database))
+	provider, err = New(config, dataClient, openStore(t, database).E2B)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 	}
 }
 
-func openStore(t *testing.T, database string) *sqlite.Repository {
+func openStore(t *testing.T, database string) *sqlite.Database {
 	t.Helper()
 	store, err := sqlite.Open(t.Context(), database)
 	if err != nil {
@@ -169,14 +169,14 @@ func openStore(t *testing.T, database string) *sqlite.Repository {
 	return store
 }
 
-func seedWorkspaceOwner(t *testing.T, store *sqlite.Repository, owner, project string) {
+func seedWorkspaceOwner(t *testing.T, store *sqlite.Database, owner, project string) {
 	t.Helper()
 	ctx := t.Context()
-	if err := store.CreatePasswordUser(ctx, auth.User{ID: owner, Email: owner + "@example.test"}, []byte("test-hash")); err != nil {
+	if err := store.Accounts.CreatePasswordUser(ctx, auth.User{ID: owner, Email: owner + "@example.test"}, []byte("test-hash")); err != nil {
 		t.Fatal(err)
 	}
 	if project != "" {
-		if err := store.CreateProject(ctx, run.Project{OwnerID: owner, ID: project, Name: project}); err != nil {
+		if err := store.Projects.CreateProject(ctx, run.Project{OwnerID: owner, ID: project, Name: project}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -243,7 +243,7 @@ func TestSelfHostedUsesReturnedTrafficToken(t *testing.T) {
 	store := openStore(t, ":memory:")
 	seedWorkspaceOwner(t, store, "alice", "")
 	provider, err := New(Config{APIKey: "self-hosted-key", BaseURL: api.URL, ProxyURL: proxy.URL,
-		WorkspaceUser: "developer", WorkDirectory: "/work"}, proxy.Client(), store)
+		WorkspaceUser: "developer", WorkDirectory: "/work"}, proxy.Client(), store.E2B)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestUncredentialedSandboxIsDeleted(t *testing.T) {
 	defer server.Close()
 	t.Setenv("E2B_DEBUG", "")
 
-	provider, err := New(Config{APIKey: "fixture", BaseURL: server.URL}, server.Client(), openStore(t, ":memory:"))
+	provider, err := New(Config{APIKey: "fixture", BaseURL: server.URL}, server.Client(), openStore(t, ":memory:").E2B)
 	if err != nil {
 		t.Fatal(err)
 	}

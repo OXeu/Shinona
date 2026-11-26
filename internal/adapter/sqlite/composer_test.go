@@ -29,7 +29,7 @@ type controlledAgent struct {
 	drain  chan struct{}
 }
 
-func openComposerRepository(t *testing.T, ctx context.Context) *sqlite.Repository {
+func openComposerRepository(t *testing.T, ctx context.Context) *sqlite.Database {
 	t.Helper()
 	repository, err := sqlite.Open(ctx, ":memory:")
 	if err != nil {
@@ -40,7 +40,7 @@ func openComposerRepository(t *testing.T, ctx context.Context) *sqlite.Repositor
 			t.Error(err)
 		}
 	})
-	if err := repository.CreatePasswordUser(ctx, auth.User{ID: "owner", Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+	if err := repository.Accounts.CreatePasswordUser(ctx, auth.User{ID: "owner", Email: "owner@example.test"}, []byte("test-hash")); err != nil {
 		t.Fatal(err)
 	}
 	return repository
@@ -106,7 +106,7 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 		return run.Target{Name: "test", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository, resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repository.RunStores(), resolve, uuid.NewString, controls, nil)
 	session, err := service.CreateSession(ctx, "owner", "")
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestWorkerSendsConversationHistoryToModel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(repository.Conversations, repository.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	defer func() {
 		cancel()
@@ -245,7 +245,7 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository, resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repository.RunStores(), resolve, uuid.NewString, controls, nil)
 	session, err := service.CreateSession(ctx, "owner", "")
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(repository.Conversations, repository.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	defer func() {
 		cancel()
@@ -325,7 +325,7 @@ func TestWorkerStopsRunningTurnAndRetainsQueue(t *testing.T) {
 		return run.Target{Name: "demo", Provider: demo.Provider{}, ResolveAgent: func(context.Context, string) (run.Agent, error) { return agent, nil }}, nil
 	}
 	controls := &run.Controls{}
-	service := run.NewService(repository, resolve, uuid.NewString, controls, nil)
+	service := run.NewService(repository.RunStores(), resolve, uuid.NewString, controls, nil)
 	session, err := service.CreateSession(ctx, "owner", "")
 	if err != nil {
 		t.Fatal(err)
@@ -341,7 +341,7 @@ func TestWorkerStopsRunningTurnAndRetainsQueue(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		run.NewWorker(repository, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
+		run.NewWorker(repository.Conversations, repository.Projects, resolve, slog.New(slog.DiscardHandler), controls, run.DefaultWorkerConcurrency).Serve(ctx)
 	}()
 	defer func() {
 		cancel()

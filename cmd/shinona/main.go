@@ -78,11 +78,11 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		}
 	}()
 
-	if err := repository.FailInterrupted(ctx, time.Now().UTC()); err != nil {
+	if err := repository.Conversations.FailInterrupted(ctx, time.Now().UTC()); err != nil {
 		return fmt.Errorf("recover interrupted runs: %w", err)
 	}
 
-	config, err := newRuntime(ctx, repository, environment)
+	config, err := newRuntime(ctx, repository.Settings, repository.E2B, environment)
 	if err != nil {
 		return err
 	}
@@ -94,7 +94,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	lifetime, stop := context.WithCancel(ctx)
 	defer stop()
 	controls := &run.Controls{}
-	service := run.NewService(repository, config.ResolveForAccount, uuid.NewString, controls, config.ProjectTargets)
+	service := run.NewService(repository.RunStores(), config.ResolveForAccount, uuid.NewString, controls, config.ProjectTargets)
 
 	authConfig := func() httpauth.Config {
 		current := config.Auth()
@@ -102,7 +102,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		current.TrustedProxies = proxies
 		return current
 	}
-	authHandler := httpauth.NewWithConfig(auth.New(repository, hasher, uuid.NewString), authConfig, logger)
+	authHandler := httpauth.NewWithConfig(auth.New(repository.Accounts, hasher, uuid.NewString), authConfig, logger)
 	router := newAPIRouter(lifetime, config.origin.String(), service, config, authHandler, logger)
 	config.oauth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)
@@ -116,7 +116,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		run.NewWorker(repository, config.ResolveForAccount, logger, controls, parallelism).Serve(lifetime)
+		run.NewWorker(repository.Conversations, repository.Projects, config.ResolveForAccount, logger, controls, parallelism).Serve(lifetime)
 	}()
 
 	serverDone := make(chan error, 1)

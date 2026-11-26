@@ -66,15 +66,15 @@ func TestSettingsMigrationPreservesOverridesAndMCPAuthentication(t *testing.T) {
 	wantInstance := settings.Values{
 		settings.MailFrom: "", settings.MailAPIKey: "mail-secret", settings.ModelAPIKey: "legacy-recovery", "legacyVendor": "unknown-field",
 	}
-	if stored, err := repo.SettingOverrides(ctx); err != nil || stored.Revision != 0 || !maps.Equal(stored.Values, wantInstance) {
+	if stored, err := repo.Settings.SettingOverrides(ctx); err != nil || stored.Revision != 0 || !maps.Equal(stored.Values, wantInstance) {
 		t.Fatalf("instance settings changed during migration: %v", err)
 	}
 	wantAlice := settings.Values{settings.ModelAPIKey: "alice-key", settings.ModelBaseURL: "https://example.test/v1", settings.ModelID: ""}
-	if values, err := repo.ModelSettings(ctx, "alice"); err != nil || !maps.Equal(values, wantAlice) {
+	if values, err := repo.Settings.ModelSettings(ctx, "alice"); err != nil || !maps.Equal(values, wantAlice) {
 		t.Fatalf("Alice's model settings changed during migration: %v", err)
 	}
 	wantBob := settings.Values{settings.ModelID: "bob-model", settings.ModelAPIKey: ""}
-	if values, err := repo.ModelSettings(ctx, "bob"); err != nil || !maps.Equal(values, wantBob) {
+	if values, err := repo.Settings.ModelSettings(ctx, "bob"); err != nil || !maps.Equal(values, wantBob) {
 		t.Fatalf("Bob's model settings changed during migration: %v", err)
 	}
 	wantMCP := settings.MCPConfig{
@@ -82,19 +82,19 @@ func TestSettingsMigrationPreservesOverridesAndMCPAuthentication(t *testing.T) {
 		{Name: "a-oauth", URL: "https://example.test/oauth", OAuth: &settings.MCPOAuthConfig{ClientID: "client", ClientSecret: "oauth-secret"}},
 		{Name: "discover", URL: "https://example.test/discover", OAuth: &settings.MCPOAuthConfig{}},
 	}
-	if servers, err := repo.MCPConfig(ctx, "alice"); err != nil || !reflect.DeepEqual(servers, wantMCP) {
+	if servers, err := repo.Settings.MCPConfig(ctx, "alice"); err != nil || !reflect.DeepEqual(servers, wantMCP) {
 		t.Fatalf("MCP order or authentication changed during migration: %v", err)
 	}
-	if servers, err := repo.MCPConfig(ctx, "bob"); err != nil || len(servers) != 1 || servers[0].Token != "" || servers[0].OAuth != nil {
+	if servers, err := repo.Settings.MCPConfig(ctx, "bob"); err != nil || len(servers) != 1 || servers[0].Token != "" || servers[0].OAuth != nil {
 		t.Fatalf("MCP migration mixed accounts with the same server name: %v", err)
 	}
-	if grant, err := repo.MCPGrant(ctx, "alice", "a-oauth"); err != nil || string(grant) != "existing-grant" {
+	if grant, err := repo.Settings.MCPGrant(ctx, "alice", "a-oauth"); err != nil || string(grant) != "existing-grant" {
 		t.Fatalf("migration changed an active grant: %v", err)
 	}
-	if values, err := repo.ModelSettings(ctx, "fixture-099"); err != nil || values[settings.ModelID] != "fixture-model" {
+	if values, err := repo.Settings.ModelSettings(ctx, "fixture-099"); err != nil || values[settings.ModelID] != "fixture-model" {
 		t.Fatalf("migration missed model settings beyond the first batch: %v", err)
 	}
-	if servers, err := repo.MCPConfig(ctx, "fixture-099"); err != nil || len(servers) != 1 || servers[0].Name != "server" {
+	if servers, err := repo.Settings.MCPConfig(ctx, "fixture-099"); err != nil || len(servers) != 1 || servers[0].Name != "server" {
 		t.Fatalf("migration missed MCP settings beyond the first batch: %v", err)
 	}
 	for query, want := range map[string]int{
@@ -137,7 +137,7 @@ func TestSettingsMigrationRollsBackMalformedLegacyMCP(t *testing.T) {
 	if err := migrate(repo.db.WithContext(ctx)); err != nil {
 		t.Fatal(err)
 	}
-	if values, err := repo.ModelSettings(ctx, "owner"); err != nil || values[settings.ModelAPIKey] != "preserve" {
+	if values, err := repo.Settings.ModelSettings(ctx, "owner"); err != nil || values[settings.ModelAPIKey] != "preserve" {
 		t.Fatalf("a failed migration changed the legacy model key: %v", err)
 	}
 }

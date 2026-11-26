@@ -31,7 +31,7 @@ type testHasher struct{}
 func (testHasher) Hash(value string) []byte             { return []byte(value) }
 func (testHasher) Match(value string, hash []byte) bool { return value == string(hash) }
 
-func accountFixture(t *testing.T, mailer auth.VerificationMailer) (*sqlite.Repository, *auth.Service, *http.ServeMux) {
+func accountFixture(t *testing.T, mailer auth.VerificationMailer) (*sqlite.Database, *auth.Service, *http.ServeMux) {
 	t.Helper()
 	repo, err := sqlite.Open(t.Context(), ":memory:")
 	if err != nil {
@@ -42,7 +42,7 @@ func accountFixture(t *testing.T, mailer auth.VerificationMailer) (*sqlite.Repos
 			t.Error(err)
 		}
 	})
-	service := auth.New(repo, testHasher{}, uuid.NewString)
+	service := auth.New(repo.Accounts, testHasher{}, uuid.NewString)
 	mux := http.NewServeMux()
 	handler := httpauth.NewWithConfig(service, func() httpauth.Config {
 		return httpauth.Config{Mailer: mailer}
@@ -151,7 +151,7 @@ func TestAccountProfileAndAdminAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SetAdmin(t.Context(), admin.ID, true); err != nil {
+	if err := repo.Accounts.SetAdmin(t.Context(), admin.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	memberCookie, adminCookie := accountCookie(t, service, member), accountCookie(t, service, admin)

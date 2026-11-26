@@ -15,11 +15,11 @@ import (
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
-func seedAccounts(t testing.TB, repo *Repository, owners ...string) {
+func seedAccounts(t testing.TB, repo *Database, owners ...string) {
 	t.Helper()
 	for _, owner := range owners {
 		user := auth.User{ID: owner, Email: owner + "@example.test"}
-		if err := repo.CreatePasswordUser(t.Context(), user, []byte("test-hash")); err != nil {
+		if err := repo.Accounts.CreatePasswordUser(t.Context(), user, []byte("test-hash")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -34,7 +34,7 @@ func TestFileDatabaseReadsCommittedDataWhileWriting(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = repo.Close() })
 	seedAccounts(t, repo, "owner")
-	if err := repo.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", Title: "before"}); err != nil {
+	if err := repo.Conversations.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", Title: "before"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -48,7 +48,7 @@ func TestFileDatabaseReadsCommittedDataWhileWriting(t *testing.T) {
 	}
 	assertTitle := func(want string) {
 		t.Helper()
-		sessions, err := repo.RecentSessions(ctx, "owner", nil, 10)
+		sessions, err := repo.Conversations.RecentSessions(ctx, "owner", nil, 10)
 		if err != nil || len(sessions) != 1 || sessions[0].Title != want {
 			t.Fatalf("expected title %q: %+v, %v", want, sessions, err)
 		}
@@ -66,7 +66,7 @@ func TestFileDatabaseReadsCommittedDataWhileWriting(t *testing.T) {
 func TestSessionCacheObservesOtherRepositoryWrites(t *testing.T) {
 	ctx := t.Context()
 	filename := filepath.Join(t.TempDir(), "shinona.db")
-	open := func() *Repository {
+	open := func() *Database {
 		t.Helper()
 		repo, err := Open(ctx, filename)
 		if err != nil {
@@ -78,34 +78,34 @@ func TestSessionCacheObservesOtherRepositoryWrites(t *testing.T) {
 	repo, other := open(), open()
 	user := auth.User{ID: "cached-user", Email: "cached@example.test"}
 	now := time.Now().UTC()
-	if err := repo.CreatePasswordUser(ctx, user, []byte("test-digest")); err != nil {
+	if err := repo.Accounts.CreatePasswordUser(ctx, user, []byte("test-digest")); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveSession(ctx, "session-key", user.ID, now.Add(time.Hour)); err != nil {
+	if err := repo.Accounts.SaveSession(ctx, "session-key", user.ID, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	assertAdmin := func(at time.Time, want bool) {
 		t.Helper()
-		account, err := repo.SessionUser(ctx, "session-key", at)
+		account, err := repo.Accounts.SessionUser(ctx, "session-key", at)
 		if err != nil || account == nil || account.ID != user.ID || account.Admin != want {
 			t.Fatalf("unexpected account privileges: %+v, %v", account, err)
 		}
 	}
 	assertAdmin(now, false)
-	if _, _, ok := repo.sessions.get("session-key", now); !ok {
+	if _, _, ok := repo.Accounts.sessions.get("session-key", now); !ok {
 		t.Fatal("expected the successful session lookup to populate the cache")
 	}
-	if account, err := repo.SessionUser(ctx, "session-key", now.Add(time.Hour)); err != nil || account != nil {
+	if account, err := repo.Accounts.SessionUser(ctx, "session-key", now.Add(time.Hour)); err != nil || account != nil {
 		t.Fatalf("expired credential resolved to %+v, %v", account, err)
 	}
-	if err := other.SetAdmin(ctx, user.ID, true); err != nil {
+	if err := other.Accounts.SetAdmin(ctx, user.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	assertAdmin(now.Add(sessionCacheTTL), true)
-	if err := other.DeleteSession(ctx, "session-key"); err != nil {
+	if err := other.Accounts.DeleteSession(ctx, "session-key"); err != nil {
 		t.Fatal(err)
 	}
-	if account, err := repo.SessionUser(ctx, "session-key", now.Add(2*sessionCacheTTL)); err != nil || account != nil {
+	if account, err := repo.Accounts.SessionUser(ctx, "session-key", now.Add(2*sessionCacheTTL)); err != nil || account != nil {
 		t.Fatalf("revoked credential resolved to %+v, %v", account, err)
 	}
 }
@@ -119,34 +119,34 @@ func TestSessionCacheInvalidatesOnlyTheAffectedAccountOrSession(t *testing.T) {
 	now := time.Now()
 	for _, owner := range []string{"alice", "bob"} {
 		user := auth.User{ID: owner, Email: owner + "@example.test"}
-		if err := repo.CreatePasswordUser(t.Context(), user, []byte("test-digest")); err != nil {
+		if err := repo.Accounts.CreatePasswordUser(t.Context(), user, []byte("test-digest")); err != nil {
 			t.Fatal(err)
 		}
 		for _, key := range []string{owner + "-first", owner + "-second"} {
-			if err := repo.SaveSession(t.Context(), key, owner, now.Add(time.Hour)); err != nil {
+			if err := repo.Accounts.SaveSession(t.Context(), key, owner, now.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
-			if signedIn, err := repo.SessionUser(t.Context(), key, now); err != nil || signedIn == nil {
+			if signedIn, err := repo.Accounts.SessionUser(t.Context(), key, now); err != nil || signedIn == nil {
 				t.Fatalf("authenticate %s: %+v, %v", owner, signedIn, err)
 			}
 		}
 	}
-	if err := repo.DeleteSession(t.Context(), "alice-first"); err != nil {
+	if err := repo.Accounts.DeleteSession(t.Context(), "alice-first"); err != nil {
 		t.Fatal(err)
 	}
-	if signedIn, err := repo.SessionUser(t.Context(), "alice-first", now); err != nil || signedIn != nil {
+	if signedIn, err := repo.Accounts.SessionUser(t.Context(), "alice-first", now); err != nil || signedIn != nil {
 		t.Fatalf("revoked token authenticated: %+v, %v", signedIn, err)
 	}
-	if _, _, hit := repo.sessions.get("alice-second", now); !hit {
+	if _, _, hit := repo.Accounts.sessions.get("alice-second", now); !hit {
 		t.Fatal("revoking one token invalidated the account's other token")
 	}
-	if err := repo.SetAdmin(t.Context(), "alice", true); err != nil {
+	if err := repo.Accounts.SetAdmin(t.Context(), "alice", true); err != nil {
 		t.Fatal(err)
 	}
-	if signedIn, err := repo.SessionUser(t.Context(), "alice-second", now); err != nil || signedIn == nil || !signedIn.Admin {
+	if signedIn, err := repo.Accounts.SessionUser(t.Context(), "alice-second", now); err != nil || signedIn == nil || !signedIn.Admin {
 		t.Fatalf("account permissions were not invalidated: %+v, %v", signedIn, err)
 	}
-	if _, _, hit := repo.sessions.get("bob-first", now); !hit {
+	if _, _, hit := repo.Accounts.sessions.get("bob-first", now); !hit {
 		t.Fatal("another account lost its cached authentication")
 	}
 }
@@ -175,7 +175,7 @@ func TestHistoryScopesEarlierTurnsAndSkipsCancelledQueueItems(t *testing.T) {
 	if err := repo.db.WithContext(ctx).Create(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
-	history, err := repo.History(ctx, run.Run(rows[4]), 3)
+	history, err := repo.Conversations.History(ctx, run.Run(rows[4]), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,10 +211,10 @@ func TestHistoryStartsAtLatestEligibleCompaction(t *testing.T) {
 	if err := repo.db.WithContext(ctx).Create(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Complete(ctx, "compact", run.Completion{Result: run.Result{CompactedContext: checkpoint}, Status: run.Succeeded, UpdatedAt: reverted}); err != nil {
+	if err := repo.Conversations.Complete(ctx, "compact", run.Completion{Result: run.Result{CompactedContext: checkpoint}, Status: run.Succeeded, UpdatedAt: reverted}); err != nil {
 		t.Fatal(err)
 	}
-	history, err := repo.History(ctx, run.Run{OwnerID: "owner", SessionID: "session", Sequence: 6}, 0)
+	history, err := repo.Conversations.History(ctx, run.Run{OwnerID: "owner", SessionID: "session", Sequence: 6}, 0)
 	if err != nil || len(history) != 2 || history[0].Prompt != "compacted" || !slices.Equal(history[0].CompactedContext, checkpoint) || history[1].Prompt != "retry" {
 		t.Fatalf("expected the current branch's checkpoint and later messages: %+v, %v", history, err)
 	}
@@ -254,36 +254,36 @@ func TestLegacyRunsStayPrivateAndCanBeAdopted(t *testing.T) {
 		}
 	}()
 	owner := auth.User{ID: "user-id", Email: "person@example.test"}
-	if err := repo.CreatePasswordUser(ctx, owner, []byte("test-digest")); err != nil {
+	if err := repo.Accounts.CreatePasswordUser(ctx, owner, []byte("test-digest")); err != nil {
 		t.Fatal(err)
 	}
 
-	if claimed, err := repo.ClaimNext(ctx, time.Now().UTC()); err != nil || claimed != nil {
+	if claimed, err := repo.Conversations.ClaimNext(ctx, time.Now().UTC()); err != nil || claimed != nil {
 		t.Fatalf("unowned run should stay off the queue: %+v, %v", claimed, err)
 	}
-	if items, err := repo.RecentSessions(ctx, owner.ID, nil, 10); err != nil || len(items) != 0 {
+	if items, err := repo.Conversations.RecentSessions(ctx, owner.ID, nil, 10); err != nil || len(items) != 0 {
 		t.Fatalf("unowned run should stay private: %+v, %v", items, err)
 	}
-	if count, err := repo.AdoptLegacy(ctx, owner.ID); err != nil || count != 2 {
+	if count, err := repo.Conversations.AdoptLegacy(ctx, owner.ID); err != nil || count != 2 {
 		t.Fatalf("adopt legacy runs: %d, %v", count, err)
 	}
-	if count, err := repo.AdoptLegacy(ctx, owner.ID); err != nil || count != 0 {
+	if count, err := repo.Conversations.AdoptLegacy(ctx, owner.ID); err != nil || count != 0 {
 		t.Fatalf("repeat adoption: %d, %v", count, err)
 	}
-	finished, err := repo.Transcript(ctx, owner.ID, "finished", 10)
+	finished, err := repo.Conversations.Transcript(ctx, owner.ID, "finished", 10)
 	if err != nil || finished == nil || len(finished.Turns) != 1 ||
 		finished.Turns[0].Output != "original output" || finished.Turns[0].Prompt != "original prompt" {
 		t.Fatalf("existing result was lost: %+v, %v", finished, err)
 	}
-	pending, err := repo.Transcript(ctx, owner.ID, "pending", 10)
+	pending, err := repo.Conversations.Transcript(ctx, owner.ID, "pending", 10)
 	if err != nil || pending == nil || len(pending.Turns) != 1 || pending.Turns[0].Status != run.Failed {
 		t.Fatalf("old unfinished run should be imported as failed: %+v, %v", pending, err)
 	}
-	if other, err := repo.Transcript(ctx, "other-owner", "finished", 10); err != nil || other != nil {
+	if other, err := repo.Conversations.Transcript(ctx, "other-owner", "finished", 10); err != nil || other != nil {
 		t.Fatalf("migration exposed cross-account data: %+v, %v", other, err)
 	}
 
-	if err := repo.SetPolicy(ctx, owner.ID, sandbox.Shared); err != nil {
+	if err := repo.Settings.SetPolicy(ctx, owner.ID, sandbox.Shared); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := Open(ctx, filename)
@@ -295,7 +295,7 @@ func TestLegacyRunsStayPrivateAndCanBeAdopted(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	if policy, err := reopened.Policy(ctx, owner.ID); err != nil || policy != sandbox.Shared {
+	if policy, err := reopened.Settings.Policy(ctx, owner.ID); err != nil || policy != sandbox.Shared {
 		t.Fatalf("preference was not persisted: %q, %v", policy, err)
 	}
 }
@@ -310,7 +310,7 @@ func TestOpenMigratesSessionAndQueueIndexes(t *testing.T) {
 		CREATE INDEX idx_runs_session_status ON runs(session_id, status)`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := old.CreateSession(ctx, run.Session{ID: "stored", OwnerID: "owner", Title: "Stored session"}); err != nil {
+	if err := old.Conversations.CreateSession(ctx, run.Session{ID: "stored", OwnerID: "owner", Title: "Stored session"}); err != nil {
 		t.Fatal(err)
 	}
 	markUnversioned(t, old)
@@ -323,7 +323,7 @@ func TestOpenMigratesSessionAndQueueIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	sessions, err := repo.RecentSessions(ctx, "owner", nil, 30)
+	sessions, err := repo.Conversations.RecentSessions(ctx, "owner", nil, 30)
 	if err != nil || len(sessions) != 1 || sessions[0].ID != "stored" {
 		t.Fatalf("recent sessions after upgrade: %+v, %v", sessions, err)
 	}
@@ -382,49 +382,49 @@ func TestSessionActionsAndUnreadTransitions(t *testing.T) {
 	now := time.Now().UTC()
 	seedAccounts(t, repo, "alice", "bob")
 	entry := run.Session{ID: "work", OwnerID: "alice", Title: "New session", CreatedAt: now, UpdatedAt: now}
-	if err := repo.CreateSession(ctx, entry); err != nil {
+	if err := repo.Conversations.CreateSession(ctx, entry); err != nil {
 		t.Fatal(err)
 	}
 	title, pinned := "Workbench", true
-	if _, err := repo.UpdateSession(ctx, "bob", entry.ID, run.SessionChanges{Title: &title}); !errors.Is(err, run.ErrSession) {
+	if _, err := repo.Conversations.UpdateSession(ctx, "bob", entry.ID, run.SessionChanges{Title: &title}); !errors.Is(err, run.ErrSession) {
 		t.Fatalf("cross-account rename: %v", err)
 	}
-	if _, err := repo.UpdateSession(ctx, "alice", entry.ID, run.SessionChanges{Title: &title, Pinned: &pinned}); err != nil {
+	if _, err := repo.Conversations.UpdateSession(ctx, "alice", entry.ID, run.SessionChanges{Title: &title, Pinned: &pinned}); err != nil {
 		t.Fatal(err)
 	}
 	turn := run.Run{
 		ID: "turn", OwnerID: "alice", SessionID: entry.ID, Prompt: "First prompt",
 		Status: run.Queued, CreatedAt: now, UpdatedAt: now,
 	}
-	if _, err := repo.Enqueue(ctx, turn, "Automatic title", false); err != nil {
+	if _, err := repo.Conversations.Enqueue(ctx, turn, "Automatic title", false); err != nil {
 		t.Fatal(err)
 	}
 	assertSessionFlags(t, repo, true, false)
-	if err := repo.ArchiveSession(ctx, "alice", entry.ID, now); !errors.Is(err, run.ErrActiveRun) {
+	if err := repo.Conversations.ArchiveSession(ctx, "alice", entry.ID, now); !errors.Is(err, run.ErrActiveRun) {
 		t.Fatalf("archive while active: %v", err)
 	}
-	if err := repo.MarkSessionRead(ctx, "alice", entry.ID, 1, ""); err != nil {
+	if err := repo.Conversations.MarkSessionRead(ctx, "alice", entry.ID, 1, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.ClaimNext(ctx, now); err != nil {
+	if _, err := repo.Conversations.ClaimNext(ctx, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Complete(ctx, turn.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	assertSessionFlags(t, repo, false, true)
-	if err := repo.MarkSessionRead(ctx, "bob", entry.ID, 1, ""); err != nil {
+	if err := repo.Conversations.Complete(ctx, turn.ID, run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	assertSessionFlags(t, repo, false, true)
-	if err := repo.MarkSessionRead(ctx, "alice", entry.ID, 1, ""); err != nil {
+	if err := repo.Conversations.MarkSessionRead(ctx, "bob", entry.ID, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	assertSessionFlags(t, repo, false, true)
+	if err := repo.Conversations.MarkSessionRead(ctx, "alice", entry.ID, 1, ""); err != nil {
 		t.Fatal(err)
 	}
 	assertSessionFlags(t, repo, false, false)
-	if err := repo.ArchiveSession(ctx, "alice", entry.ID, now); err != nil {
+	if err := repo.Conversations.ArchiveSession(ctx, "alice", entry.ID, now); err != nil {
 		t.Fatal(err)
 	}
-	if session, err := repo.Transcript(ctx, "alice", entry.ID, 10); err != nil || session != nil {
+	if session, err := repo.Conversations.Transcript(ctx, "alice", entry.ID, 10); err != nil || session != nil {
 		t.Fatalf("archived session still accessible: %+v, %v", session, err)
 	}
 	var count int64
@@ -433,9 +433,9 @@ func TestSessionActionsAndUnreadTransitions(t *testing.T) {
 	}
 }
 
-func assertSessionFlags(t *testing.T, repo *Repository, active, unread bool) {
+func assertSessionFlags(t *testing.T, repo *Database, active, unread bool) {
 	t.Helper()
-	sessions, err := repo.RecentSessions(t.Context(), "alice", nil, 10)
+	sessions, err := repo.Conversations.RecentSessions(t.Context(), "alice", nil, 10)
 	if err != nil || len(sessions) != 1 || !sessions[0].Pinned || sessions[0].Title != "Workbench" ||
 		sessions[0].Active != active || sessions[0].Unread != unread {
 		t.Fatalf("expected active=%v unread=%v, got %+v and %v", active, unread, sessions, err)

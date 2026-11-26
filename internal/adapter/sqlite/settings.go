@@ -5,9 +5,13 @@ import (
 	"errors"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
+
+type SettingsStore struct{ pools }
 
 type settingValue struct {
 	Key   settings.Key
@@ -20,7 +24,7 @@ type modelSettingValue struct {
 	Value   string
 }
 
-func (r *Repository) SettingOverrides(ctx context.Context) (settings.OverrideSnapshot, error) {
+func (r *SettingsStore) SettingOverrides(ctx context.Context) (settings.OverrideSnapshot, error) {
 	var rows []struct {
 		Revision int64
 		Key      *settings.Key
@@ -51,7 +55,7 @@ func (r *Repository) SettingOverrides(ctx context.Context) (settings.OverrideSna
 	return result, nil
 }
 
-func (r *Repository) SaveSettingOverrides(ctx context.Context, expectedRevision int64, values settings.Values) (bool, error) {
+func (r *SettingsStore) SaveSettingOverrides(ctx context.Context, expectedRevision int64, values settings.Values) (bool, error) {
 	var updated bool
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Exec(`UPDATE instance_settings_revision SET revision = revision + 1
@@ -71,7 +75,7 @@ func (r *Repository) SaveSettingOverrides(ctx context.Context, expectedRevision 
 	return err == nil && updated, err
 }
 
-func (r *Repository) ModelSettings(ctx context.Context, owner string) (settings.Values, error) {
+func (r *SettingsStore) ModelSettings(ctx context.Context, owner string) (settings.Values, error) {
 	return readSettingValues(r.read.WithContext(ctx).Raw(`
 		SELECT key, value FROM model_setting_values WHERE owner_id = ?
 		UNION ALL
@@ -79,7 +83,7 @@ func (r *Repository) ModelSettings(ctx context.Context, owner string) (settings.
 	`, owner, owner))
 }
 
-func (r *Repository) SaveModelSettings(ctx context.Context, owner string, values settings.Values) error {
+func (r *SettingsStore) SaveModelSettings(ctx context.Context, owner string, values settings.Values) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if len(values) == 0 {
 			if err := tx.Select("id").Take(&userRow{}, "id = ?", owner).Error; err != nil {
@@ -150,5 +154,28 @@ func insertModelSettings(tx *gorm.DB, owner string, values settings.Values) erro
 	return nil
 }
 
-var _ settings.Repository = (*Repository)(nil)
-var _ settings.ModelRepository = (*Repository)(nil)
+type settingsRow struct {
+	OwnerID string         `gorm:"primaryKey"`
+	Policy  sandbox.Policy `gorm:"not null"`
+}
+
+func (settingsRow) TableName() string { return "sandbox_settings" }
+
+func (r *SettingsStore) Policy(ctx context.Context, ownerID string) (sandbox.Policy, error) {
+	var record settingsRow
+	err := r.read.WithContext(ctx).First(&record, "owner_id = ?", ownerID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	return record.Policy, err
+}
+
+func (r *SettingsStore) SetPolicy(ctx context.Context, ownerID string, choice sandbox.Policy) error {
+	record := settingsRow{OwnerID: ownerID, Policy: choice}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "owner_id"}}, DoUpdates: clause.AssignmentColumns([]string{"policy"}),
+	}).Create(&record).Error
+}
+
+var _ settings.Repository = (*SettingsStore)(nil)
+var _ settings.ModelRepository = (*SettingsStore)(nil)

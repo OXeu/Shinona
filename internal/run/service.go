@@ -12,7 +12,7 @@ import (
 )
 
 type Service struct {
-	repo           Repository
+	stores         ServiceStores
 	resolve        ResolveTarget
 	projectTargets ListProjectTargets
 	newID          func() string
@@ -26,14 +26,14 @@ type Settings struct {
 	Selected  sandbox.Policy
 }
 
-func NewService(repo Repository, resolve ResolveTarget, newID func() string, controls *Controls, projectTargets ListProjectTargets) *Service {
-	return &Service{repo: repo, resolve: resolve, newID: newID, controls: controls, projectTargets: projectTargets}
+func NewService(stores ServiceStores, resolve ResolveTarget, newID func() string, controls *Controls, projectTargets ListProjectTargets) *Service {
+	return &Service{stores: stores, resolve: resolve, newID: newID, controls: controls, projectTargets: projectTargets}
 }
 
 func (s *Service) CreateSession(ctx context.Context, owner, projectID string) (Session, error) {
 	now := time.Now().UTC()
 	session := Session{ID: s.newID(), OwnerID: owner, ProjectID: projectID, Title: DefaultSessionTitle, CreatedAt: now, UpdatedAt: now}
-	if err := s.repo.CreateSession(ctx, session); err != nil {
+	if err := s.stores.Sessions.CreateSession(ctx, session); err != nil {
 		return Session{}, err
 	}
 	return session, nil
@@ -66,11 +66,7 @@ func (s *Service) RetryTurn(ctx context.Context, owner, sessionID, turnID string
 		return Run{}, ErrRetryTurn
 	}
 	retry.Model = strings.TrimSpace(retry.Model)
-	options := Options{Model: retry.Model}
-	if retry.Selection != nil {
-		options = *retry.Selection
-	}
-	if !validOptions(options) {
+	if !validOptions(retry.Apply(Options{})) {
 		return Run{}, ErrOptions
 	}
 	return s.enqueue(ctx, Run{OwnerID: owner, SessionID: sessionID, RetryOf: turnID}, "", false, &retry)
@@ -83,9 +79,9 @@ func (s *Service) enqueue(ctx context.Context, item Run, firstTitle string, queu
 	}
 	var turn Run
 	if retry == nil {
-		turn, err = s.repo.Enqueue(ctx, item, firstTitle, queue)
+		turn, err = s.stores.Turns.Enqueue(ctx, item, firstTitle, queue)
 	} else {
-		turn, err = s.repo.EnqueueRetry(ctx, item, *retry)
+		turn, err = s.stores.Turns.EnqueueRetry(ctx, item, *retry)
 	}
 	if err == nil {
 		s.controls.changed(item.OwnerID, item.SessionID)
@@ -95,7 +91,12 @@ func (s *Service) enqueue(ctx context.Context, item Run, firstTitle string, queu
 }
 
 func (s *Service) prepareQueued(ctx context.Context, item Run) (Run, error) {
-	_, target, err := sessionSandbox(ctx, s.repo, s.resolve, item.OwnerID, item.SessionID, "", false)
+	project, err := s.stores.Sessions.SessionProject(ctx, item.OwnerID, item.SessionID)
+	if err != nil {
+		return Run{}, err
+	}
+	spec := sandbox.Spec{OwnerID: item.OwnerID, SessionID: item.SessionID, ProjectID: project, Policy: sandbox.Shared}
+	_, target, err := projectTarget(ctx, s.stores.Projects, s.resolve, spec, "", false)
 	if err != nil {
 		return Run{}, err
 	}
@@ -128,16 +129,16 @@ func (s *Service) Steer(owner, sessionID, id, prompt string) error {
 }
 
 func (s *Service) Stop(ctx context.Context, owner, sessionID, id string) error {
-	return s.controls.stop(ctx, s.repo, owner, sessionID, id)
+	return s.controls.stop(ctx, s.stores.Turns, owner, sessionID, id)
 }
 
 // A nil project ID includes all projects. An empty project ID selects the default project.
 func (s *Service) RecentSessions(ctx context.Context, owner string, projectID *string) ([]Session, error) {
-	return s.repo.RecentSessions(ctx, owner, projectID, recentSessionLimit)
+	return s.stores.Sessions.RecentSessions(ctx, owner, projectID, recentSessionLimit)
 }
 
 func (s *Service) SessionListRevision(ctx context.Context, owner string) (int64, error) {
-	return s.repo.SessionListRevision(ctx, owner)
+	return s.stores.Sessions.SessionListRevision(ctx, owner)
 }
 
 func (s *Service) Transcript(ctx context.Context, owner, id string) (*Transcript, error) {
@@ -147,7 +148,7 @@ func (s *Service) Transcript(ctx context.Context, owner, id string) (*Transcript
 func (s *Service) FullTranscript(ctx context.Context, owner, id string) (*Transcript, error) {
 	// Legacy full WebSocket subscriptions emit one frame. Larger histories
 	// use paged subscriptions or the HTTP streaming transcript.
-	transcript, err := s.repo.Transcript(ctx, owner, id, MaxLiveTranscriptTurns+1)
+	transcript, err := s.stores.Transcripts.Transcript(ctx, owner, id, MaxLiveTranscriptTurns+1)
 	if transcript != nil && len(transcript.Turns) > MaxLiveTranscriptTurns {
 		return nil, ErrTranscriptExportLimit
 	}
@@ -155,12 +156,12 @@ func (s *Service) FullTranscript(ctx context.Context, owner, id string) (*Transc
 }
 
 func (s *Service) TranscriptPage(ctx context.Context, owner, id string, beforeSequence int) (*Transcript, error) {
-	return s.withTranscriptProgress(s.repo.TranscriptPage(ctx, owner, id, beforeSequence))
+	return s.withTranscriptProgress(s.stores.Transcripts.TranscriptPage(ctx, owner, id, beforeSequence))
 }
 
 func (s *Service) StreamTranscript(ctx context.Context, owner, id string, write func(TranscriptStream) error) error {
 	progress := s.controls.progress(sessionKey{owner, id})
-	return s.repo.StreamTranscript(ctx, owner, id, func(stream TranscriptStream) error {
+	return s.stores.Transcripts.StreamTranscript(ctx, owner, id, func(stream TranscriptStream) error {
 		if stream.Next != nil && progress.TurnID != "" {
 			next := stream.Next
 			stream.Next = func() ([]Run, error) {
@@ -200,14 +201,14 @@ func (s *Service) Attachment(ctx context.Context, owner, sessionID, turnID strin
 	if owner == "" || index < 0 || index >= MaxImages {
 		return nil, nil
 	}
-	return s.repo.Attachment(ctx, owner, sessionID, turnID, index)
+	return s.stores.Transcripts.Attachment(ctx, owner, sessionID, turnID, index)
 }
 
 func (s *Service) AttachmentTurnVisible(ctx context.Context, owner, sessionID, turnID string) (bool, error) {
 	if owner == "" {
 		return false, nil
 	}
-	return s.repo.AttachmentTurnVisible(ctx, owner, sessionID, turnID)
+	return s.stores.Transcripts.AttachmentTurnVisible(ctx, owner, sessionID, turnID)
 }
 
 func (s *Service) UpdateSession(ctx context.Context, owner, id string, changes SessionChanges) (Session, error) {
@@ -218,7 +219,7 @@ func (s *Service) UpdateSession(ctx context.Context, owner, id string, changes S
 		}
 		changes.Title = &title
 	}
-	updated, err := s.repo.UpdateSession(ctx, owner, id, changes)
+	updated, err := s.stores.Sessions.UpdateSession(ctx, owner, id, changes)
 	if err == nil {
 		s.controls.changed(owner, id)
 	}
@@ -226,7 +227,7 @@ func (s *Service) UpdateSession(ctx context.Context, owner, id string, changes S
 }
 
 func (s *Service) ArchiveSession(ctx context.Context, owner, id string) error {
-	err := s.repo.ArchiveSession(ctx, owner, id, time.Now().UTC())
+	err := s.stores.Sessions.ArchiveSession(ctx, owner, id, time.Now().UTC())
 	if err == nil {
 		s.terminals.closeSession(sessionKey{owner, id})
 		s.controls.changed(owner, id)
@@ -235,7 +236,7 @@ func (s *Service) ArchiveSession(ctx context.Context, owner, id string) error {
 }
 
 func (s *Service) MarkSessionRead(ctx context.Context, owner, id string, through int, throughID string) error {
-	err := s.repo.MarkSessionRead(ctx, owner, id, through, throughID)
+	err := s.stores.Sessions.MarkSessionRead(ctx, owner, id, through, throughID)
 	if err == nil {
 		s.controls.changed(owner, id)
 	}
@@ -243,7 +244,7 @@ func (s *Service) MarkSessionRead(ctx context.Context, owner, id string, through
 }
 
 func (s *Service) RevertTurn(ctx context.Context, owner, sessionID, turnID, expectedHeadID string) (RevertedTurn, error) {
-	result, err := s.repo.RevertTurn(ctx, owner, sessionID, turnID, expectedHeadID, time.Now().UTC())
+	result, err := s.stores.Turns.RevertTurn(ctx, owner, sessionID, turnID, expectedHeadID, time.Now().UTC())
 	if err == nil {
 		s.controls.changed(owner, sessionID)
 	}
@@ -259,7 +260,7 @@ func (s *Service) Settings(ctx context.Context, owner string) (Settings, error) 
 }
 
 func (s *Service) ComposerDefaults(ctx context.Context, owner string) (*ComposerDefaults, error) {
-	return s.repo.ComposerDefaults(ctx, owner)
+	return s.stores.Preferences.ComposerDefaults(ctx, owner)
 }
 
 func (s *Service) SetComposerDefaults(ctx context.Context, owner string, defaults ComposerDefaults) error {
@@ -267,7 +268,7 @@ func (s *Service) SetComposerDefaults(ctx context.Context, owner string, default
 	if defaults.Permission == "" || defaults.Thinking == "" || !validOptions(options) {
 		return ErrOptions
 	}
-	return s.repo.SaveComposerDefaults(ctx, owner, defaults)
+	return s.stores.Preferences.SaveComposerDefaults(ctx, owner, defaults)
 }
 
 func (s *Service) settingsFor(ctx context.Context, owner string, target Target) (Settings, error) {
@@ -275,7 +276,7 @@ func (s *Service) settingsFor(ctx context.Context, owner string, target Target) 
 	if len(available) == 0 {
 		return Settings{Available: available}, nil
 	}
-	saved, err := s.repo.Policy(ctx, owner)
+	saved, err := s.stores.Preferences.Policy(ctx, owner)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -294,7 +295,7 @@ func (s *Service) SetPolicy(ctx context.Context, owner string, choice sandbox.Po
 	if !slices.Contains(available, choice) {
 		return Settings{}, ErrPolicy
 	}
-	if err := s.repo.SetPolicy(ctx, owner, choice); err != nil {
+	if err := s.stores.Preferences.SetPolicy(ctx, owner, choice); err != nil {
 		return Settings{}, err
 	}
 	s.controls.changedAccount(owner)

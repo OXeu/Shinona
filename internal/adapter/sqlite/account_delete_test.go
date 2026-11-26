@@ -50,15 +50,15 @@ func TestDeleteAccountClearsOwnedRowsAndRejectsLateWrites(t *testing.T) {
 		}
 	}
 	instance := settings.Values{settings.MailFrom: "sender", settings.MailAPIKey: "mail-token"}
-	if saved, err := repo.SaveSettingOverrides(ctx, 0, instance); err != nil || !saved {
+	if saved, err := repo.Settings.SaveSettingOverrides(ctx, 0, instance); err != nil || !saved {
 		t.Fatalf("seed instance overrides: %t, %v", saved, err)
 	}
 	model := settings.Values{settings.ModelID: "fixture-model", settings.ModelAPIKey: "model-token"}
-	if err := repo.SaveModelSettings(ctx, owner, model); err != nil {
+	if err := repo.Settings.SaveModelSettings(ctx, owner, model); err != nil {
 		t.Fatal(err)
 	}
 	servers := settings.MCPConfig{{Name: "server", URL: "https://example.test/mcp", Token: "mcp-token"}}
-	if err := repo.SaveMCPConfig(ctx, owner, servers, nil); err != nil {
+	if err := repo.Settings.SaveMCPConfig(ctx, owner, servers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -66,7 +66,7 @@ func TestDeleteAccountClearsOwnedRowsAndRejectsLateWrites(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'fixture failure'); END`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.DeleteAccount(ctx, admin, owner); err == nil {
+	if err := repo.Accounts.DeleteAccount(ctx, admin, owner); err == nil {
 		t.Fatal("expected deletion to roll back")
 	}
 	assertRows := func(expected int64) {
@@ -100,7 +100,7 @@ func TestDeleteAccountClearsOwnedRowsAndRejectsLateWrites(t *testing.T) {
 	if err := db.Exec("DROP TRIGGER fail_delete").Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.DeleteAccount(ctx, admin, owner); err != nil {
+	if err := repo.Accounts.DeleteAccount(ctx, admin, owner); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(0)
@@ -109,19 +109,19 @@ func TestDeleteAccountClearsOwnedRowsAndRejectsLateWrites(t *testing.T) {
 			t.Fatalf("unrelated %T disappeared: %v", item, err)
 		}
 	}
-	if stored, err := repo.SettingOverrides(ctx); err != nil || len(stored.Values) != 2 {
+	if stored, err := repo.Settings.SettingOverrides(ctx); err != nil || len(stored.Values) != 2 {
 		t.Fatalf("account deletion changed the instance settings: %v", err)
 	}
-	if err := repo.SaveModelSettings(ctx, owner, model); err == nil {
+	if err := repo.Settings.SaveModelSettings(ctx, owner, model); err == nil {
 		t.Fatal("late write recreated settings for a deleted account")
 	}
-	if err := repo.SaveMCPConfig(ctx, owner, servers, nil); err == nil {
+	if err := repo.Settings.SaveMCPConfig(ctx, owner, servers, nil); err == nil {
 		t.Fatal("late write recreated servers for a deleted account")
 	}
 	if err := db.Model(&projectRow{}).Where("id = ?", "other-project").UpdateColumn("owner_id", owner).Error; err == nil {
 		t.Fatal("update assigned a project to a deleted account")
 	}
-	if _, err := repo.SaveE2BSandbox(ctx, owner, "project", "fixture", "", "new-box", data); err == nil {
+	if _, err := repo.E2B.SaveE2BSandbox(ctx, owner, "project", "fixture", "", "new-box", data); err == nil {
 		t.Fatal("late workspace creation resurrected a deleted account")
 	}
 }
