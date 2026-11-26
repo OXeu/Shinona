@@ -10,6 +10,7 @@ import { UiBox } from '../../shared/ui/elements'
 import { terminalApi } from './terminalApi'
 
 const props = defineProps<{ sessionId: string; terminalId: string }>()
+const emit = defineEmits<{ settled: [] }>()
 const surface = useTemplateRef<{ $el: HTMLElement }>('surface')
 const reconnectable = ref(false)
 const fit = new FitAddon()
@@ -55,10 +56,27 @@ function connect() {
   const ws = terminalApi.connect(props.sessionId, props.terminalId)
   socket = ws
   ws.binaryType = 'arraybuffer'
+  let replayWrites = 0
+  let running = false
+  let ended = false
+  const finishReplay = () => {
+    if (socket !== ws || ready || !running || replayWrites > 0) return
+    ready = true
+    sendSize()
+  }
   ws.onmessage = ({ data }: MessageEvent<unknown>) => {
     if (socket !== ws || !terminal) return
     if (data instanceof ArrayBuffer) {
-      terminal.write(new Uint8Array(data))
+      const bytes = new Uint8Array(data)
+      if (running) {
+        terminal.write(bytes)
+      } else {
+        replayWrites++
+        terminal.write(bytes, () => {
+          replayWrites--
+          finishReplay()
+        })
+      }
       return
     }
     if (typeof data !== 'string') return
@@ -72,20 +90,21 @@ function connect() {
     if (state === 'running') {
       // Previous screen output can contain control queries. Enable replies
       // only after xterm has replayed that output.
-      terminal.write('', () => {
-        if (socket !== ws) return
-        ready = true
-        sendSize()
-      })
-    } else if (state === 'failed') {
-      notify.error(t('terminal.unavailable'))
+      running = true
+      finishReplay()
+    } else if (state === 'failed' || state === 'exited') {
+      ended = true
+      running = false
+      ready = false
+      if (state === 'failed') notify.error(t('terminal.unavailable'))
     }
   }
   ws.onclose = ({ code }) => {
     if (socket !== ws) return
     socket = undefined
     ready = false
-    reconnectable.value = code !== 1000
+    reconnectable.value = !ended && code !== 1000
+    if (ended) emit('settled')
     if (reconnectable.value) notify.error(t('terminal.unavailable'))
   }
 }

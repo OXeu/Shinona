@@ -23,14 +23,29 @@ const panelId = useId()
 const tabs = ref<TerminalTab[]>([])
 const active = ref<string | null>(null)
 const visited = ref(new Set<string>())
+let settledTab: string | null = null
 const mountedTabs = computed(() => tabs.value.filter(({ id }) => visited.value.has(id)))
 const loading = ref(true)
 const changing = ref(false)
 
 function select(id: string | null) {
+  if (settledTab && settledTab !== id) {
+    discard(settledTab)
+    settledTab = null
+  }
   if (id) visited.value.add(id)
   active.value = id
   rememberTerminalView(auth.user?.id, props.sessionId, { active: id })
+}
+
+function discard(id: string) {
+  tabs.value = tabs.value.filter(tab => tab.id !== id)
+  visited.value.delete(id)
+}
+
+function settle(id: string) {
+  if (active.value === id) settledTab = id
+  else discard(id)
 }
 
 async function load() {
@@ -71,8 +86,7 @@ async function remove(id: string, index: number) {
   try {
     await terminalApi.close(props.sessionId, id, request.signal)
     if (request.signal.aborted) return
-    tabs.value = tabs.value.filter(tab => tab.id !== id)
-    visited.value.delete(id)
+    discard(id)
     if (active.value === id) select(tabs.value[Math.min(index, tabs.value.length - 1)]?.id ?? null)
     if (!tabs.value.length) emit('close')
     else await focusTab()
@@ -161,6 +175,7 @@ onUnmounted(() => request.abort())
       :aria-labelledby="panelId + '-' + tab.id"
       :session-id="sessionId"
       :terminal-id="tab.id"
+      @settled="settle(tab.id)"
     />
   </UiSection>
 </template>

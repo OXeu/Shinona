@@ -94,7 +94,13 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Repository, target run.Target) *
 		return target, nil
 	}
 	service := run.NewService(repo, resolve, uuid.NewString, controls, nil)
-	b.Cleanup(service.CloseTerminals)
+	b.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := service.CloseTerminals(cleanup); err != nil {
+			b.Error(err)
+		}
+	})
 	accounts := auth.New(repo, password.Argon2id{}, uuid.NewString)
 	const email, secret = "benchmark@example.invalid", "local benchmark password"
 	owner, err := accounts.CreatePasswordUser(ctx, email, secret)

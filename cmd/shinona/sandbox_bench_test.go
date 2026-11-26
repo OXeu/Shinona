@@ -114,9 +114,11 @@ func newBenchmarkSandbox(b *testing.B, repo *sqlite.Repository, name string, pro
 	}
 	spec := sandbox.Spec{OwnerID: api.owner, ProjectID: project.ID, Policy: sandbox.Shared}
 	b.Cleanup(func() {
-		api.service.CloseTerminals()
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(b.Context()), 30*time.Second)
 		defer cancel()
+		if err := api.service.CloseTerminals(ctx); err != nil {
+			b.Error(err)
+		}
 		if err := provider.DestroyProject(ctx, spec); err != nil {
 			b.Errorf("clean up benchmark sandbox for project %s: %v", spec.ProjectID, err)
 		}

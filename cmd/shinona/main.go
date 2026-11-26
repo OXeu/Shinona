@@ -86,9 +86,15 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := config.sshProjects.Close(); err != nil {
+			logger.Warn("close idle SSH transports", "error", err)
+		}
+	}()
+	lifetime, stop := context.WithCancel(ctx)
+	defer stop()
 	controls := &run.Controls{}
 	service := run.NewService(repository, config.ResolveForAccount, uuid.NewString, controls, config.ProjectTargets)
-	defer service.CloseTerminals()
 
 	authConfig := func() httpauth.Config {
 		current := config.Auth()
@@ -97,7 +103,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		return current
 	}
 	authHandler := httpauth.NewWithConfig(auth.New(repository, hasher, uuid.NewString), authConfig, logger)
-	router := newAPIRouter(ctx, config.origin.String(), service, config, authHandler, logger)
+	router := newAPIRouter(lifetime, config.origin.String(), service, config, authHandler, logger)
 	config.mcpOAuth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)
 	server := &http.Server{
@@ -107,30 +113,57 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		WriteTimeout:      run.ProjectSandboxTimeout + 15*time.Second,
 	}
 
-	workerCtx, stopWorker := context.WithCancel(ctx)
-	defer stopWorker()
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		run.NewWorker(repository, config.ResolveForAccount, logger, controls, parallelism).Serve(workerCtx)
+		run.NewWorker(repository, config.ResolveForAccount, logger, controls, parallelism).Serve(lifetime)
 	}()
 
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.Serve(listener) }()
 	logger.Info("shinona API ready", "address", listener.Addr().String(), "mode", config.Mode())
 
+	var serveErr error
+	var serving bool
 	select {
-	case err := <-serverDone:
-		stopWorker()
-		<-workerDone
-		return err
+	case serveErr = <-serverDone:
 	case <-ctx.Done():
-		stopWorker()
-		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		shutdownErr := server.Shutdown(shutdownCtx)
-		<-workerDone
-		return errors.Join(shutdownErr, ignoreServerClosed(<-serverDone))
+		serving = true
+	}
+	stop()
+	shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	httpShutdown, cancelHTTP := context.WithTimeout(shutdown, 5*time.Second)
+	defer cancelHTTP()
+	httpErr := server.Shutdown(httpShutdown)
+	if httpErr != nil {
+		httpErr = errors.Join(httpErr, server.Close())
+	}
+	if serving {
+		select {
+		case serveErr = <-serverDone:
+		case <-shutdown.Done():
+			serveErr = fmt.Errorf("stop HTTP listener: %w", shutdown.Err())
+		}
+	}
+	terminalErr := service.CloseTerminals(shutdown)
+	if terminalErr != nil {
+		terminalErr = fmt.Errorf("close workspace terminals: %w", terminalErr)
+	}
+	return errors.Join(ignoreServerClosed(serveErr), httpErr, terminalErr, waitForWorker(shutdown, workerDone))
+}
+
+func waitForWorker(ctx context.Context, done <-chan struct{}) error {
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("stop agent workers: %w", ctx.Err())
 	}
 }
 
