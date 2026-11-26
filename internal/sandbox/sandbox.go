@@ -14,6 +14,11 @@ const (
 	Shared Policy = "SHARED"
 )
 
+const (
+	ProviderE2B = "e2b"
+	ProviderSSH = "ssh"
+)
+
 var (
 	ErrPolicy           = errors.New("that sandbox policy is unavailable for this account")
 	ErrWorkspaceMissing = errors.New("this project has no retained workspace")
@@ -26,7 +31,6 @@ type Spec struct {
 	SessionID string
 	ProjectID string
 	Policy    Policy
-	TTL       time.Duration
 	Template  string
 	Timeout   time.Duration
 	OnTimeout string
@@ -48,11 +52,8 @@ type Provider interface {
 	Acquire(ctx context.Context, spec Spec) (Workspace, error)
 }
 
-// RetainedProvider can reopen the workspace of a finished run for inspection.
-type RetainedProvider interface {
-	Provider
-	OpenRetained(ctx context.Context, spec Spec) (Workspace, error)
-}
+// IdleTimeoutProvider supports applying a project-level idle lease policy.
+type IdleTimeoutProvider interface{ SupportsIdleTimeout() bool }
 
 // ProjectProvider shares a workspace across an owner's sessions in a project.
 // An empty ProjectID selects the owner's default project. OpenProject must

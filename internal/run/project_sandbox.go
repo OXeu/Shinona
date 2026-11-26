@@ -140,8 +140,11 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 		if !ok {
 			return ErrSandboxProvider
 		}
-		if target.Name != "e2b" && (next.TimeoutSeconds != 0 || next.OnTimeout != "") {
-			return ErrProjectSandboxConfig
+		if next.TimeoutSeconds != 0 || next.OnTimeout != "" {
+			policy, ok := target.Provider.(sandbox.IdleTimeoutProvider)
+			if !ok || !policy.SupportsIdleTimeout() {
+				return ErrProjectSandboxConfig
+			}
 		}
 		next.Provider = target.Name
 		if current == next {

@@ -3,8 +3,11 @@ package run
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/OXeu/shinona/internal/sandbox"
 )
 
 var (
@@ -40,16 +43,27 @@ func (s *Service) RenameProject(ctx context.Context, owner, id, name string) (Pr
 }
 
 func (s *Service) RemoveProject(ctx context.Context, owner, id string) error {
-	release, ok := s.tryProjectChange(owner, id)
-	if !ok {
-		return ErrWorkspaceBusy
+	if id == "" {
+		return ErrProject
 	}
-	defer release()
-	err := s.repo.RemoveProject(ctx, owner, id)
-	if err == nil {
+	return s.changeProjectSandbox(ctx, owner, id, func(ctx context.Context, config ProjectSandboxConfig, spec sandbox.Spec) error {
+		if err := s.terminals.stopProject(ctx, owner, id); err != nil {
+			return err
+		}
+		if config.Provider != "" {
+			if err := s.cleanPreviousSandbox(ctx, config.Provider, spec); err != nil {
+				slog.Warn("clean up deleted project workspace", "provider", config.Provider, "error", err)
+				return ErrProjectSandboxCleanup
+			}
+		}
+		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		if err := s.repo.RemoveProject(save, owner, id); err != nil {
+			return err
+		}
 		s.controls.changedAccount(owner)
-	}
-	return err
+		return nil
+	})
 }
 
 func (s *Service) Projects(ctx context.Context, owner string) ([]Project, error) {

@@ -22,6 +22,7 @@ func TestProjectSandboxSettingsKeepLegacyE2BProvider(t *testing.T) {
 	if saved, err := repo.SaveE2BSandbox(ctx, project.OwnerID, project.ID, "fixture", "", "legacy-box", []byte("{}")); err != nil || !saved {
 		t.Fatalf("save legacy sandbox: %v, %v", saved, err)
 	}
+	asLegacyDatabase(t, repo)
 	if err := repo.Close(); err != nil {
 		t.Fatal(err)
 	}

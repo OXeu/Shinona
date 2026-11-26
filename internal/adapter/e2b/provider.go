@@ -133,6 +133,7 @@ func parseEndpoint(value string) (*url.URL, error) {
 }
 
 func (*Provider) Policies(string) []sandbox.Policy { return []sandbox.Policy{sandbox.Shared} }
+func (*Provider) SupportsIdleTimeout() bool        { return true }
 
 func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
 	if spec.Policy != sandbox.Shared {
@@ -173,7 +174,7 @@ func (p *Provider) timeout(spec sandbox.Spec) time.Duration {
 	if spec.Timeout > 0 {
 		return spec.Timeout
 	}
-	return max(p.config.Timeout, spec.TTL)
+	return p.config.Timeout
 }
 
 func (p *Provider) onTimeout(spec sandbox.Spec) string {

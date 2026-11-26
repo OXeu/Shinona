@@ -168,7 +168,7 @@ func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly 
 			return use(ctx, ws)
 		}))
 	}
-	ws, err := s.openWorkspace(ctx, spec, target)
+	ws, err := openWorkspace(ctx, spec, target)
 	acquired()
 	if err != nil {
 		return err
@@ -194,25 +194,10 @@ func workspaceAvailability(err error) error {
 	return err
 }
 
-func (s *Service) openWorkspace(ctx context.Context, spec sandbox.Spec, target Target) (sandbox.Workspace, error) {
+func openWorkspace(ctx context.Context, spec sandbox.Spec, target Target) (sandbox.Workspace, error) {
 	if project, ok := target.Provider.(sandbox.ProjectProvider); ok {
 		ws, err := project.OpenProject(ctx, spec)
 		return ws, workspaceAvailability(err)
 	}
-	turn, err := s.repo.LatestWorkspaceRun(ctx, spec.OwnerID, spec.SessionID)
-	if err != nil {
-		return nil, err
-	}
-	if turn == nil || turn.Backend == "" || turn.Policy != sandbox.Shared {
-		return nil, ErrWorkspaceUnavailable
-	}
-	target, err = s.resolve(ctx, spec.OwnerID, turn.Backend)
-	if err != nil {
-		return nil, err
-	}
-	retained, ok := target.Provider.(sandbox.RetainedProvider)
-	if !ok {
-		return nil, ErrWorkspaceUnavailable
-	}
-	return retained.OpenRetained(ctx, spec)
+	return nil, ErrWorkspaceUnavailable
 }

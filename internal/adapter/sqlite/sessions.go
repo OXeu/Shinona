@@ -104,21 +104,6 @@ func (r *Repository) recentSessions(ctx context.Context, ownerID string, project
 	return sessions, err
 }
 
-func (r *Repository) LatestWorkspaceRun(ctx context.Context, ownerID, sessionID string) (*run.Run, error) {
-	db := r.read.WithContext(ctx)
-	session := sessionScope(db, ownerID).Select("id").Where("id = ?", sessionID)
-	var record row
-	err := db.Select("id", "backend", "policy", "machine_id").
-		Where("owner_id = ? AND session_id IN (?) AND (started_at IS NOT NULL OR status IN ?)",
-			ownerID, session, []run.Status{run.Succeeded, run.Failed}).
-		Order("created_at DESC, sequence DESC, id DESC").Take(&record).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	turn := run.Run(record)
-	return &turn, err
-}
-
 func (r *Repository) SessionProject(ctx context.Context, ownerID, sessionID string) (string, error) {
 	return sessionProject(r.read.WithContext(ctx), ownerID, sessionID)
 }

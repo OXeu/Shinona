@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/OXeu/shinona/internal/adapter/sqlite"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -103,7 +102,7 @@ func TestProviderReconnectsProjectSandboxAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := sandbox.Spec{RunID: "run-id", OwnerID: "alice", ProjectID: "web", SessionID: "first", Policy: sandbox.Shared, TTL: 140 * time.Second}
+	spec := sandbox.Spec{RunID: "run-id", OwnerID: "alice", ProjectID: "web", SessionID: "first", Policy: sandbox.Shared}
 	workspace, err := provider.Acquire(ctx, spec)
 	if err != nil {
 		t.Fatal(err)

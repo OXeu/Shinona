@@ -21,6 +21,7 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
@@ -121,8 +122,8 @@ func (r *runtime) prepare(ctx context.Context, overrides settings.Values, previo
 	if err != nil {
 		return nil, err
 	}
-	e2bTarget := run.Target{Name: "e2b", Defaults: e2bDefaults, ResolveAgent: r.resolveAgent}
-	sshTarget := run.Target{Name: "ssh", ResolveAgent: r.resolveAgent,
+	e2bTarget := run.Target{Name: sandbox.ProviderE2B, Defaults: e2bDefaults, ResolveAgent: r.resolveAgent}
+	sshTarget := run.Target{Name: sandbox.ProviderSSH, ResolveAgent: r.resolveAgent,
 		Defaults: run.ProjectSandboxConfig{Template: values[settings.SSHTemplate]}}
 	if previous != nil && sameSettings(previous.values, values, settings.E2BAPIKey, settings.E2BTemplate,
 		settings.E2BBaseURL, settings.E2BProxyURL, settings.E2BDomain, settings.E2BTimeout, settings.E2BOnTimeout) {
@@ -172,9 +173,9 @@ func (r *runtime) Resolve(name string) run.Target {
 			return config.ssh
 		}
 		return config.e2b
-	case "e2b":
+	case sandbox.ProviderE2B:
 		return config.e2b
-	case "ssh":
+	case sandbox.ProviderSSH:
 		return config.ssh
 	default:
 		return run.Target{Name: name}
@@ -200,30 +201,32 @@ func (r *runtime) Fields() []settings.Field {
 }
 
 func (r *runtime) Update(ctx context.Context, changes []settings.Change) ([]settings.Field, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	current := r.current.Load()
-	overrides, err := settings.Apply(current.overrides, changes)
-	if err != nil {
-		return nil, err
+	for {
+		current := r.current.Load()
+		overrides, err := settings.Apply(current.overrides, changes)
+		if err != nil {
+			return nil, err
+		}
+		next, err := r.prepare(ctx, overrides, current)
+		if err != nil {
+			return nil, err
+		}
+		r.mu.Lock()
+		if r.current.Load() != current {
+			r.mu.Unlock()
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		err = r.repo.SaveSettingOverrides(ctx, next.overrides)
+		if err == nil {
+			r.current.Store(next)
+		}
+		r.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return settings.Fields(next.values, next.overrides), nil
 	}
-	next, err := r.publish(ctx, overrides, current)
-	if err != nil {
-		return nil, err
-	}
-	return settings.Fields(next.values, next.overrides), nil
-}
-
-// publish validates and persists a configuration before making it visible to readers.
-func (r *runtime) publish(ctx context.Context, overrides settings.Values, current *runtimeConfig) (*runtimeConfig, error) {
-	next, err := r.prepare(ctx, overrides, current)
-	if err != nil {
-		return nil, err
-	}
-	if err := r.repo.SaveSettingOverrides(ctx, overrides); err != nil {
-		return nil, err
-	}
-	r.current.Store(next)
-	return next, nil
 }

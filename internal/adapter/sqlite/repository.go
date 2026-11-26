@@ -30,7 +30,6 @@ type row struct {
 	Sequence         int `gorm:"index:idx_turns_session,priority:2;index:idx_runs_session_status_sequence,priority:3;index:idx_runs_retries,priority:2"`
 	Policy           sandbox.Policy
 	Backend          string
-	MachineID        string
 	Prompt           string                `gorm:"not null"`
 	Payload          run.Payload           `gorm:"serializer:json"`
 	Steering         []run.SteeringMessage `gorm:"serializer:json"`

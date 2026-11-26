@@ -26,11 +26,15 @@ func (w *projectWorkspace) OpenTerminal(ctx context.Context, size sandbox.Termin
 // Active turns renew the lease. Inspection only uses the window requested
 // when reconnecting, so opening the workspace panel does not start a keepalive.
 func (w *projectWorkspace) keepAwake(ctx context.Context, window time.Duration) {
+	interval := min(renewEvery, window/3)
+	if interval <= 0 {
+		return
+	}
 	ctx, w.stop = context.WithCancel(ctx)
 	w.done = make(chan struct{})
 	go func() {
 		defer close(w.done)
-		ticker := time.NewTicker(min(renewEvery, window/3))
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {

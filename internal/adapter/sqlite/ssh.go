@@ -44,7 +44,7 @@ func (r *Repository) SSHServer(ctx context.Context, owner, id string) (settings.
 func (r *Repository) SaveSSHServer(ctx context.Context, owner string, server settings.SSHServer, create bool) error {
 	db := r.db.WithContext(ctx)
 	if create {
-		result := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&sshServerRow{
+		result := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "owner_id"}, {Name: "name"}}, DoNothing: true}).Create(&sshServerRow{
 			OwnerID: owner, ID: server.ID, Name: server.Name, Address: server.Address, User: server.User,
 			HostFingerprint: server.HostFingerprint, Template: server.Template, PrivateKey: server.PrivateKey,
 		})
