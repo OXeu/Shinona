@@ -26,6 +26,7 @@ type instanceSettings struct {
 	defaults   settings.Values
 	origin     *url.URL
 	publicHTTP *http.Client
+	mailConfig email.ResendConfig
 	e2bHTTP    *http.Client
 	e2bStore   e2b.WorkspaceStore
 	buildSSH   func(settings.Values) (sandbox.Provider, error)
@@ -83,7 +84,7 @@ func (r *instanceSettings) prepare(ctx context.Context, overrides settings.Value
 			return nil, settings.Invalid("INVALID_MAIL_FROM", "enter a valid sender email address")
 		}
 		if mailKey != "" {
-			mailer = email.Resend{APIKey: mailKey, From: from, Client: r.publicHTTP}
+			mailer = email.Resend{APIKey: mailKey, From: from, Client: r.publicHTTP, Config: r.mailConfig}
 		}
 	}
 	e2bDefaults, err := e2bSandboxDefaults(values)

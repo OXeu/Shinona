@@ -36,6 +36,10 @@ func newRuntime(ctx context.Context, repo runtimeRepository, workspaces e2b.Work
 	if err != nil {
 		return nil, fmt.Errorf("SHINONA_TRUSTED_MODEL_ORIGINS: %w", err)
 	}
+	mailConfig, err := resendConfig(environment)
+	if err != nil {
+		return nil, err
+	}
 	sshSettings, err := newSSHRuntime(repo, environment)
 	if err != nil {
 		return nil, err
@@ -44,7 +48,7 @@ func newRuntime(ctx context.Context, repo runtimeRepository, workspaces e2b.Work
 	mcpSettings := &mcpRuntime{repo: repo, oauth: mcp.NewOAuth(repo, origin.String()), client: publicHTTP}
 	models := newModelRuntime(repo, modelPolicy, mcpSettings)
 	instance := &instanceSettings{
-		repo: repo, defaults: settings.Defaults(environment.lookup), origin: origin, publicHTTP: publicHTTP,
+		repo: repo, defaults: settings.Defaults(environment.lookup), origin: origin, publicHTTP: publicHTTP, mailConfig: mailConfig,
 		e2bStore: workspaces, buildSSH: sshSettings.sshSandboxProvider, agent: models.resolveAgent,
 		e2bHTTP: &http.Client{
 			Timeout:       35 * time.Second,

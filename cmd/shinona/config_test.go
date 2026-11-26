@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAPICacheBudgetsUseMiBAndAcceptZero(t *testing.T) {
@@ -50,6 +51,32 @@ func TestOpenDatabaseRejectsInvalidReadConnections(t *testing.T) {
 	_, err = openDatabase(t.Context(), environment{readers: "3"})
 	if err == nil || !strings.Contains(err.Error(), readers) {
 		t.Fatalf("opening with invalid read connections returned %v", err)
+	}
+}
+
+func TestResendConfig(t *testing.T) {
+	const endpointKey = "SHINONA_RESEND_API_URL"
+	const timeoutKey = "SHINONA_RESEND_TIMEOUT_SECONDS"
+	t.Setenv(endpointKey, "")
+	t.Setenv(timeoutKey, "")
+	if got, err := resendConfig(nil); err != nil || got.Endpoint != "https://api.resend.com/emails" || got.Timeout != 8*time.Second {
+		t.Fatalf("default Resend config = %+v, %v", got, err)
+	}
+	config := environment{endpointKey: "https://mailer.example/send", timeoutKey: "21"}
+	if got, err := resendConfig(config); err != nil || got.Endpoint != config[endpointKey] || got.Timeout != 21*time.Second {
+		t.Fatalf("configured Resend config = %+v, %v", got, err)
+	}
+	for _, endpoint := range []string{"http://mailer.example/send", "https://localhost/send", "https://169.254.169.254/send",
+		"https://user:secret@mailer.example/send", "https://mailer.example/send?", "https://mailer.example/send#fragment"} {
+		config[endpointKey] = endpoint
+		if _, err := resendConfig(config); err == nil || !strings.Contains(err.Error(), endpointKey) {
+			t.Errorf("invalid Resend endpoint %q returned %v", endpoint, err)
+		}
+	}
+	delete(config, endpointKey)
+	t.Setenv(timeoutKey, "61")
+	if _, err := resendConfig(config); err == nil || !strings.Contains(err.Error(), timeoutKey) {
+		t.Fatalf("invalid Resend timeout returned %v", err)
 	}
 }
 

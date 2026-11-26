@@ -17,7 +17,9 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/OXeu/shinona/internal/adapter/e2b"
+	"github.com/OXeu/shinona/internal/adapter/email"
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
+	"github.com/OXeu/shinona/internal/adapter/httpclient"
 	"github.com/OXeu/shinona/internal/adapter/oidc"
 	"github.com/OXeu/shinona/internal/adapter/password"
 	"github.com/OXeu/shinona/internal/adapter/rest"
@@ -91,6 +93,22 @@ func passwordHasher(e environment) (password.Argon2id, error) {
 		return password.Argon2id{}, err
 	}
 	return password.New(password.Parameters{Time: uint32(timeCost), MemoryKiB: uint32(memory), Threads: uint8(threads)})
+}
+
+func resendConfig(e environment) (email.ResendConfig, error) {
+	config := email.DefaultResendConfig()
+	config.Endpoint = e.value("SHINONA_RESEND_API_URL", config.Endpoint)
+	endpoint, err := url.Parse(config.Endpoint)
+	if err != nil || endpoint.Scheme != "https" || endpoint.User != nil || endpoint.ForceQuery || endpoint.RawQuery != "" ||
+		strings.Contains(config.Endpoint, "#") || httpclient.CheckHost(endpoint.Hostname()) != nil {
+		return email.ResendConfig{}, errors.New("SHINONA_RESEND_API_URL must be a public HTTPS URL without credentials, a query, or a fragment")
+	}
+	seconds, err := e.boundedInt("SHINONA_RESEND_TIMEOUT_SECONDS", int(config.Timeout/time.Second), 1, 60)
+	if err != nil {
+		return email.ResendConfig{}, err
+	}
+	config.Timeout = time.Duration(seconds) * time.Second
+	return config, nil
 }
 
 func apiConfig(e environment) (rest.Config, error) {

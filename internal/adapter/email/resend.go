@@ -4,39 +4,62 @@ package email
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"text/template"
 	"time"
+
+	"github.com/OXeu/shinona/internal/auth"
 )
+
+type ResendConfig struct {
+	Endpoint string
+	Timeout  time.Duration
+}
+
+func DefaultResendConfig() ResendConfig {
+	return ResendConfig{Endpoint: "https://api.resend.com/emails", Timeout: 8 * time.Second}
+}
+
+//go:embed verification.txt
+var verificationText string
+
+var verificationTemplate = template.Must(template.New("verification").Parse(verificationText))
 
 type Resend struct {
 	APIKey string
 	From   string
 	Client *http.Client
+	Config ResendConfig
 }
 
-func (r Resend) SendVerification(ctx context.Context, email, code, id string) error {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+func (r Resend) SendVerification(ctx context.Context, verification auth.EmailVerification) error {
+	ctx, cancel := context.WithTimeout(ctx, r.Config.Timeout)
 	defer cancel()
+	var message strings.Builder
+	if err := verificationTemplate.Execute(&message, verification); err != nil {
+		return err
+	}
 	body, err := json.Marshal(struct {
 		From    string   `json:"from"`
 		To      []string `json:"to"`
 		Subject string   `json:"subject"`
 		Text    string   `json:"text"`
-	}{r.From, []string{email}, "Shinona email verification",
-		"Your Shinona verification code is " + code + ". It expires in 10 minutes.\nShinona 邮箱验证码有效期为 10 分钟。"})
+	}{r.From, []string{verification.Address}, "Shinona email verification", message.String()})
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.resend.com/emails", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.Config.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+r.APIKey)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", "shinona/"+id)
+	req.Header.Set("Idempotency-Key", "shinona/"+verification.RequestID)
 	response, err := r.Client.Do(req)
 	if err != nil {
 		return fmt.Errorf("send verification email: %w", err)

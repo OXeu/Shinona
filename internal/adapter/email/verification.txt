@@ -1,0 +1,4 @@
+{{- $expiry := .ExpiresAt.UTC.Format "2006-01-02 15:04:05 UTC" -}}
+Your Shinona verification code is {{.Code}}. It expires at {{$expiry}}.
+
+您的 Shinona 邮箱验证码为 {{.Code}}，到期时间为 {{$expiry}}。

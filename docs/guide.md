@@ -92,7 +92,7 @@ Open **Account** from the avatar menu to edit the nickname or upload a PNG, JPEG
 
 To bind or change a sign-in email, enter the code from the new mailbox. The code lasts 10 minutes and allows five attempts. Changing credentials requires the current password or, for an account with only OAuth, a sign-in from the last 15 minutes. After the email is verified, an OAuth account can set its first password. Changing the sign-in email or password revokes other login sessions.
 
-Configure **Settings → Email delivery** with a Resend API key and a sender address on a verified domain to enable email binding. The startup fallbacks are `SHINONA_RESEND_API_KEY` and `SHINONA_RESEND_FROM`.
+Configure **Settings → Email delivery** with a Resend API key and a sender address on a verified domain to enable email binding. The startup fallbacks are `SHINONA_RESEND_API_KEY` and `SHINONA_RESEND_FROM`. At startup, `SHINONA_RESEND_API_URL` can override the public HTTPS endpoint, and `SHINONA_RESEND_TIMEOUT_SECONDS` controls the delivery timeout (1–60 seconds, default 8).
 
 To attach the configured OAuth provider to an existing password account, sign in with the password and choose **Link OAuth** under **Account → Sign-in and security**. Confirm the current password and complete the provider sign-in. An OAuth identity can belong to only one account. An existing account can disconnect OAuth after setting a password. Disconnecting revokes the account's other sign-ins.
 

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -19,10 +20,10 @@ import (
 	"github.com/OXeu/shinona/internal/auth"
 )
 
-type verificationMail struct{ email, code, id string }
+type verificationMail struct{ auth.EmailVerification }
 
-func (m *verificationMail) SendVerification(_ context.Context, email, code, id string) error {
-	m.email, m.code, m.id = email, code, id
+func (m *verificationMail) SendVerification(_ context.Context, verification auth.EmailVerification) error {
+	m.EmailVerification = verification
 	return nil
 }
 
@@ -92,20 +93,24 @@ func TestOAuthAccountCanBindEmailAndSetPassword(t *testing.T) {
 	const password = "a-good-test-password"
 	assertAccountError(t, perform(t, mux, "POST", "/auth/account/password", `{"password":"`+password+`"}`, current),
 		http.StatusBadRequest, "ACCOUNT_BIND_EMAIL")
+	before := time.Now().Add(auth.EmailLifetime)
 	sent := accountResponse(t, perform(t, mux, "POST", "/auth/account/email/start", `{"email":"MEMBER@example.com"}`, current))
-	if got := sent["request"]; got != mail.id || mail.email != email || len(mail.code) != 8 || sent["code"] != nil {
+	if got := sent["request"]; got != mail.RequestID || mail.Address != email || len(mail.Code) != 8 || sent["code"] != nil {
 		t.Fatalf("unexpected verification result: %#v", sent)
+	}
+	if mail.ExpiresAt.Before(before) || mail.ExpiresAt.After(time.Now().Add(auth.EmailLifetime)) {
+		t.Fatalf("unexpected verification expiry %v", mail.ExpiresAt)
 	}
 	assertAccountError(t, perform(t, mux, "POST", "/auth/account/email/start", `{"email":"other@example.com"}`, current),
 		http.StatusTooManyRequests, "ACCOUNT_EMAIL_WAIT")
-	verify := `{"request":"` + mail.id + `","code":"` + mail.code + `"}`
+	verify := `{"request":"` + mail.RequestID + `","code":"` + mail.Code + `"}`
 	assertAccountError(t, perform(t, mux, "POST", "/auth/account/email/verify", verify, other),
 		http.StatusBadRequest, "ACCOUNT_EMAIL_CODE")
 	wrongCode := "00000000"
-	if wrongCode == mail.code {
+	if wrongCode == mail.Code {
 		wrongCode = "00000001"
 	}
-	assertAccountError(t, perform(t, mux, "POST", "/auth/account/email/verify", `{"request":"`+mail.id+`","code":"`+wrongCode+`"}`, current),
+	assertAccountError(t, perform(t, mux, "POST", "/auth/account/email/verify", `{"request":"`+mail.RequestID+`","code":"`+wrongCode+`"}`, current),
 		http.StatusBadRequest, "ACCOUNT_EMAIL_CODE")
 	assertStatus(t, perform(t, mux, "POST", "/auth/account/email/verify", verify, current), http.StatusOK)
 	assertAccountError(t, perform(t, mux, "POST", "/auth/account/email/verify", verify, current),

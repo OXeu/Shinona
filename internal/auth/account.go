@@ -118,7 +118,7 @@ type AccountRepository interface {
 }
 
 type VerificationMailer interface {
-	SendVerification(ctx context.Context, email, code, id string) error
+	SendVerification(ctx context.Context, verification EmailVerification) error
 }
 
 func (s *Service) UpdateProfile(ctx context.Context, change ProfileChange) (User, error) {
@@ -164,6 +164,7 @@ func (s *Service) ChangePassword(ctx context.Context, token, current, password s
 
 type EmailVerification struct {
 	RequestID, Address, Code string
+	ExpiresAt                time.Time
 }
 
 func (s *Service) PrepareEmailCode(ctx context.Context, token, current, email string) (EmailVerification, error) {
@@ -191,12 +192,12 @@ func (s *Service) PrepareEmailCode(ctx context.Context, token, current, email st
 	if err := s.repo.SaveEmailChallenge(ctx, state, challenge); err != nil {
 		return EmailVerification{}, err
 	}
-	return EmailVerification{RequestID: id, Address: email, Code: code}, nil
+	return EmailVerification{RequestID: id, Address: email, Code: code, ExpiresAt: challenge.ExpiresAt}, nil
 }
 
 func (v EmailVerification) Send(ctx context.Context, mailer VerificationMailer) error {
 	send := timing.Start(ctx, "account_email_delivery")
-	err := mailer.SendVerification(ctx, v.Address, v.Code, v.RequestID)
+	err := mailer.SendVerification(ctx, v)
 	send()
 	if err != nil {
 		return errors.Join(ErrEmailDelivery, err)
