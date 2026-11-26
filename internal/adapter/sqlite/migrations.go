@@ -19,7 +19,7 @@ import (
 var migrations = [...]func(*gorm.DB) error{
 	initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime, deleteRevokedMCPGrants,
 	migrateOwnership, migrateSettingsStorage, addInstanceSettingsRevision,
-	initSessionListRevisions,
+	initSessionListRevisions, migrateThinkingSignatures,
 }
 
 func addInstanceSettingsRevision(db *gorm.DB) error {

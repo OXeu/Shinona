@@ -2,11 +2,13 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sky-valley/pi/ai"
 
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
@@ -172,6 +174,78 @@ func TestMigratesInlineAttachmentsWithoutChangingHistory(t *testing.T) {
 	var remaining int64
 	if err := repo.db.Model(&runAttachmentRow{}).Count(&remaining).Error; err != nil || remaining != 0 {
 		t.Fatalf("attachment escaped its foreign key cascade: %d, %v", remaining, err)
+	}
+}
+
+func TestMigratesLegacyThinkingSignaturesBeforeReplay(t *testing.T) {
+	const previousVersion = 9
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "legacy-reasoning.db")
+	old := openSchemaFixture(t, path, previousVersion)
+	seedAccounts(t, old, "owner")
+	now := time.Now().UTC()
+	if err := old.Conversations.CreateSession(ctx, run.Session{OwnerID: "owner", ID: "session", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	const history = `[
+		{"role":"assistant","api":"openai-completions","provider":"openai","model":"model","stopReason":"toolUse","extension":44,"content":[
+			{"type":"thinking","thinking":"Inspect first","signature":"reasoning_content","extension":{"number":9007199254740993}},
+			{"type":"thinking","thinkingSignature":"current","signature":"superseded"},
+			{"type":"toolCall","id":"call_1","name":"read","arguments":{"signature":"argument to keep"}}
+		]},
+		{"role":"toolResult","toolCallId":"call_1","toolName":"read","content":[{"type":"text","text":"file contents"}]}
+	]`
+	const unrelated = `[ {"role":"toolResult", "content": [{"type":"text","text":"ok"}], "details": {"signature": "keep exactly"}} ]`
+	const malformed = `[{"role":"assistant","signature":"keep malformed data"`
+	for i, record := range []row{
+		{ID: "legacy", AgentMessages: []byte(history), CompactedContext: []byte(history)},
+		{ID: "unrelated", AgentMessages: []byte(unrelated), CompactedContext: []byte(malformed)},
+	} {
+		record.OwnerID, record.SessionID, record.Sequence, record.Status = "owner", "session", i+1, run.Succeeded
+		record.CreatedAt, record.UpdatedAt = now, now
+		if err := old.db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	exchanges, err := repo.Conversations.History(ctx, run.Run{OwnerID: "owner", SessionID: "session", Sequence: 2}, 0)
+	if err != nil || len(exchanges) != 1 {
+		t.Fatalf("loading migrated history: %v, %v", exchanges, err)
+	}
+	for _, history := range [][]byte{exchanges[0].AgentMessages, exchanges[0].CompactedContext} {
+		var messages []json.RawMessage
+		if err := json.Unmarshal(history, &messages); err != nil || len(messages) != 2 {
+			t.Fatalf("reading migrated messages: %s, %v", history, err)
+		}
+		message, err := ai.UnmarshalMessage(messages[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		assistant, ok := message.(ai.AssistantMessage)
+		if !ok || len(assistant.Content) != 3 {
+			t.Fatalf("unexpected assistant content: %+v", message)
+		}
+		if assistant.Content[0].(ai.ThinkingContent).ThinkingSignature != "reasoning_content" ||
+			assistant.Content[1].(ai.ThinkingContent).ThinkingSignature != "current" ||
+			assistant.Content[2].(ai.ToolCall).Arguments["signature"] != "argument to keep" {
+			t.Fatalf("migration changed the replay: %s", history)
+		}
+		if !strings.Contains(string(messages[0]), `"extension":44`) || !strings.Contains(string(messages[0]), `"number":9007199254740993`) ||
+			strings.Contains(string(messages[0]), `"signature":"reasoning_content"`) || !strings.Contains(string(messages[1]), "file contents") {
+			t.Fatalf("migration changed unrelated fields or retained the old alias: %s", history)
+		}
+	}
+	var untouched row
+	if err := repo.db.Where("id = ?", "unrelated").Take(&untouched).Error; err != nil ||
+		string(untouched.AgentMessages) != unrelated || string(untouched.CompactedContext) != malformed {
+		t.Fatalf("migration rewrote unrelated data: %s, %s, %v", untouched.AgentMessages, untouched.CompactedContext, err)
 	}
 }
 

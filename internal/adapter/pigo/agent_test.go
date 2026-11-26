@@ -176,10 +176,10 @@ func TestLongAgentLoopKeepsReportingNewToolActivity(t *testing.T) {
 	}
 }
 
-func TestLoadsHistorySavedByPreviousRuntime(t *testing.T) {
+func TestLoadsStoredConversationHistory(t *testing.T) {
 	const data = `[
 		{"role":"assistant","api":"openai-completions","provider":"openai","model":"before","stopReason":"toolUse",
-		 "content":[{"type":"thinking","thinking":"Read the file.","signature":"reasoning_content"},
+		 "content":[{"type":"thinking","thinking":"Read the file.","thinkingSignature":"reasoning_content"},
 		            {"type":"toolCall","id":"call_1","name":"read","arguments":{"path":"test.txt"}}]},
 		{"role":"toolResult","toolCallId":"call_1","toolName":"read","content":[{"type":"text","text":"file contents"}]},
 		{"role":"assistant","api":"openai-completions","provider":"openai","model":"before","stopReason":"stop",
@@ -188,17 +188,17 @@ func TestLoadsHistorySavedByPreviousRuntime(t *testing.T) {
 	history, err := conversationHistory([]run.Exchange{{Prompt: "Inspect.", AgentMessages: []byte(data)}},
 		ai.Model{Api: ai.APIOpenAICompletions, Provider: "openai", ID: "before"})
 	if err != nil || len(history) != 4 {
-		t.Fatalf("replay legacy history: %v, %v", history, err)
+		t.Fatalf("replay stored history: %v, %v", history, err)
 	}
 	response := assistantMessage(history[1])
 	thinking, ok := response.Content[0].(ai.ThinkingContent)
 	if !ok || thinking.ThinkingSignature != "reasoning_content" {
-		t.Fatalf("lost legacy thinking signature: %+v", response.Content)
+		t.Fatalf("lost thinking signature: %+v", response.Content)
 	}
 	call, ok := response.Content[1].(ai.ToolCall)
 	tool, isResult := history[2].(ai.ToolResultMessage)
 	if !ok || !isResult || call.Arguments["path"] != "test.txt" || call.ID != tool.ToolCallID || ai.ContentText(tool.Content) != "file contents" {
-		t.Fatalf("lost legacy tool call or matching result: %+v, %+v", call, tool)
+		t.Fatalf("lost tool call or matching result: %+v, %+v", call, tool)
 	}
 }
 

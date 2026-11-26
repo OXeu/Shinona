@@ -236,7 +236,7 @@ func TestCompatibleEndpointReplaysAcrossModelChanges(t *testing.T) {
 		Prompt: "Continue.",
 		History: []run.Exchange{{Prompt: "Start.", AgentMessages: []byte(`[
 			{"role":"assistant","api":"openai-completions","provider":"openai","model":"previous-model","stopReason":"stop","content":[
-				{"type":"thinking","thinking":"Previous private reasoning.","signature":"reasoning_content"},
+				{"type":"thinking","thinking":"Previous private reasoning.","thinkingSignature":"reasoning_content"},
 				{"type":"text","text":"Previous visible reply."}
 			]}
 		]`)}},
