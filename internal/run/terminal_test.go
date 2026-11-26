@@ -71,6 +71,91 @@ func TestTerminalStartupValidationStopsWithService(t *testing.T) {
 	})
 }
 
+func TestTerminalValidationStopsForInvalidatedSessions(t *testing.T) {
+	for _, action := range []string{"archive", "delete account"} {
+		t.Run(action, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const owner, other, session = "owner", "other", "session"
+				repo := archivingTerminalRepository{workspaceTestRepository{projects: map[sessionKey]string{
+					{owner, session}: "", {other, session}: "",
+				}}}
+				service := NewService(ServiceStores{Sessions: repo, Projects: repo}, func(ctx context.Context, _, _ string) (Target, error) {
+					<-ctx.Done()
+					return Target{}, ctx.Err()
+				}, nil, &Controls{}, nil, DefaultWorkspaceTimeouts())
+				lifetime, stop := context.WithCancel(t.Context())
+				defer stop()
+				start := func(owner string) <-chan error {
+					result := make(chan error, 1)
+					go func() {
+						_, err := service.StartTerminal(t.Context(), lifetime, owner, session)
+						result <- err
+					}()
+					return result
+				}
+				ownedStart, otherStart := start(owner), start(other)
+				synctest.Wait()
+				if action == "archive" {
+					if err := service.ArchiveSession(t.Context(), owner, session); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					service.AccountDeleted(owner)
+				}
+				synctest.Wait()
+				select {
+				case err := <-ownedStart:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("invalidated start returned %v", err)
+					}
+				default:
+					t.Error("invalidated workspace validation was still running")
+				}
+				select {
+				case err := <-otherStart:
+					t.Fatalf("unrelated workspace validation was stopped: %v", err)
+				default:
+				}
+			})
+		})
+	}
+}
+
+func TestTerminalShutdownDrainsWorkspaceValidation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const owner, session = "owner", "session"
+		repo := workspaceTestRepository{projects: map[sessionKey]string{{owner, session}: ""}}
+		resolving := make(chan context.Context, 1)
+		release := make(chan struct{})
+		service := NewService(ServiceStores{Sessions: repo, Projects: repo}, func(ctx context.Context, _, _ string) (Target, error) {
+			resolving <- ctx
+			<-release
+			return Target{}, ctx.Err()
+		}, nil, &Controls{}, nil, DefaultWorkspaceTimeouts())
+		done := make(chan error, 1)
+		go func() {
+			_, err := service.StartTerminal(t.Context(), t.Context(), owner, session)
+			done <- err
+		}()
+		validation := <-resolving
+		shutdown, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		if err := service.CloseTerminals(shutdown); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("shutdown did not wait for terminal validation: %v", err)
+		}
+		if !errors.Is(validation.Err(), context.Canceled) {
+			t.Errorf("shutdown did not cancel terminal validation: %v", validation.Err())
+		}
+		close(release)
+		if err := service.CloseTerminals(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("validated start returned %v", err)
+		}
+	})
+}
+
 func TestTerminalExitReleasesQuotaAndShutdownHasDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const owner, session = "owner", "session"

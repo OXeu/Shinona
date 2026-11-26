@@ -58,12 +58,15 @@ type terminalRegistry struct {
 	mu      sync.Mutex
 	tabs    map[sessionKey][]*TerminalSession
 	running map[*TerminalSession]sessionKey
-	starts  map[sessionKey]*terminalStarts
+	starts  map[*terminalStart]struct{}
 	closed  bool
 	drained chan struct{}
 }
 
-type terminalStarts struct{ count int }
+type terminalStart struct {
+	key    sessionKey
+	cancel context.CancelFunc
+}
 
 func (s *Service) Terminals(ctx context.Context, owner, id string) ([]TerminalTab, error) {
 	if _, err := s.stores.Sessions.SessionProject(ctx, owner, id); err != nil {
@@ -89,11 +92,11 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 	defer stopValidation()
 	pool := &s.terminals
 	key := sessionKey{owner, id}
-	start := pool.beginStart(key)
+	start := pool.beginStart(key, cancelRequest)
 	if start == nil {
 		return TerminalTab{}, ErrTerminalUnavailable
 	}
-	defer pool.endStart(key, start)
+	defer pool.endStart(start)
 	spec, release, err := lockSessionProject(ctx, s.stores.Sessions, owner, id, func(key sandbox.ProjectKey) (func(), error) {
 		if release, ok := s.projectChanges.TryAcquire(key, true); ok {
 			return release, nil
@@ -114,7 +117,7 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 	}
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
-	if pool.closed || ctx.Err() != nil || lifetime.Err() != nil || pool.starts[key] != start {
+	if pool.closed || ctx.Err() != nil || lifetime.Err() != nil {
 		return TerminalTab{}, ErrTerminalUnavailable
 	}
 	var accountCount, sessionCount int
@@ -150,32 +153,33 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 	return entry.tab, nil
 }
 
-// An archive or account deletion invalidates any start being validated
-// concurrently. Validation itself runs outside the registry mutex.
-func (p *terminalRegistry) beginStart(key sessionKey) *terminalStarts {
+// Keep validation registered until it returns, including after cancellation.
+// Its database and provider calls run outside the registry mutex.
+func (p *terminalRegistry) beginStart(key sessionKey, cancel context.CancelFunc) *terminalStart {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return nil
 	}
 	if p.starts == nil {
-		p.starts = make(map[sessionKey]*terminalStarts)
+		p.starts = make(map[*terminalStart]struct{})
 	}
-	start := p.starts[key]
-	if start == nil {
-		start = new(terminalStarts)
-		p.starts[key] = start
-	}
-	start.count++
+	start := &terminalStart{key: key, cancel: cancel}
+	p.starts[start] = struct{}{}
 	return start
 }
 
-func (p *terminalRegistry) endStart(key sessionKey, start *terminalStarts) {
+func (p *terminalRegistry) endStart(start *terminalStart) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	start.count--
-	if start.count == 0 && p.starts[key] == start {
-		delete(p.starts, key)
+	delete(p.starts, start)
+	p.signalDrained()
+}
+
+// signalDrained requires p.mu. Once closed, both registries only shrink.
+func (p *terminalRegistry) signalDrained() {
+	if p.closed && len(p.starts) == 0 && len(p.running) == 0 {
+		close(p.drained)
 	}
 }
 
@@ -187,9 +191,7 @@ func (p *terminalRegistry) runTerminal(key sessionKey, entry *TerminalSession, p
 		p.removeTab(key, entry)
 		delete(p.running, entry)
 		close(entry.done)
-		if p.closed && len(p.running) == 0 {
-			close(p.drained)
-		}
+		p.signalDrained()
 	}()
 	err := entry.run(provider, spec, limits)
 	entry.mu.Lock()
@@ -288,7 +290,11 @@ func (p *terminalRegistry) closeSession(key sessionKey) {
 		entry.cancel(context.Canceled)
 	}
 	delete(p.tabs, key)
-	delete(p.starts, key)
+	for start := range p.starts {
+		if start.key == key {
+			start.cancel()
+		}
+	}
 }
 
 func (s *Service) CloseTerminals(ctx context.Context) error {
@@ -300,11 +306,11 @@ func (s *Service) CloseTerminals(ctx context.Context) error {
 		for entry := range p.running {
 			entry.cancel(context.Canceled)
 		}
-		clear(p.tabs)
-		clear(p.starts)
-		if len(p.running) == 0 {
-			close(p.drained)
+		for start := range p.starts {
+			start.cancel()
 		}
+		clear(p.tabs)
+		p.signalDrained()
 	}
 	drained := p.drained
 	p.mu.Unlock()
@@ -335,9 +341,9 @@ func (s *Service) AccountDeleted(owner string) {
 		}
 		delete(p.tabs, key)
 	}
-	for key := range p.starts {
-		if key.owner == owner {
-			delete(p.starts, key)
+	for start := range p.starts {
+		if start.key.owner == owner {
+			start.cancel()
 		}
 	}
 }
