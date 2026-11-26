@@ -212,6 +212,10 @@ func listTools(ctx context.Context, connection *sdk.ClientSession, server string
 
 func executeTool(session *sdk.ClientSession, name string) func(context.Context, map[string]any) (run.ToolResult, error) {
 	return func(ctx context.Context, args map[string]any) (run.ToolResult, error) {
+		// A server can leave the event stream open after returning the result.
+		// Cancel that request when this call ends, while keeping the session.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
 		if err != nil {
 			return run.ToolResult{}, err

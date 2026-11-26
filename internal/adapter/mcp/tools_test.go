@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -59,6 +62,63 @@ func TestConfiguredStreamableHTTPTool(t *testing.T) {
 	result, err := tools[0].Execute(t.Context(), map[string]any{"text": "hello"})
 	if err != nil || result.Text != "hello" {
 		t.Fatalf("call tool: %+v, %v", result, err)
+	}
+}
+
+func TestMCPToolReleasesStreamWhenItsResultArrives(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+	sdk.AddTool(server, &sdk.Tool{Name: "echo"}, func(_ context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "complete"}}}, nil, nil
+	})
+	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil)
+	streamClosed := make(chan struct{}, 2)
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		data, err := io.ReadAll(r.Body)
+		var request struct{ Method string }
+		if err != nil || json.Unmarshal(data, &request) != nil {
+			t.Error("could not read the MCP request")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(data))
+		handler.ServeHTTP(w, r)
+		if request.Method == "tools/call" {
+			if !strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream") {
+				t.Error("the fixture did not return an event stream")
+			}
+			// Keep the response open after the normal terminal result has
+			// been sent. The client should close this stream on its own.
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			streamClosed <- struct{}{}
+		}
+	}))
+	t.Cleanup(fixture.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	servers := NewServers(settings.MCPConfig{{Name: "fixture", URL: fixture.URL}}, fixture.Client(), nil)
+	tools, release, err := servers.Open(ctx, "owner", []string{"fixture"})
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("open fixture tool: %d tools, error=%v", len(tools), err)
+	}
+	defer func() { _ = release() }()
+	for range 2 {
+		result, err := tools[0].Execute(ctx, map[string]any{})
+		if err != nil || result.Text != "complete" {
+			t.Fatalf("call tool: %+v, %v", result, err)
+		}
+		select {
+		case <-streamClosed:
+			if ctx.Err() != nil {
+				t.Fatal("the response stayed open until the parent context expired")
+			}
+		case <-ctx.Done():
+			t.Fatal("the response stayed open after its result arrived")
+		}
 	}
 }
 
