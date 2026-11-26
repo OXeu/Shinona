@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -30,6 +31,10 @@ func (w localWorkspace) WriteFile(_ context.Context, name string, data []byte) e
 func (w localWorkspace) Exec(ctx context.Context, command sandbox.Command) (sandbox.Result, error) {
 	cmd := exec.CommandContext(ctx, command.Program, command.Args...)
 	cmd.Dir = w.dir
+	// The workspace is the repository boundary: never resolve a repository from
+	// above it. This also keeps the tests independent of the directory the test
+	// binary happens to run in, such as a checkout that is itself a repository.
+	cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(w.dir))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -206,5 +211,89 @@ func TestScopedRepositoryRequiresAGitRepository(t *testing.T) {
 	}
 	if _, err := New(localWorkspace{plain}).Changes(ctx); !errors.Is(err, ErrRepository) {
 		t.Fatalf("outside repository: %v", err)
+	}
+}
+
+// A project commonly keeps its repository in a subfolder of the sandbox
+// workspace. Selecting that folder must work even though it is the top of its
+// own work tree, which reports an empty Git prefix.
+func TestSelectedDirectoryMayBeTheTopOfItsOwnRepository(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	project := filepath.Join(dir, "myproject")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, project, "init", "-q", ".")
+	gitTest(t, project, "config", "user.email", "a@b.c")
+	gitTest(t, project, "config", "user.name", "A")
+	write(t, project, "committed.txt", "base\n")
+	gitTest(t, project, "add", "-A")
+	gitTest(t, project, "commit", "-qm", "base")
+
+	write(t, project, "fresh.txt", "new\n")
+
+	repo := New(localWorkspace{dir}).At("myproject")
+	changes, err := repo.Changes(ctx)
+	if err != nil {
+		t.Fatalf("changes at a nested repository root: %v", err)
+	}
+	if len(changes.Entries) != 1 || changes.Entries[0].Path != "fresh.txt" {
+		t.Fatalf("scoped changes: %+v", changes.Entries)
+	}
+
+	history, err := repo.History(ctx)
+	if err != nil {
+		t.Fatalf("history at a nested repository root: %v", err)
+	}
+	if len(history.Entries) != 1 || history.Entries[0].Subject != "base" {
+		t.Fatalf("scoped history: %+v", history.Entries)
+	}
+
+	diff, err := repo.Diff(ctx, "committed.txt", history.Entries[0].Hash)
+	if err != nil {
+		t.Fatalf("diff at a nested repository root: %v", err)
+	}
+	if !strings.Contains(diff.Text, "committed.txt") {
+		t.Fatalf("scoped diff: %q", diff.Text)
+	}
+}
+
+// A selected folder that is not inside any repository still reports the
+// dedicated error so the panel can explain itself.
+func TestSelectedDirectoryOutsideEveryRepository(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	write(t, dir, "loose.txt", "x\n")
+	if _, err := New(localWorkspace{dir}).At(".").Changes(ctx); !errors.Is(err, ErrRepository) {
+		t.Fatalf("expected ErrRepository, got %v", err)
+	}
+}
+
+// A folder inside a repository that itself lives in a workspace subfolder
+// needs both the repository prefix and the scope rebasing together.
+func TestSelectedDirectoryInsideANestedRepository(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	project := filepath.Join(dir, "myproject")
+	if err := os.MkdirAll(filepath.Join(project, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, project, "init", "-q", ".")
+	gitTest(t, project, "config", "user.email", "a@b.c")
+	gitTest(t, project, "config", "user.name", "A")
+	write(t, project, "sub/kept.txt", "base\n")
+	write(t, project, "outside.txt", "base\n")
+	gitTest(t, project, "add", "-A")
+	gitTest(t, project, "commit", "-qm", "base")
+	write(t, project, "sub/kept.txt", "changed\n")
+	write(t, project, "outside.txt", "changed\n")
+
+	changes, err := New(localWorkspace{dir}).At("myproject/sub").Changes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes.Entries) != 1 || changes.Entries[0].Path != "kept.txt" {
+		t.Fatalf("nested scope changes: %+v", changes.Entries)
 	}
 }
