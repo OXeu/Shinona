@@ -9,6 +9,7 @@ import { sessionApi } from './sessionApi'
 import type { Project, SessionSummary } from './sessionApi'
 import type { SessionListSnapshot } from './sessionListApi'
 import { SessionListPolling } from './sessionListPolling'
+import { rememberTerminalTab } from './terminalPreferences'
 
 export const useSessionStore = defineStore('sessions', () => {
   const recent = ref<SessionSummary[]>([])
@@ -138,6 +139,7 @@ export const useSessionStore = defineStore('sessions', () => {
     recent.value = recent.value.filter((entry) => entry.id !== id)
     composerSelections.value.delete(id)
     if (account) writeComposerSelection(account, id)
+    rememberTerminalTab(account, id, null)
   }
 
   function markRead(id: string, through: number) {
