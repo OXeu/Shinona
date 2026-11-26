@@ -21,7 +21,7 @@ type sessionExecution struct {
 }
 
 func (a *Agent) runSession(ctx context.Context, input run.Input, model ai.Model, reasoning agent.ThinkingLevel,
-	loadout toolLoadout, history []agent.AgentMessage,
+	loadout toolLoadout, history sessionHistory,
 ) (sessionExecution, error) {
 	options := coding.SessionOptions{
 		Model: &model, Cwd: "/", Tools: loadout.tools, SystemPrompt: loadout.prompt,
@@ -55,8 +55,7 @@ func (a *Agent) runSession(ctx context.Context, input run.Input, model ai.Model,
 		}))
 	}
 	prompt, _ := ai.CreateInitialSystemMessage(loadout.prompt, declarations)
-	session.LoadHistory(slices.Concat([]agent.AgentMessage{prompt}, history))
-	initial := len(history) + 1
+	initial := history.load(session, prompt)
 
 	// The leading instruction has a stable timestamp. Pi's compaction applies
 	// a new leading system message stamped with the time of its checkpoint.

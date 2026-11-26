@@ -310,6 +310,7 @@ func TestCompatibleEndpointReplaysAcrossModelChanges(t *testing.T) {
 func TestAgentRestoresPiCompactedContext(t *testing.T) {
 	const oldDetail = "Old workspace details. "
 	const summary = "Pi summarized the old workspace details."
+	const extendedSummary = "Pi merged the saved summary with newer history."
 	const hostInstruction = "Do not pass host instructions into a workspace."
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -321,6 +322,7 @@ func TestAgentRestoresPiCompactedContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	var summaries atomic.Int32
+	var extending, merged atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /models", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"data":[{"id":"fixture","context_length":50000}]}`)
@@ -341,10 +343,24 @@ func TestAgentRestoresPiCompactedContext(t *testing.T) {
 		if strings.Contains(messages, hostInstruction) {
 			t.Error("Pi included host instructions in a model request")
 		}
-		if len(request.Tools) == 0 {
+		switch {
+		case len(request.Tools) == 0:
 			summaries.Add(1)
 			response = summary
-		} else if !strings.Contains(messages, summary) || !strings.Contains(messages, "Keep this recent message.") || strings.Contains(messages, oldDetail) {
+			if extending.Load() {
+				messages = strings.NewReplacer(`\u003c`, "<", `\u003e`, ">").Replace(messages)
+				_, previous, start := strings.Cut(messages, `<previous-summary>\n`)
+				previous, _, end := strings.Cut(previous, `\n</previous-summary>`)
+				if start && end && strings.Contains(previous, summary) {
+					merged.Store(true)
+				}
+				response = extendedSummary
+			}
+		case extending.Load():
+			if !strings.Contains(messages, extendedSummary) || !strings.Contains(messages, "Retain the latest instructions.") || strings.Contains(messages, oldDetail) {
+				t.Error("regular request did not use the extended checkpoint and latest instructions")
+			}
+		case !strings.Contains(messages, summary) || !strings.Contains(messages, "Keep this recent message.") || strings.Contains(messages, oldDetail):
 			t.Errorf("regular request should use the Pi summary and recent messages without the summarized prefix (message bytes=%d)", len(messages))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -374,5 +390,22 @@ func TestAgentRestoresPiCompactedContext(t *testing.T) {
 	resumed, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Follow up.", History: history}, &recordingWorkspace{})
 	if err != nil || resumed.Output != "Current answer." || summaries.Load() != summaryCount {
 		t.Fatalf("restoring the saved Pi context summarized the same messages again or failed: output=%q, summaries=%d, error=%v", resumed.Output, summaries.Load(), err)
+	}
+	if len(resumed.CompactedContext) != 0 {
+		t.Fatal("restoring a checkpoint wrote a redundant snapshot")
+	}
+
+	extending.Store(true)
+	history = append(history,
+		run.Exchange{Prompt: "Follow up.", Output: resumed.Output, AgentMessages: resumed.AgentMessages},
+		run.Exchange{Prompt: "Read another report.", Output: strings.Repeat("More workspace output. ", 4000)},
+		run.Exchange{Prompt: "Retain the latest instructions.", Output: "Ready."},
+	)
+	extended, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Continue the investigation.", History: history}, &recordingWorkspace{})
+	if err != nil || extended.Output != "Current answer." || summaries.Load() == summaryCount || !strings.Contains(string(extended.CompactedContext), extendedSummary) {
+		t.Fatalf("Pi did not extend the saved checkpoint: output=%q, summaries=%d, error=%v", extended.Output, summaries.Load(), err)
+	}
+	if !merged.Load() {
+		t.Fatal("Pi did not receive the saved summary as its previous checkpoint")
 	}
 }

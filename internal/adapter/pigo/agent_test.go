@@ -187,16 +187,16 @@ func TestLoadsStoredConversationHistory(t *testing.T) {
 	]`
 	history, err := conversationHistory([]run.Exchange{{Prompt: "Inspect.", AgentMessages: []byte(data)}},
 		ai.Model{Api: ai.APIOpenAICompletions, Provider: "openai", ID: "before"})
-	if err != nil || len(history) != 4 {
+	if err != nil || len(history.messages) != 4 {
 		t.Fatalf("replay stored history: %v, %v", history, err)
 	}
-	response := assistantMessage(history[1])
+	response := assistantMessage(history.messages[1])
 	thinking, ok := response.Content[0].(ai.ThinkingContent)
 	if !ok || thinking.ThinkingSignature != "reasoning_content" {
 		t.Fatalf("lost thinking signature: %+v", response.Content)
 	}
 	call, ok := response.Content[1].(ai.ToolCall)
-	tool, isResult := history[2].(ai.ToolResultMessage)
+	tool, isResult := history.messages[2].(ai.ToolResultMessage)
 	if !ok || !isResult || call.Arguments["path"] != "test.txt" || call.ID != tool.ToolCallID || ai.ContentText(tool.Content) != "file contents" {
 		t.Fatalf("lost tool call or matching result: %+v, %+v", call, tool)
 	}

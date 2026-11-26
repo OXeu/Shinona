@@ -2,12 +2,67 @@ package pigo
 
 import (
 	"encoding/json"
+	"slices"
+	"strings"
 
 	"github.com/sky-valley/pi/agent"
 	"github.com/sky-valley/pi/ai"
+	"github.com/sky-valley/pi/coding"
 
 	"github.com/OXeu/shinona/internal/run"
 )
+
+type sessionHistory struct {
+	messages   []agent.AgentMessage
+	checkpoint int // Number of messages recorded in the saved context snapshot.
+}
+
+func (h sessionHistory) load(session *coding.Session, prompt ai.SystemMessage) int {
+	messages := slices.Concat([]agent.AgentMessage{prompt}, h.messages)
+	if h.checkpoint == 0 {
+		session.LoadHistory(messages)
+		return len(messages)
+	}
+	summary, ok := savedPiSummary(h.messages[0])
+	if !ok {
+		session.LoadHistory(messages)
+		return len(messages)
+	}
+	// Restore the boundary through Pi so later compaction updates its prior
+	// summary. Rebuild the prompt with the current permissions and tools.
+	const checkpointID = "checkpoint"
+	sources := make([]coding.SessionEntry, len(h.messages))
+	entries := make([]coding.ProjectedSessionEntry, len(h.messages))
+	sources[0] = coding.SessionEntry{ID: checkpointID, Type: "compaction", Summary: summary, SystemMessage: &prompt}
+	entries[0] = coding.ProjectedSessionEntry{SourceEntry: &sources[0], Messages: messages[:2]}
+	for i := 1; i < len(h.messages); i++ {
+		sources[i] = coding.SessionEntry{Type: "message", Message: h.messages[i]}
+		if i == h.checkpoint {
+			sources[i].ParentID = checkpointID
+		}
+		entries[i] = coding.ProjectedSessionEntry{SourceEntry: &sources[i], Messages: messages[i+1 : i+2]}
+	}
+	session.LoadBranch(coding.BranchProjection{BranchContext: coding.BranchContext{Messages: messages}, Entries: entries})
+	return len(messages)
+}
+
+// Stored contexts include Pi's rendered summary as their first user message.
+// Read that format only from a snapshot, never from an ordinary turn prompt.
+func savedPiSummary(message agent.AgentMessage) (string, bool) {
+	user, ok := message.(ai.UserMessage)
+	if !ok || len(user.Content) != 1 {
+		return "", false
+	}
+	block, ok := user.Content[0].(ai.TextContent)
+	if !ok {
+		return "", false
+	}
+	summary, ok := strings.CutPrefix(block.Text, "The conversation history before this point was compacted into the following summary:\n\n<summary>\n")
+	if !ok {
+		return "", false
+	}
+	return strings.CutSuffix(summary, "\n</summary>")
+}
 
 func encodeMessages(messages []agent.AgentMessage, compacted bool) ([]byte, error) {
 	if len(messages) == 0 {
@@ -47,15 +102,17 @@ func encodeMessages(messages []agent.AgentMessage, compacted bool) ([]byte, erro
 	return json.Marshal(replay)
 }
 
-func conversationHistory(exchanges []run.Exchange, fallbackModel ai.Model) ([]agent.AgentMessage, error) {
+func conversationHistory(exchanges []run.Exchange, fallbackModel ai.Model) (sessionHistory, error) {
 	history := make([]agent.AgentMessage, 0, len(exchanges)*2)
+	checkpoint := 0
 	for i := len(exchanges) - 1; i >= 0; i-- {
 		if len(exchanges[i].CompactedContext) > 0 {
 			var err error
 			history, err = appendMessages(history, exchanges[i].CompactedContext)
 			if err != nil {
-				return nil, err
+				return sessionHistory{}, err
 			}
+			checkpoint = len(history)
 			exchanges = exchanges[i+1:]
 			break
 		}
@@ -74,7 +131,7 @@ func conversationHistory(exchanges []run.Exchange, fallbackModel ai.Model) ([]ag
 			var err error
 			history, err = appendMessages(history, exchange.AgentMessages)
 			if err != nil {
-				return nil, err
+				return sessionHistory{}, err
 			}
 			continue
 		}
@@ -90,7 +147,7 @@ func conversationHistory(exchanges []run.Exchange, fallbackModel ai.Model) ([]ag
 			})
 		}
 	}
-	return history, nil
+	return sessionHistory{messages: history, checkpoint: checkpoint}, nil
 }
 
 func appendMessages(history []agent.AgentMessage, data []byte) ([]agent.AgentMessage, error) {
