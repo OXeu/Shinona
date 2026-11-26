@@ -17,13 +17,13 @@
 
 .workspace-switcher {
   flex: none;
-  padding: 5px 6px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
 }
 
 .workspace-tabs {
   flex: 1;
-  gap: 2px;
+  gap: 4px;
   overflow-x: auto;
   padding: 2px;
   scrollbar-width: thin;
@@ -39,9 +39,10 @@
 .workspace-tab {
   flex: 0 0 auto;
   min-height: 30px;
-  padding: 4px 6px;
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
   white-space: nowrap;
-  font-size: 0.75rem;
+  font-size: 0.78rem;
 }
 
 .workspace-tab:is([aria-pressed='true'], :hover:not(:disabled)),
