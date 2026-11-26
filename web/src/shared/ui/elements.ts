@@ -1,10 +1,10 @@
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, mergeProps } from 'vue'
 
 function element(tag: keyof HTMLElementTagNameMap, defaults: Record<string, string> = {}) {
   return defineComponent({
     inheritAttrs: false,
     setup(_, { attrs, slots }) {
-      return () => h(tag, { ...defaults, ...attrs }, slots.default?.())
+      return () => h(tag, mergeProps(defaults, attrs), slots.default?.())
     },
   })
 }
@@ -18,7 +18,7 @@ export const UiHeading = element('h1')
 export const UiSubheading = element('h2')
 export const UiInline = element('span')
 export const UiPre = element('pre')
-export const UiForm = element('form', { novalidate: '' })
+export const UiForm = element('form', { novalidate: '', class: 'ui-form' })
 export const UiList = element('ul')
 export const UiListItem = element('li')
 export const UiAnchor = element('a')

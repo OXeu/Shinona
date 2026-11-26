@@ -61,14 +61,19 @@ func (r *resolver) ProjectSandbox(ctx context.Context, args struct{ ProjectID gq
 }
 
 func (r *resolver) SaveProjectSandbox(ctx context.Context, args struct {
-	ProjectID gql.ID
-	Input     projectSandboxConfig
+	ProjectID      gql.ID
+	Input          projectSandboxConfig
+	SkipCleanupFor *string
 }) (bool, error) {
 	setSandboxWriteDeadline(ctx, run.ProjectSandboxTimeout+30*time.Second)
+	var skipCleanupFor string
+	if args.SkipCleanupFor != nil {
+		skipCleanupFor = *args.SkipCleanupFor
+	}
 	err := r.service.SaveProjectSandbox(ctx, auth.CurrentUser(ctx).ID, string(args.ProjectID), run.ProjectSandboxConfig{
 		Provider: args.Input.Provider, Template: args.Input.Template,
 		TimeoutSeconds: int(args.Input.TimeoutSeconds), OnTimeout: args.Input.OnTimeout,
-	})
+	}, skipCleanupFor)
 	return err == nil, r.apiError(err)
 }
 

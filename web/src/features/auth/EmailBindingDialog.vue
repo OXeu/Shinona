@@ -59,7 +59,7 @@ function startOver() {
   <UiDialog v-model="open" :label="label" :busy="busy">
     <UiSubheading>{{ label }}</UiSubheading>
     <UiForm @submit.prevent="submit">
-      <UiBox :hidden="verifying">
+      <UiBox class="form-fields" :hidden="verifying">
         <UiInput
           id="binding-email"
           v-model="email"
@@ -79,7 +79,7 @@ function startOver() {
           />
         </UiBox>
       </UiBox>
-      <UiBox :hidden="!verifying">
+      <UiBox class="form-fields" :hidden="!verifying">
         <UiInline class="dialog-message">{{ t('account.codeInstructions', { email: email.trim() }) }}</UiInline>
         <UiInput
           id="binding-code"
@@ -90,7 +90,9 @@ function startOver() {
           maxlength="8"
           :disabled="busy"
         />
-        <UiButton class="secondary-button" :disabled="busy" @click="startOver">{{ t('account.sendAnother') }}</UiButton>
+        <UiBox>
+          <UiButton class="secondary-button" :disabled="busy" @click="startOver">{{ t('account.sendAnother') }}</UiButton>
+        </UiBox>
       </UiBox>
       <UiBox class="form-actions">
         <UiButton class="ghost-button" :disabled="busy" @click="open = false">{{ t('common.cancel') }}</UiButton>

@@ -58,11 +58,6 @@ func (r *Repository) SaveSSHServer(ctx context.Context, owner string, server set
 		if err != nil {
 			return err
 		}
-		if current.Address != server.Address || current.User != server.User || current.HostFingerprint != server.HostFingerprint {
-			if err := ensureSSHServerUnused(tx, owner, server.ID); err != nil {
-				return err
-			}
-		}
 		var duplicates int64
 		if err := tx.Model(&sshServerRow{}).Where("owner_id = ? AND name = ? AND id <> ?", owner, server.Name, server.ID).Count(&duplicates).Error; err != nil {
 			return err

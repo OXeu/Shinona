@@ -28,13 +28,14 @@ type Mutation {
   removeMcpServer(name: String!): McpSettings!
   resetMcpSettings: McpSettings!
   saveSshServer(input: SSHServerInput!): SSHServer!
+  testSshServer(input: SSHServerInput!): Boolean!
   removeSshServer(id: ID!): Boolean!
   updateApplicationSettings(changes: [SettingChange!]!): [SettingField!]!
   updateModelSettings(changes: [SettingChange!]!): [SettingField!]!
   createProject(name: String!): Project!
   renameProject(id: ID!, name: String!): Project!
   removeProject(id: ID!): Boolean!
-  saveProjectSandbox(projectId: ID!, input: ProjectSandboxInput!): Boolean!
+  saveProjectSandbox(projectId: ID!, input: ProjectSandboxInput!, skipCleanupFor: String): Boolean!
   createProjectSandbox(projectId: ID!): Boolean!
   destroyProjectSandbox(projectId: ID!): Boolean!
   recreateProjectSandbox(projectId: ID!): Boolean!

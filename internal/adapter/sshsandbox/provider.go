@@ -27,6 +27,8 @@ const (
 	maxOutputBytes   = 16 << 10
 )
 
+var ErrDockerUnavailable = errors.New("the SSH user cannot access Docker")
+
 type Config struct {
 	Address         string
 	User            string
@@ -140,6 +142,23 @@ func (p *Provider) connect(ctx context.Context, spec sandbox.Spec) (*workspace, 
 
 func (*Provider) Policies(string) []sandbox.Policy { return []sandbox.Policy{sandbox.Shared} }
 
+// TestConnection checks SSH authentication and Docker access without changing the host.
+func (p *Provider) TestConnection(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	ws, err := p.connect(ctx, sandbox.Spec{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = ws.Close(ctx) }()
+	stop := context.AfterFunc(ctx, func() { _ = ws.Close(ctx) })
+	defer stop()
+	if err := ws.docker(ctx, "info", "--format", "{{.ServerVersion}}"); err != nil {
+		return errors.Join(ErrDockerUnavailable, err)
+	}
+	return nil
+}
+
 func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
 	if spec.Policy != sandbox.Shared {
 		return nil, sandbox.ErrPolicy
@@ -213,6 +232,8 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 		return sandbox.ProjectStatus{}, err
 	}
 	defer func() { _ = ws.Close(ctx) }()
+	stop := context.AfterFunc(ctx, func() { _ = ws.Close(ctx) })
+	defer stop()
 	return ws.status(ctx)
 }
 
@@ -227,6 +248,8 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec) error 
 		return err
 	}
 	defer func() { _ = ws.Close(ctx) }()
+	stop := context.AfterFunc(ctx, func() { _ = ws.Close(ctx) })
+	defer stop()
 	status, err := ws.status(ctx)
 	if err != nil || status.State == sandbox.ProjectNone {
 		return err

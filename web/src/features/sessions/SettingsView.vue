@@ -34,7 +34,7 @@ const sections = computed(() => {
     { id: 'sandbox', label: t('workspace.sandbox'), visible: administrator },
     { id: 'ssh', label: t('ssh.servers'), visible: true },
     { id: 'mcp', label: t('composer.mcp'), visible: mcp.value !== null },
-    { id: 'oauth', label: t('auth.oauth'), visible: administrator },
+    { id: 'oauth', label: t('settings.singleSignOn'), visible: administrator },
     { id: 'mail', label: t('settings.mail'), visible: administrator },
   ]
   return entries.filter(({ visible }) => visible)
@@ -106,7 +106,7 @@ async function saveInstance(changes: { key: string; value: string | null }[]) {
         {{ section.label }}
       </UiButton>
     </UiNav>
-    <UiSection class="preferences" :hidden="active !== 'preferences'" :aria-label="t('settings.preferences')">
+    <UiSection class="form-fields" :hidden="active !== 'preferences'" :aria-label="t('settings.preferences')">
       <UiLanguagePicker />
       <UiChoiceDropdown
         :label="t('composer.runningDefault')"
@@ -144,6 +144,4 @@ async function saveInstance(changes: { key: string; value: string | null }[]) {
 }
 .settings-tab:hover { color: var(--foreground); background: var(--sidebar-bg); }
 .settings-tab[aria-pressed='true'] { color: var(--foreground); background: var(--selection-bg); }
-.preferences:not([hidden]) { display: grid; gap: 16px; }
-.preferences :deep(.field) { margin: 0; }
 </style>

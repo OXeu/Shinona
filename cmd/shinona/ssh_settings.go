@@ -119,12 +119,7 @@ func (r *runtime) SSHServers(ctx context.Context) ([]settings.SSHServer, error) 
 	return r.repo.SSHServers(ctx, auth.CurrentUser(ctx).ID)
 }
 
-func (r *runtime) SaveSSHServer(ctx context.Context, server settings.SSHServer) (settings.SSHServer, error) {
-	r.sshMu.Lock()
-	defer r.sshMu.Unlock()
-
-	owner := auth.CurrentUser(ctx).ID
-	server.Name = strings.Join(strings.Fields(server.Name), " ")
+func (r *runtime) sshConnectionSettings(ctx context.Context, owner string, server settings.SSHServer) (settings.SSHServer, error) {
 	server.User = strings.TrimSpace(server.User)
 	server.Template = strings.TrimSpace(server.Template)
 	server.HostFingerprint = strings.TrimSpace(server.HostFingerprint)
@@ -132,18 +127,15 @@ func (r *runtime) SaveSSHServer(ctx context.Context, server settings.SSHServer) 
 	if server.Template == "" {
 		server.Template = defaultSSHImage
 	}
-	if server.Name == "" || len(server.Name) > 160 || len(server.User) > 255 || !sshImageName.MatchString(server.Template) {
-		return settings.SSHServer{}, settings.Invalid("INVALID_PERSONAL_SSH", "enter a server name and a valid SSH configuration")
+	if len(server.User) > 255 {
+		return settings.SSHServer{}, settings.Invalid("INVALID_PERSONAL_SSH", "enter a valid SSH user")
 	}
 	address, err := canonicalSSHAddress(strings.TrimSpace(server.Address))
 	if err != nil || len(server.Address) > 255 {
 		return settings.SSHServer{}, settings.Invalid("INVALID_PERSONAL_SSH", "SSH address must be a host and port")
 	}
 	server.Address = address
-	create := server.ID == ""
-	if create {
-		server.ID = uuid.NewString()
-	} else {
+	if server.ID != "" {
 		previous, err := r.repo.SSHServer(ctx, owner, server.ID)
 		if err != nil {
 			return settings.SSHServer{}, err
@@ -151,6 +143,26 @@ func (r *runtime) SaveSSHServer(ctx context.Context, server settings.SSHServer) 
 		if server.PrivateKey == "" {
 			server.PrivateKey = previous.PrivateKey
 		}
+	}
+	return server, nil
+}
+
+func (r *runtime) SaveSSHServer(ctx context.Context, server settings.SSHServer) (settings.SSHServer, error) {
+	r.sshMu.Lock()
+	defer r.sshMu.Unlock()
+
+	owner := auth.CurrentUser(ctx).ID
+	server, err := r.sshConnectionSettings(ctx, owner, server)
+	if err != nil {
+		return settings.SSHServer{}, err
+	}
+	server.Name = strings.Join(strings.Fields(server.Name), " ")
+	if server.Name == "" || len(server.Name) > 160 || !sshImageName.MatchString(server.Template) {
+		return settings.SSHServer{}, settings.Invalid("INVALID_PERSONAL_SSH", "enter a server name and a valid Docker image")
+	}
+	create := server.ID == ""
+	if create {
+		server.ID = uuid.NewString()
 	}
 	if _, err := r.personalSSH(server); err != nil {
 		return settings.SSHServer{}, err
@@ -160,6 +172,27 @@ func (r *runtime) SaveSSHServer(ctx context.Context, server settings.SSHServer) 
 	}
 	server.PrivateKey = ""
 	return server, nil
+}
+
+func (r *runtime) TestSSHServer(ctx context.Context, server settings.SSHServer) error {
+	// The connection test uses only the SSH fields, including the saved key when omitted.
+	server.Template = defaultSSHImage
+	server, err := r.sshConnectionSettings(ctx, auth.CurrentUser(ctx).ID, server)
+	if err != nil {
+		return err
+	}
+	provider, err := r.personalSSH(server)
+	if err != nil {
+		return err
+	}
+	err = provider.TestConnection(ctx)
+	if errors.Is(err, sshsandbox.ErrDockerUnavailable) {
+		return settings.Invalid("SSH_DOCKER_UNAVAILABLE", "SSH connected, but Docker is unavailable to the SSH user")
+	}
+	if err != nil {
+		return settings.Invalid("SSH_CONNECTION_FAILED", "could not connect or authenticate to the SSH server")
+	}
+	return nil
 }
 
 func (r *runtime) RemoveSSHServer(ctx context.Context, id string) error {

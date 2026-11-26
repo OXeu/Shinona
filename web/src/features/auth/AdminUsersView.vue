@@ -145,7 +145,7 @@ onUnmounted(() => request?.abort())
       <UiHeading>{{ t('adminUsers.title') }}</UiHeading>
       <UiButton :disabled="busy" @click="createOpen = true">{{ t('adminUsers.create') }}</UiButton>
     </UiHeader>
-    <UiForm class="admin-user-search" @submit.prevent="searchUsers">
+    <UiForm class="admin-user-search ui-form--custom" @submit.prevent="searchUsers">
       <UiSearchField v-model="search" :label="t('adminUsers.search')" />
       <UiButton class="secondary-button" :disabled="loading" type="submit">{{ t('adminUsers.searchAction') }}</UiButton>
     </UiForm>

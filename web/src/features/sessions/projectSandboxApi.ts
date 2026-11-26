@@ -32,11 +32,11 @@ export const projectSandboxApi = {
       }
     }
   `, { projectId }, signal),
-  save: (projectId: string, input: ProjectSandboxConfig, signal: AbortSignal) => graphql<{ saveProjectSandbox: boolean }>(`
-    mutation SaveProjectSandbox($projectId: ID!, $input: ProjectSandboxInput!) {
-      saveProjectSandbox(projectId: $projectId, input: $input)
+  save: (projectId: string, input: ProjectSandboxConfig, signal: AbortSignal, skipCleanupFor?: string) => graphql<{ saveProjectSandbox: boolean }>(`
+    mutation SaveProjectSandbox($projectId: ID!, $input: ProjectSandboxInput!, $skipCleanupFor: String) {
+      saveProjectSandbox(projectId: $projectId, input: $input, skipCleanupFor: $skipCleanupFor)
     }
-  `, { projectId, input }, signal),
+  `, { projectId, input, skipCleanupFor }, signal),
   create: (projectId: string, signal: AbortSignal) => graphql<{ createProjectSandbox: boolean }>(`
     mutation CreateProjectSandbox($projectId: ID!) { createProjectSandbox(projectId: $projectId) }
   `, { projectId }, signal),

@@ -225,7 +225,7 @@ onUnmounted(() => { disposed = true })
 <template>
   <PendingMessages :messages="pending" :busy="busy" @remove="emit('stop', $event)" />
   <UiForm
-    class="chat-composer"
+    class="chat-composer ui-form--custom"
     @submit.prevent="submit"
     @dragover.prevent
     @drop.prevent="drop"

@@ -83,7 +83,7 @@ defineExpose({
       </UiSection>
     </template>
     <template #end>
-      <UiForm class="repo-card repo-commit" @submit.prevent="emit('commit', message, selected)">
+      <UiForm class="repo-card repo-commit ui-form--custom" @submit.prevent="emit('commit', message, selected)">
         <UiHeader class="repo-card-header">
           <UiIcon name="git-commit-line" />
           <UiSubheading>{{ t('repository.commit') }}</UiSubheading>

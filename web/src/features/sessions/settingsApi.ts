@@ -59,6 +59,10 @@ export const settingsApi = {
         saveSshServer(input: $input) { ${sshServerFields} }
       }
     `, { input }, signal),
+  testSSHServer: (input: SSHServerInput, signal: AbortSignal) =>
+    graphql<{ testSshServer: boolean }>(`
+      mutation TestSSHServer($input: SSHServerInput!) { testSshServer(input: $input) }
+    `, { input }, signal),
   removeSSHServer: (id: string, signal: AbortSignal) =>
     graphql<{ removeSshServer: boolean }>(`
       mutation RemoveSSHServer($id: ID!) { removeSshServer(id: $id) }

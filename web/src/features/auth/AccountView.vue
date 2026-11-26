@@ -207,7 +207,7 @@ async function savePassword() {
 .account-page { display: grid; gap: 20px; }
 .account-section { display: grid; gap: 12px; }
 .account-section + .account-section { border-top: 1px solid var(--border); padding-top: 20px; }
-.account-avatar-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.account-avatar-controls { display: flex; align-items: center; gap: 8px; }
 .account-avatar-controls :deep(.ui-avatar) { width: 56px; height: 56px; font-size: 1rem; }
 .account-detail { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .account-hint { display: block; color: var(--muted); font-size: 0.875rem; margin-top: 4px; overflow-wrap: anywhere; }

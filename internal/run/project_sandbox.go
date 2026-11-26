@@ -12,9 +12,10 @@ import (
 )
 
 var (
-	ErrProjectSandboxConfig = errors.New("invalid project sandbox settings")
-	ErrSandboxProvider      = errors.New("the sandbox provider is unavailable")
-	templateName            = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,254}$`)
+	ErrProjectSandboxConfig  = errors.New("invalid project sandbox settings")
+	ErrProjectSandboxCleanup = errors.New("could not clean up the previous project sandbox")
+	ErrSandboxProvider       = errors.New("the sandbox provider is unavailable")
+	templateName             = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,254}$`)
 )
 
 // ProjectSandboxTimeout bounds provider lifecycle requests, including image pulls.
@@ -119,7 +120,7 @@ func (s *Service) ProjectSandbox(ctx context.Context, owner, id string) (Project
 	return result, nil
 }
 
-func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next ProjectSandboxConfig) error {
+func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next ProjectSandboxConfig, skipCleanupFor string) error {
 	next.Template = strings.TrimSpace(next.Template)
 	if len(next.Provider) > 64 || next.Template != "" && !templateName.MatchString(next.Template) ||
 		next.TimeoutSeconds < 0 || next.TimeoutSeconds > sandbox.MaxTimeoutSeconds ||
@@ -131,7 +132,8 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 		if err != nil {
 			return err
 		}
-		if _, ok := target.Provider.(sandbox.ManagedProjectProvider); !ok {
+		provider, ok := target.Provider.(sandbox.ManagedProjectProvider)
+		if !ok {
 			return ErrSandboxProvider
 		}
 		if target.Name != "e2b" && (next.TimeoutSeconds != 0 || next.OnTimeout != "") {
@@ -141,22 +143,43 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 		if current == next {
 			return nil
 		}
-		if current.Provider != "" {
-			previous, err := s.resolve(ctx, owner, current.Provider)
-			if err != nil {
+		if skipCleanupFor != "" && (current.Provider != skipCleanupFor || current.Provider == next.Provider) {
+			return ErrProjectSandboxConfig
+		}
+		switch {
+		case current.Provider == "":
+		case current.Provider != next.Provider:
+			if err := s.terminals.stopProject(ctx, owner, id); err != nil {
 				return err
 			}
-			if current.effective(previous) != next.effective(target) {
-				provider, _ := previous.Provider.(sandbox.ManagedProjectProvider)
-				if err := s.destroyProjectSandbox(ctx, provider, spec); err != nil {
-					return err
+			if skipCleanupFor == "" {
+				if err := s.cleanPreviousSandbox(ctx, current.Provider, spec); err != nil {
+					slog.Warn("clean up project sandbox before provider change", "provider", current.Provider, "error", err)
+					return ErrProjectSandboxCleanup
 				}
+			}
+		case current.effective(target) != next.effective(target):
+			if err := s.destroyProjectSandbox(ctx, provider, spec); err != nil {
+				return err
 			}
 		}
 		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
 		return s.repo.SaveProjectSandboxConfig(save, owner, id, next)
 	})
+}
+
+func (s *Service) cleanPreviousSandbox(ctx context.Context, name string, spec sandbox.Spec) error {
+	ctx, cancel := context.WithTimeout(ctx, workspaceTimeout)
+	defer cancel()
+	previous, err := s.resolve(ctx, spec.OwnerID, name)
+	if err != nil {
+		return err
+	}
+	if provider, ok := previous.Provider.(sandbox.ManagedProjectProvider); ok {
+		return provider.DestroyProject(ctx, spec)
+	}
+	return ErrSandboxProvider
 }
 
 func (s *Service) ResetProjectSandbox(ctx context.Context, owner, id string, recreate bool) error {

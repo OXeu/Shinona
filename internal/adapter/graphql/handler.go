@@ -36,6 +36,7 @@ type Application interface {
 	ResetMCPSettings(context.Context) (settings.MCPSettings, error)
 	SSHServers(context.Context) ([]settings.SSHServer, error)
 	SaveSSHServer(context.Context, settings.SSHServer) (settings.SSHServer, error)
+	TestSSHServer(context.Context, settings.SSHServer) error
 	RemoveSSHServer(context.Context, string) error
 }
 
@@ -174,6 +175,8 @@ func (r *resolver) apiError(err error) error {
 		return codedError{err, "PROJECT_NOT_FOUND"}
 	case errors.Is(err, run.ErrProjectSandboxConfig):
 		return codedError{err, "INVALID_PROJECT_SANDBOX"}
+	case errors.Is(err, run.ErrProjectSandboxCleanup):
+		return codedError{err, "PROJECT_SANDBOX_CLEANUP_FAILED"}
 	case errors.Is(err, run.ErrSandboxProvider):
 		return codedError{err, "SANDBOX_PROVIDER_UNAVAILABLE"}
 	case errors.Is(err, settings.ErrSSHServer):

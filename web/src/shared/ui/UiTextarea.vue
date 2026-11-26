@@ -6,7 +6,10 @@ const value = defineModel<string>({ required: true })
 
 <template>
   <div class="field">
-    <label :for="id">{{ label }}</label>
+    <div :class="{ 'field-heading': $slots.help }">
+      <label :for="id">{{ label }}</label>
+      <slot name="help" />
+    </div>
     <textarea :id="id" v-model="value" v-bind="$attrs" />
   </div>
 </template>

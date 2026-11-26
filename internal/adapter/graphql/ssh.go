@@ -37,22 +37,34 @@ func (r *resolver) SSHServers(ctx context.Context) ([]sshServerResolver, error) 
 	return result, nil
 }
 
-func (r *resolver) SaveSSHServer(ctx context.Context, args struct {
-	Input struct {
-		ID                                                         gql.ID
-		Name, Address, User, HostFingerprint, Template, PrivateKey string
-	}
-}) (sshServerResolver, error) {
-	input := args.Input
-	server, err := r.app.SaveSSHServer(ctx, settings.SSHServer{
+type sshServerInput struct {
+	ID                                                         gql.ID
+	Name, Address, User, HostFingerprint, Template, PrivateKey string
+}
+
+func (input sshServerInput) server() settings.SSHServer {
+	return settings.SSHServer{
 		ID: string(input.ID), Name: input.Name, Address: input.Address, User: input.User,
 		HostFingerprint: input.HostFingerprint, Template: input.Template, PrivateKey: input.PrivateKey,
-	})
+	}
+}
+
+func (r *resolver) SaveSSHServer(ctx context.Context, args struct{ Input sshServerInput }) (sshServerResolver, error) {
+	server, err := r.app.SaveSSHServer(ctx, args.Input.server())
+	return sshServer(server), r.sshServerError(err)
+}
+
+func (r *resolver) TestSSHServer(ctx context.Context, args struct{ Input sshServerInput }) (bool, error) {
+	err := r.app.TestSSHServer(ctx, args.Input.server())
+	return err == nil, r.sshServerError(err)
+}
+
+func (r *resolver) sshServerError(err error) error {
 	var invalid *settings.ValidationError
 	if errors.As(err, &invalid) {
-		return sshServerResolver{}, codedError{err, invalid.Code}
+		return codedError{err, invalid.Code}
 	}
-	return sshServer(server), r.apiError(err)
+	return r.apiError(err)
 }
 
 func (r *resolver) RemoveSSHServer(ctx context.Context, args struct{ ID gql.ID }) (bool, error) {

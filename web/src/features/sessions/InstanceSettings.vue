@@ -127,7 +127,7 @@ function save() {
         @clear="updateDraft(field.key, '')"
         @reset="updateDraft(field.key, null)"
       />
-      <UiSection class="provider-fields" :hidden="!e2b.length" :aria-label="t('sandbox.e2b')">
+      <UiSection class="provider-fields form-fields" :hidden="!e2b.length" :aria-label="t('sandbox.e2b')">
         <UiSubheading>{{ t('sandbox.e2b') }}</UiSubheading>
         <InstanceSettingField
           v-for="{ field, label } in e2b"
@@ -140,39 +140,45 @@ function save() {
           @clear="drafts[field.key] = ''"
           @reset="drafts[field.key] = null"
         />
-        <UiChoiceDropdown
-          :label="t('sandbox.onTimeout')"
-          :options="timeoutOptions"
-          :model-value="drafts.e2bOnTimeout === null ? '' : drafts.e2bOnTimeout || timeoutField?.value || 'pause'"
-          :placeholder="t('settings.useStartup')"
-          :disabled="saving || fetching"
-          @update:model-value="timeoutField && edit(timeoutField, $event)"
-        />
-        <UiButton
-          class="secondary-button"
-          :hidden="!timeoutField?.overridden || drafts.e2bOnTimeout === null"
-          :disabled="saving || fetching"
-          @click="updateDraft('e2bOnTimeout', null)"
-        >
-          {{ t('settings.useStartup') }}
-        </UiButton>
+        <UiBox class="settings-field">
+          <UiChoiceDropdown
+            :label="t('sandbox.onTimeout')"
+            :options="timeoutOptions"
+            :model-value="drafts.e2bOnTimeout === null ? '' : drafts.e2bOnTimeout || timeoutField?.value || 'pause'"
+            :placeholder="t('settings.useStartup')"
+            :disabled="saving || fetching"
+            @update:model-value="timeoutField && edit(timeoutField, $event)"
+          />
+          <UiBox class="settings-input-actions">
+            <UiButton
+              class="secondary-button"
+              :hidden="!timeoutField?.overridden || drafts.e2bOnTimeout === null"
+              :disabled="saving || fetching"
+              @click="updateDraft('e2bOnTimeout', null)"
+            >
+              {{ t('settings.useStartup') }}
+            </UiButton>
+          </UiBox>
+        </UiBox>
         <UiDisclosure class="connection-details">
           <template #summary>
             <UiIcon name="arrow-right-s-line" /> {{ t('settings.e2bConnection') }}
           </template>
-          <InstanceSettingField
-            v-for="{ field, label } in connection"
-            :key="field.key"
-            :field="field"
-            :label="t(label)"
-            :draft="drafts[field.key]"
-            :disabled="saving || fetching"
-            @edit="edit(field, $event)"
-            @reset="drafts[field.key] = null"
-          />
+          <UiBox class="form-fields">
+            <InstanceSettingField
+              v-for="{ field, label } in connection"
+              :key="field.key"
+              :field="field"
+              :label="t(label)"
+              :draft="drafts[field.key]"
+              :disabled="saving || fetching"
+              @edit="edit(field, $event)"
+              @reset="drafts[field.key] = null"
+            />
+          </UiBox>
         </UiDisclosure>
       </UiSection>
-      <UiBox class="model-discovery" :hidden="section !== 'model'">
+      <UiBox class="form-fields" :hidden="section !== 'model'">
         <UiChoiceDropdown
           :label="t('settings.defaultModel')"
           :options="fetched"
@@ -203,15 +209,10 @@ function save() {
 </template>
 
 <style lang="less" scoped>
-.provider-fields { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px; }
-.provider-fields h2 { margin-bottom: 12px; }
-.settings-field + .settings-field { margin-top: 12px; }
-.model-discovery:not([hidden]) { display: grid; gap: 8px; justify-items: start; margin-top: 12px; }
-.model-discovery :deep(.field) { width: 100%; }
+.provider-fields { border-top: 1px solid var(--border); padding-block-start: var(--form-field-gap); }
 :deep(.settings-input-actions) { display: flex; flex-wrap: wrap; gap: 4px; }
 :deep(.settings-input-actions > .secondary-button) { border: 1px solid var(--border-hover); }
 :deep(.settings-field .settings-input-actions > .secondary-button) { margin-block-start: 6px; }
-.connection-details { margin-top: 12px; }
 .connection-details :deep(summary) { display: flex; align-items: center; gap: 4px; color: var(--muted); padding-block: 6px; }
 .connection-details[open] :deep(summary .ui-icon) { transform: rotate(90deg); }
 </style>

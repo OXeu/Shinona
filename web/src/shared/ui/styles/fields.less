@@ -52,8 +52,14 @@
   white-space: nowrap;
 }
 
-.field+.field {
-  margin-top: 1rem;
+:where(.ui-form:not(.ui-form--custom), .form-fields):not([hidden]) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--form-field-gap);
+}
+
+.ui-disclosure > .form-fields {
+  margin-block-start: var(--form-field-gap);
 }
 
 .field label,
@@ -62,6 +68,15 @@
   margin-bottom: 0.375rem;
   font-weight: 550;
 }
+
+.field-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 0.375rem;
+}
+
+.field-heading label { margin-bottom: 0; }
 
 input[type='checkbox'],
 textarea {

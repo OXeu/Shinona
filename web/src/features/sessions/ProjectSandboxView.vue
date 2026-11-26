@@ -3,6 +3,7 @@ import { computed, onUnmounted, ref, useId, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { messageFor } from '../../shared/errors'
+import { GraphQLError } from '../../shared/graphql'
 import { t } from '../../shared/i18n'
 import type { MessageKey } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
@@ -31,6 +32,7 @@ const snapshot = ref<ProjectSandbox>()
 const loading = ref(false)
 const busy = ref(false)
 const confirmOpen = ref(false)
+const skipCleanupFor = ref<string>()
 const action = ref<Action>('save')
 const provider = ref('')
 const template = ref('')
@@ -85,9 +87,10 @@ const replaces = computed(() => {
     effective.onTimeout !== (updated.onTimeout || fallback.onTimeout)
 })
 const recreateLabel = computed(() => t(snapshot.value?.state === 'NONE' ? 'sandbox.create' : 'sandbox.recreate'))
-const confirmTitle = computed(() => action.value === 'save' ? t('settings.save') :
+const confirmTitle = computed(() => skipCleanupFor.value ? t('sandbox.switchAnyway') : action.value === 'save' ? t('settings.save') :
   action.value === 'destroy' ? t('sandbox.destroy') : recreateLabel.value)
-const confirmMessage = computed(() => t(action.value === 'save' ? 'sandbox.confirmSave' :
+const confirmMessage = computed(() => t(skipCleanupFor.value ? 'sandbox.confirmSwitchAfterCleanupFailure' :
+  action.value === 'save' ? 'sandbox.confirmSave' :
   action.value === 'destroy' ? 'sandbox.confirmDestroy' : 'sandbox.confirmRecreate'))
 
 function providerFor(state: ProjectSandbox | undefined) {
@@ -130,6 +133,7 @@ function chooseProvider(value: string) {
 function prepare(nextAction: Action) {
   if (busy.value || loading.value) return
   action.value = nextAction
+  skipCleanupFor.value = undefined
   if (nextAction === 'save' && !replaces.value || nextAction === 'create') {
     void perform()
   } else {
@@ -144,7 +148,7 @@ async function perform() {
   const operation = action.value
   busy.value = true
   try {
-    if (operation === 'save') await projectSandboxApi.save(id, next.value, signal)
+    if (operation === 'save') await projectSandboxApi.save(id, next.value, signal, skipCleanupFor.value)
     else await projectSandboxApi[operation](id, signal)
     if (!signal.aborted) {
       confirmOpen.value = false
@@ -153,8 +157,16 @@ async function perform() {
     }
   } catch (error) {
     if (!signal.aborted) {
-      notify.error(messageFor(error, 'sandbox.actionFailed'))
-      await refresh()
+      const previous = snapshot.value?.config.provider
+      if (operation === 'save' && previous && previous !== next.value.provider &&
+        error instanceof GraphQLError && error.code === 'PROJECT_SANDBOX_CLEANUP_FAILED') {
+        skipCleanupFor.value = previous
+        confirmOpen.value = true
+      } else {
+        confirmOpen.value = false
+        notify.error(messageFor(error, 'sandbox.actionFailed'))
+        await refresh()
+      }
     }
   } finally {
     if (!signal.aborted) busy.value = false
@@ -167,6 +179,7 @@ watch(() => props.projectId, () => {
   snapshot.value = undefined
   busy.value = false
   confirmOpen.value = false
+  skipCleanupFor.value = undefined
   void refresh(true)
 }, { immediate: true })
 onUnmounted(() => request.abort())
@@ -210,7 +223,7 @@ onUnmounted(() => request.abort())
       </UiBox>
     </UiSection>
 
-    <UiSection class="sandbox-section" :hidden="!snapshot" :aria-label="t('sandbox.configuration')">
+    <UiSection class="sandbox-section form-fields" :hidden="!snapshot" :aria-label="t('sandbox.configuration')">
       <UiSubheading>{{ t('sandbox.configuration') }}</UiSubheading>
       <UiBox class="sandbox-hint" :hidden="!!providerOptions.length">
         <RouterLink :to="{ name: 'settings', query: { section: 'ssh' } }">{{ t('ssh.add') }}</RouterLink>
@@ -232,7 +245,7 @@ onUnmounted(() => request.abort())
           :disabled="busy || loading || !defaults"
           maxlength="255"
         />
-        <UiBox :hidden="provider !== 'e2b'">
+        <UiBox class="form-fields" :hidden="provider !== 'e2b'">
           <UiInput
             :id="timeoutId"
             v-model="timeout"
@@ -278,7 +291,7 @@ onUnmounted(() => request.abort())
 .sandbox-section { margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .status-header, .status-body:not([hidden]), .sandbox-actions:not([hidden]) { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .status-header { justify-content: space-between; }
-.status-body:not([hidden]), .sandbox-actions:not([hidden]), .sandbox-hint { margin-top: 10px; }
+.status-body:not([hidden]), .sandbox-actions:not([hidden]) { margin-top: 10px; }
 .sandbox-hint, .status-body { color: var(--muted); }
 .state { padding: 3px 8px; border-radius: var(--radius-full); background: var(--selection-bg); color: var(--foreground); }
 .sandbox-id { font-family: monospace; overflow-wrap: anywhere; }

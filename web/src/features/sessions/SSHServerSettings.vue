@@ -8,6 +8,7 @@ import UiDialog from '../../shared/ui/UiDialog.vue'
 import UiFilePicker from '../../shared/ui/UiFilePicker.vue'
 import UiInput from '../../shared/ui/UiInput.vue'
 import UiTextarea from '../../shared/ui/UiTextarea.vue'
+import UiTooltip from '../../shared/ui/UiTooltip.vue'
 import { UiBox, UiButton, UiForm, UiInline, UiList, UiListItem, UiSection, UiSubheading } from '../../shared/ui/elements'
 import { settingsApi } from './settingsApi'
 import type { SSHServer, SSHServerInput } from './settingsApi'
@@ -19,10 +20,14 @@ const request = new AbortController()
 const draft = ref<SSHServerInput>()
 const removing = ref<SSHServer>()
 const removeOpen = ref(false)
-const busy = ref(false)
+const submitting = ref(false)
+const testing = ref<SSHServer>()
+const busy = computed(() => submitting.value || !!testing.value)
 const readingKey = ref(false)
-const canSave = computed(() => !!draft.value?.name.trim() && !!draft.value.address.trim() &&
+const hostFingerprintCommand = 'ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub'
+const canTest = computed(() => !!draft.value?.address.trim() &&
   !!draft.value.user.trim() && !!draft.value.hostFingerprint.trim() && (!!draft.value.id || !!draft.value.privateKey.trim()))
+const canSave = computed(() => canTest.value && !!draft.value?.name.trim())
 
 function edit(server?: SSHServer) {
   draft.value = {
@@ -49,7 +54,7 @@ async function readKey(file: File) {
 async function save() {
   if (!draft.value || busy.value || !canSave.value) return
   const { signal } = request
-  busy.value = true
+  submitting.value = true
   try {
     const { saveSshServer } = await settingsApi.saveSSHServer(draft.value, signal)
     if (signal.aborted) return
@@ -60,7 +65,21 @@ async function save() {
   } catch (error) {
     if (!signal.aborted) notify.error(messageFor(error, 'settings.saveFailed'))
   } finally {
-    busy.value = false
+    submitting.value = false
+  }
+}
+
+async function testConnection(server: SSHServer, privateKey = '') {
+  if (busy.value || readingKey.value) return
+  const { signal } = request
+  testing.value = server
+  try {
+    await settingsApi.testSSHServer({ ...server, privateKey }, signal)
+    if (!signal.aborted) notify.success(t('ssh.testSucceeded'))
+  } catch (error) {
+    if (!signal.aborted) notify.error(messageFor(error, 'ssh.testFailed'))
+  } finally {
+    testing.value = undefined
   }
 }
 
@@ -68,7 +87,7 @@ async function remove() {
   if (!removing.value || busy.value) return
   const { signal } = request
   const id = removing.value.id
-  busy.value = true
+  submitting.value = true
   try {
     await settingsApi.removeSSHServer(id, signal)
     if (signal.aborted) return
@@ -79,7 +98,7 @@ async function remove() {
   } catch (error) {
     if (!signal.aborted) notify.error(messageFor(error, 'settings.saveFailed'))
   } finally {
-    busy.value = false
+    submitting.value = false
   }
 }
 
@@ -98,9 +117,12 @@ onUnmounted(() => request.abort())
           <UiInline class="server-address">{{ server.user }}@{{ server.address }}</UiInline>
         </UiBox>
         <UiBox class="server-actions">
-          <UiButton class="secondary-button" :disabled="busy" @click="edit(server)">{{ t('ssh.edit') }}</UiButton>
+          <UiButton class="secondary-button" :disabled="busy || readingKey" @click="testConnection(server)">
+            {{ t(testing === server ? 'ssh.testing' : 'ssh.test') }}
+          </UiButton>
+          <UiButton class="secondary-button" :disabled="busy" @click="edit(server)">{{ t('common.edit') }}</UiButton>
           <UiButton class="secondary-button" :disabled="busy" @click="removing = server; removeOpen = true">
-            {{ t('ssh.remove') }}
+            {{ t('common.remove') }}
           </UiButton>
         </UiBox>
       </UiListItem>
@@ -109,7 +131,6 @@ onUnmounted(() => request.abort())
     <UiForm
       v-for="input in draft ? [draft] : []"
       :key="input.id"
-      class="server-form"
       @submit.prevent="save"
     >
       <UiSubheading>{{ t(input.id ? 'ssh.edit' : 'ssh.add') }}</UiSubheading>
@@ -141,7 +162,14 @@ onUnmounted(() => request.abort())
         placeholder="SHA256:…"
         :disabled="busy"
         maxlength="64"
-      />
+      >
+        <template #help>
+          <UiTooltip
+            :label="t('common.helpFor', { label: t('settings.sshHostFingerprint') })"
+            :text="t('ssh.fingerprintHelp', { command: hostFingerprintCommand })"
+          />
+        </template>
+      </UiInput>
       <UiInput
         :id="`${prefix}-image`"
         v-model="input.template"
@@ -150,22 +178,34 @@ onUnmounted(() => request.abort())
         :disabled="busy"
         maxlength="255"
       />
-      <UiTextarea
-        :id="`${prefix}-key`"
-        v-model="input.privateKey"
-        class="input key"
-        :label="t('ssh.privateKey')"
-        :placeholder="t(input.id ? 'ssh.keepKey' : 'ssh.pasteKey')"
-        :disabled="busy || readingKey"
-        autocomplete="off"
-        spellcheck="false"
-        maxlength="65536"
-        rows="3"
-      />
-      <UiFilePicker :label="t('ssh.selectKey')" :disabled="busy || readingKey" @select="readKey" />
+      <UiBox>
+        <UiTextarea
+          :id="`${prefix}-key`"
+          v-model="input.privateKey"
+          class="input key"
+          :label="t('ssh.privateKey')"
+          :placeholder="t(input.id ? 'ssh.keepKey' : 'ssh.pasteKey')"
+          :disabled="busy || readingKey"
+          autocomplete="off"
+          spellcheck="false"
+          maxlength="65536"
+          rows="3"
+        >
+          <template #help>
+            <UiTooltip
+              :label="t('common.helpFor', { label: t('ssh.privateKey') })"
+              :text="t('ssh.privateKeyHelp')"
+            />
+          </template>
+        </UiTextarea>
+        <UiFilePicker :label="t('ssh.selectKey')" :disabled="busy || readingKey" @select="readKey" />
+      </UiBox>
       <UiBox class="form-actions">
         <UiButton class="secondary-button" :disabled="busy" @click="draft = undefined">{{ t('common.cancel') }}</UiButton>
-        <UiButton type="submit" :disabled="busy || readingKey || !canSave">{{ t(busy ? 'settings.saving' : 'settings.save') }}</UiButton>
+        <UiButton class="secondary-button" :disabled="busy || readingKey || !canTest" @click="testConnection(input, input.privateKey)">
+          {{ t(testing === input ? 'ssh.testing' : 'ssh.test') }}
+        </UiButton>
+        <UiButton type="submit" :disabled="busy || readingKey || !canSave">{{ t(submitting ? 'settings.saving' : 'settings.save') }}</UiButton>
       </UiBox>
     </UiForm>
   </UiSection>
@@ -186,6 +226,5 @@ onUnmounted(() => request.abort())
 .server-name, .server-address { display: block; overflow-wrap: anywhere; }
 .server-name { font-weight: 600; }
 .server-address { color: var(--muted); }
-.server-form h2 { margin-bottom: 12px; }
 .key { width: 100%; font-family: monospace; resize: vertical; -webkit-text-security: disc; }
 </style>
