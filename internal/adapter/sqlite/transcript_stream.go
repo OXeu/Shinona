@@ -10,9 +10,16 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
+const transcriptBatchBytes = 4 << 20
+
+type exportTurnRef struct {
+	ID   string
+	Size int64
+}
+
 func (r *ConversationStore) StreamTranscript(ctx context.Context, owner, id string, write func(run.TranscriptStream) error) error {
 	var stream run.TranscriptStream
-	var ids []string
+	var refs []exportTurnRef
 	var pending []transcriptRow
 	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var record sessionRow
@@ -29,16 +36,21 @@ func (r *ConversationStore) StreamTranscript(ctx context.Context, owner, id stri
 		// Completed contents are immutable. Capture membership, ordering and
 		// mutable turns together, then release the transaction before writing.
 		turns := func() *gorm.DB { return conversationTurns(tx, owner, id) }
-		if err := turns().Order("sequence ASC, id ASC").Limit(run.MaxTranscriptExportTurns+1).Pluck("id", &ids).Error; err != nil {
+		// Measure the variable-size fields without pulling their bodies into Go.
+		// SQLite can read octet_length for text and blobs from the record header.
+		const columns = `id, coalesce(octet_length(prompt), 0) + coalesce(octet_length(output), 0)
+			+ coalesce(octet_length(parts), 0) + coalesce(octet_length(steering), 0)
+			+ coalesce(octet_length(payload), 0) + coalesce(octet_length(token_usage), 0) AS size`
+		if err := turns().Select(columns).Order("sequence ASC, id ASC").Limit(run.MaxTranscriptExportTurns + 1).Find(&refs).Error; err != nil {
 			return err
 		}
-		if len(ids) > run.MaxTranscriptExportTurns {
+		if len(refs) > run.MaxTranscriptExportTurns {
 			return run.ErrTranscriptExportLimit
 		}
-		if len(ids) == 0 {
+		if len(refs) == 0 {
 			return nil
 		}
-		stream.HeadID = ids[len(ids)-1]
+		stream.HeadID = refs[len(refs)-1].ID
 		var latest struct{ Options []byte }
 		if err := turns().Select("json_extract(payload, '$.options') AS options").
 			Where("id = ?", stream.HeadID).Take(&latest).Error; err != nil {
@@ -65,20 +77,27 @@ func (r *ConversationStore) StreamTranscript(ctx context.Context, owner, id stri
 	for _, turn := range pending {
 		frozen[turn.Run.ID] = turn
 	}
-	stream.TurnCount = len(ids)
+	stream.TurnCount = len(refs)
 	stream.Next = func() ([]run.Run, error) {
-		if len(ids) == 0 {
+		if len(refs) == 0 {
 			return nil, nil
 		}
-		batch := ids[:min(run.TranscriptPageSize, len(ids))]
-		ids = ids[len(batch):]
+		// Allow a large individual turn to be exported on its own. The wire
+		// limit still applies to the entire export, including that turn.
+		count, remaining := 1, transcriptBatchBytes-refs[0].Size
+		for count < min(run.TranscriptPageSize, len(refs)) && refs[count].Size <= remaining {
+			remaining -= refs[count].Size
+			count++
+		}
+		batch := refs[:count]
+		refs = refs[count:]
 		turns := make(map[string]transcriptRow, len(batch))
-		var completed []string
-		for _, id := range batch {
-			if turn, ok := frozen[id]; ok {
-				turns[id] = turn
+		completed := make([]string, 0, len(batch))
+		for _, ref := range batch {
+			if turn, ok := frozen[ref.ID]; ok {
+				turns[ref.ID] = turn
 			} else {
-				completed = append(completed, id)
+				completed = append(completed, ref.ID)
 			}
 		}
 		if len(completed) != 0 {
@@ -95,8 +114,8 @@ func (r *ConversationStore) StreamTranscript(ctx context.Context, owner, id stri
 			return nil, errors.New("a transcript turn was deleted during the export")
 		}
 		ordered := make([]transcriptRow, len(batch))
-		for i, id := range batch {
-			ordered[i] = turns[id]
+		for i, ref := range batch {
+			ordered[i] = turns[ref.ID]
 		}
 		return decodeTranscriptRows(ctx, ordered)
 	}

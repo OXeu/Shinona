@@ -3,11 +3,60 @@ package sqlite
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/OXeu/shinona/internal/run"
 )
+
+func TestTranscriptStreamBatchesLargeTurnsByBytes(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "large-stream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	const owner, session = "owner", "session"
+	seedAccounts(t, repo, owner)
+	newSession(t, repo, owner, session)
+	now := time.Now().UTC()
+	chunk := strings.Repeat("输出", 400_000)
+	turns := []row{
+		{ID: "output", Output: chunk},
+		{ID: "part", Parts: []run.TurnPart{{Kind: "output", Text: chunk}}},
+		{ID: "large", Output: chunk + chunk},
+		{ID: "small", Output: "done"},
+	}
+	for i := range turns {
+		turns[i].OwnerID, turns[i].SessionID, turns[i].Sequence = owner, session, i+1
+		turns[i].Status, turns[i].CreatedAt, turns[i].UpdatedAt = run.Succeeded, now, now
+	}
+	if err := repo.db.WithContext(ctx).Create(&turns).Error; err != nil {
+		t.Fatal(err)
+	}
+	var batches []int
+	var streamed []string
+	err = repo.Conversations.StreamTranscript(ctx, owner, session, func(stream run.TranscriptStream) error {
+		for {
+			batch, err := stream.Next()
+			if err != nil || batch == nil {
+				return err
+			}
+			batches = append(batches, len(batch))
+			for _, turn := range batch {
+				streamed = append(streamed, turn.ID)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(batches, []int{1, 1, 1, 1}) || !slices.Equal(streamed, []string{"output", "part", "large", "small"}) {
+		t.Fatalf("export returned batches %v and turns %v", batches, streamed)
+	}
+}
 
 func TestTranscriptStreamReadsOrderedBatchesFromOneSnapshot(t *testing.T) {
 	ctx := t.Context()
