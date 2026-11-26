@@ -1,12 +1,11 @@
 package pigo
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 	"sync"
@@ -47,7 +46,31 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 	opts.Identity = &ai.ClientIdentity{Attribution: ai.NoAttribution}
 	client := *e.client
 	client.Timeout = 0
-	opts.HTTPClient = completionClient{&client}
+	transport := &completionClient{Client: &client}
+	opts.HTTPClient = transport
+	var completed *ai.AssistantMessage
+	onResponse := opts.OnResponse
+	opts.OnResponse = func(response ai.ProviderResponse, model *ai.Model) error {
+		if onResponse != nil {
+			if err := onResponse(response, model); err != nil {
+				return err
+			}
+		}
+		if transport.completedBody == nil {
+			return nil
+		}
+		reply, err := decodeJSONCompletion(transport.completedBody, model)
+		if err != nil {
+			return err
+		}
+		if err := request.Err(); err != nil {
+			return err
+		}
+		completed = reply
+		// The SDK owns the request and closes the body. Stop its SSE reader
+		// here and emit a completed Pi message on our stream instead.
+		return errCompletedJSON
+	}
 	opts.OnPayload = func(payload any, _ *ai.Model) (any, error) {
 		if body, ok := payload.(map[string]any); ok {
 			delete(body, "max_tokens")
@@ -56,16 +79,19 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 		return payload, nil
 	}
 	var lastTokens int
+	reportUsage := func(tokens int) {
+		if tokens <= 0 || tokens == lastTokens {
+			return
+		}
+		lastTokens = tokens
+		resetIdle()
+		if report != nil && request.Err() == nil {
+			report(run.ContextUsage{Tokens: int32(tokens), Window: int32(model.ContextWindow)})
+		}
+	}
 	opts.OnProviderStreamEvent = func(data any, _ *ai.Model) error {
 		chunk, _ := data.(ai.OrderedObject)
-		tokens := completionUsage(chunk)
-		if tokens > 0 && tokens != lastTokens {
-			resetIdle()
-			lastTokens = tokens
-			if report != nil && request.Err() == nil {
-				report(run.ContextUsage{Tokens: int32(tokens), Window: int32(model.ContextWindow)})
-			}
-		}
+		reportUsage(completionUsage(chunk))
 		return nil
 	}
 
@@ -85,9 +111,29 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 				}
 			}
 			if event.Type == ai.EventError && event.Error != nil {
+				if completed != nil && request.Err() == nil {
+					completed.Timestamp = event.Error.Timestamp
+					completed.DurationMs = event.Error.DurationMs
+					reportUsage(contextTokens(completed.Usage))
+					output.Push(ai.AssistantMessageEvent{Type: ai.EventStart, Partial: &ai.AssistantMessage{
+						Content: ai.ContentList{}, Api: completed.Api, Provider: completed.Provider,
+						Model: completed.Model, StopReason: ai.StopPending, Timestamp: completed.Timestamp,
+					}})
+					event = completionEvent(completed)
+					if event.Type == ai.EventDone {
+						output.Push(event)
+						return
+					}
+				}
 				message := event.Error.Clone()
+				if completed != nil && request.Err() != nil {
+					event.Reason = ai.StopAborted
+					message.StopReason = ai.StopAborted
+					message.ErrorMessage = request.Err().Error()
+				}
 				if e.key != "" {
 					message.ErrorMessage = strings.ReplaceAll(message.ErrorMessage, e.key, "[redacted]")
+					message.RawStopReason = strings.ReplaceAll(message.RawStopReason, e.key, "[redacted]")
 				}
 				if errors.Is(context.Cause(request), run.ErrModelIdle) {
 					event.Reason = ai.StopError
@@ -123,46 +169,23 @@ func completionUsage(chunk ai.OrderedObject) int {
 	return number("prompt_tokens") + number("completion_tokens")
 }
 
-type completionClient struct{ *http.Client }
+var errCompletedJSON = errors.New("handled completed JSON response")
+
+type completionClient struct {
+	*http.Client
+	completedBody io.Reader
+}
 
 // Some compatible endpoints return a JSON completion even when streaming is requested.
-func (c completionClient) Do(req *http.Request) (*http.Response, error) {
+func (c *completionClient) Do(req *http.Request) (*http.Response, error) {
 	response, err := c.Client.Do(req)
-	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 ||
-		strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "event-stream") {
+	c.completedBody = nil
+	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
 		return response, err
 	}
-	defer response.Body.Close()
-	var completion map[string]json.RawMessage
-	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&completion); err != nil {
-		return nil, err
+	mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if mediaType != "text/event-stream" {
+		c.completedBody = response.Body
 	}
-	var choices []map[string]json.RawMessage
-	if err := json.Unmarshal(completion["choices"], &choices); err != nil {
-		return nil, fmt.Errorf("decode compatible model response: %w", err)
-	}
-	for _, choice := range choices {
-		choice["delta"] = choice["message"]
-		delete(choice, "message")
-	}
-	completion["choices"], err = json.Marshal(choices)
-	if err != nil {
-		return nil, err
-	}
-	frame, err := json.Marshal(completion)
-	if err != nil {
-		return nil, err
-	}
-	var stream bytes.Buffer
-	stream.WriteString("data: ")
-	stream.Write(frame)
-	stream.WriteString("\n\ndata: [DONE]\n\n")
-	if response.Header == nil {
-		response.Header = make(http.Header)
-	}
-	response.Header.Set("Content-Type", "text/event-stream")
-	response.Header.Del("Content-Length")
-	response.ContentLength = int64(stream.Len())
-	response.Body = io.NopCloser(&stream)
 	return response, nil
 }
