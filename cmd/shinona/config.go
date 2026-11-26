@@ -20,6 +20,7 @@ import (
 	"github.com/OXeu/shinona/internal/adapter/httpauth"
 	"github.com/OXeu/shinona/internal/adapter/oidc"
 	"github.com/OXeu/shinona/internal/adapter/password"
+	"github.com/OXeu/shinona/internal/adapter/rest"
 	"github.com/OXeu/shinona/internal/adapter/sshsandbox"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -75,6 +76,19 @@ func passwordHasher(e environment) (password.Argon2id, error) {
 		return password.Argon2id{}, err
 	}
 	return password.New(password.Parameters{Time: uint32(timeCost), MemoryKiB: uint32(memory), Threads: uint8(threads)})
+}
+
+func transcriptConcurrency(e environment) (rest.TranscriptConcurrency, error) {
+	defaults := rest.DefaultTranscriptConcurrency()
+	exports, err := e.boundedInt("SHINONA_TRANSCRIPT_EXPORT_CONCURRENCY", defaults.Exports, 1, 32)
+	if err != nil {
+		return rest.TranscriptConcurrency{}, err
+	}
+	pages, err := e.boundedInt("SHINONA_TRANSCRIPT_PAGE_CONCURRENCY", defaults.Pages, 1, 128)
+	if err != nil {
+		return rest.TranscriptConcurrency{}, err
+	}
+	return rest.TranscriptConcurrency{Exports: exports, Pages: pages}, nil
 }
 
 func trustedProxyNetworks(raw string) ([]netip.Prefix, error) {

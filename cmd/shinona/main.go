@@ -54,6 +54,10 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	if err != nil {
 		return err
 	}
+	transcripts, err := transcriptConcurrency(environment)
+	if err != nil {
+		return err
+	}
 	address, err := listenAddress(environment)
 	if err != nil {
 		return err
@@ -103,7 +107,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		return current
 	}
 	authHandler := httpauth.NewWithConfig(auth.New(repository.Accounts, hasher, uuid.NewString), authConfig, logger)
-	router := newAPIRouter(lifetime, config.origin.String(), service, config, authHandler, logger)
+	router := newAPIRouter(lifetime, config.origin.String(), service, config, authHandler, logger, transcripts)
 	config.oauth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
 		config.lookupMCP, config.origin.Scheme == "https", logger)
 	server := &http.Server{
@@ -168,7 +172,7 @@ func waitForWorker(ctx context.Context, done <-chan struct{}) error {
 }
 
 func newAPIRouter(ctx context.Context, origin string, service *run.Service, app rest.Application,
-	authHandler *httpauth.Handler, logger *slog.Logger,
+	authHandler *httpauth.Handler, logger *slog.Logger, transcripts rest.TranscriptConcurrency,
 ) *gin.Engine {
 	router := gin.New()
 	router.RedirectTrailingSlash = false
@@ -186,7 +190,7 @@ func newAPIRouter(ctx context.Context, origin string, service *run.Service, app 
 	routes.Handle("GET "+sessiontransfer.AttachmentPath, authHandler.RequireUser(sessiontransfer.Attachment(service, logger)))
 
 	api := router.Group(rest.Prefix, httpserver.Compress, authHandler.RequireGinUser)
-	rest.Register(api, service, app, logger)
+	rest.Register(api, service, app, logger, transcripts)
 	return router
 }
 

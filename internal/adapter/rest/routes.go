@@ -21,13 +21,25 @@ import (
 
 const Prefix = "/api/v1"
 
+type TranscriptConcurrency struct {
+	Exports int
+	Pages   int
+}
+
+func DefaultTranscriptConcurrency() TranscriptConcurrency {
+	cpus := runtime.GOMAXPROCS(0)
+	return TranscriptConcurrency{
+		Exports: min(max(cpus-1, 1), 4),
+		Pages:   2 * min(max(cpus, 4), 16),
+	}
+}
+
 // Register installs resource routes on the authenticated API group.
-func Register(api *gin.RouterGroup, service *run.Service, app Application, logger *slog.Logger) {
-	readConnections := min(max(runtime.GOMAXPROCS(0), 2), 16)
-	fullSlots := int64(min(4, readConnections-1))
+func Register(api *gin.RouterGroup, service *run.Service, app Application, logger *slog.Logger, concurrency TranscriptConcurrency) {
 	h := &handler{
 		service: service, app: app, logger: logger,
-		fullTranscript: semaphore.NewWeighted(fullSlots), pagedTranscript: semaphore.NewWeighted(int64(2 * max(4, readConnections))),
+		fullTranscript:  semaphore.NewWeighted(int64(concurrency.Exports)),
+		pagedTranscript: semaphore.NewWeighted(int64(concurrency.Pages)),
 		transcriptPages: responsecache.New[transcriptPageKey, transcriptPageBody](256, 16<<20),
 	}
 	api.Use(protectWrites())

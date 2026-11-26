@@ -172,6 +172,8 @@ With `paged=false`, the response uses `application/vnd.shinona.transcript-stream
 
 The full export allows up to 5,000 turns, 128 MiB before compression, and 45 seconds including time spent waiting for an export slot. Use pagination for larger histories. The server applies Zstandard to JSON and Protobuf responses of at least 1 KiB when the client accepts `zstd`.
 
+Set `SHINONA_TRANSCRIPT_EXPORT_CONCURRENCY` (1–32) and `SHINONA_TRANSCRIPT_PAGE_CONCURRENCY` (1–128) to tune the two request limits independently. The CPU-scaled defaults range from 1–4 full exports and 8–32 paginated requests. Restart Shinona after changing either value.
+
 An open conversation receives Protobuf updates over `/api/v1/live`. Client and server negotiate WebSocket compression when they connect. Growing text and tool output are sent as appended text. Changes to the turn list or status include changed turn records. The browser reconciles with the current transcript on reconnect and polls about once per second while an active session's live socket is unavailable. Intermediate progress can coalesce for slow viewers. The server validates the login on connection and at least every 15 seconds while delivering updates or heartbeats. Login changes from a separate process can take up to two additional seconds to expire from the HTTP authentication cache. Legacy subscriptions that ask for a full transcript in a single frame are limited to 256 turns.
 
 On a reverse proxy, forward `/api/v1/` to Shinona and preserve the WebSocket upgrade and browser `Origin` for `/api/v1/live`.

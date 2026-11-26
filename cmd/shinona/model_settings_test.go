@@ -51,7 +51,7 @@ func settingsTestApp(t *testing.T, legacy settings.Values) (*runtime, *sqlite.Da
 	}
 	service := run.NewService(repo.RunStores(), app.ResolveForAccount, uuid.NewString, &run.Controls{}, app.ProjectTargets)
 	api := gin.New()
-	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler))
+	rest.Register(api.Group(rest.Prefix), service, app, slog.New(slog.DiscardHandler), rest.DefaultTranscriptConcurrency())
 	query := func(owner, method, path string, body any) string {
 		t.Helper()
 		ctx := auth.WithUser(t.Context(), auth.User{ID: owner})

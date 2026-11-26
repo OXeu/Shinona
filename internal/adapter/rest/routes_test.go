@@ -16,7 +16,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"golang.org/x/sync/semaphore"
 	"github.com/klauspost/compress/zstd"
 	"google.golang.org/protobuf/proto"
 
@@ -49,7 +48,8 @@ func restFixture(t *testing.T) (*sqlite.Database, *gin.Engine) {
 		}
 	}
 	router := gin.New()
-	Register(router.Group(Prefix, httpserver.Compress), fixtureService(repo.RunStores()), fixtureApplication{}, slog.New(slog.DiscardHandler))
+	Register(router.Group(Prefix, httpserver.Compress), fixtureService(repo.RunStores()), fixtureApplication{}, slog.New(slog.DiscardHandler),
+		DefaultTranscriptConcurrency())
 	return repo, router
 }
 
@@ -329,19 +329,26 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 	}
 }
 
+type stalledExports struct {
+	run.TranscriptRepository
+	entered chan struct{}
+}
+
+func (s stalledExports) StreamTranscript(ctx context.Context, _, _ string, _ func(run.TranscriptStream) error) error {
+	s.entered <- struct{}{}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func TestFullTranscriptQueueAllowsPagedReadsAndCancellation(t *testing.T) {
 	repo, _ := restFixture(t)
-	api := &handler{
-		service: fixtureService(repo.RunStores()), logger: slog.New(slog.DiscardHandler),
-		fullTranscript: semaphore.NewWeighted(1), pagedTranscript: semaphore.NewWeighted(1),
-	}
-	if !api.fullTranscript.TryAcquire(1) {
-		t.Fatal("could not hold the full-transcript slot")
-	}
-	defer api.fullTranscript.Release(1)
+	stores := repo.RunStores()
+	entered := make(chan struct{}, 2)
+	stores.Transcripts = stalledExports{stores.Transcripts, entered}
 	router := gin.New()
+	Register(router.Group(Prefix), fixtureService(stores), fixtureApplication{}, slog.New(slog.DiscardHandler),
+		TranscriptConcurrency{Exports: 1, Pages: 2})
 	const path = "/sessions/history/transcript"
-	router.GET(Prefix+"/sessions/:id/transcript", api.transcript)
 	ctx, cancel := context.WithCancel(auth.WithUser(t.Context(), auth.User{ID: "alice"}))
 	defer cancel()
 	full := httptest.NewRequestWithContext(ctx, http.MethodGet, Prefix+path+"?paged=false", nil)
@@ -350,6 +357,11 @@ func TestFullTranscriptQueueAllowsPagedReadsAndCancellation(t *testing.T) {
 		defer close(finished)
 		router.ServeHTTP(httptest.NewRecorder(), full)
 	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("first export did not acquire a slot")
+	}
 
 	pagedContext, stop := context.WithTimeout(ctx, time.Second)
 	defer stop()
@@ -358,9 +370,14 @@ func TestFullTranscriptQueueAllowsPagedReadsAndCancellation(t *testing.T) {
 	if page.Session != nil {
 		t.Fatal("the full queue blocked the paged request")
 	}
+
+	waiting, stopWaiting := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer stopWaiting()
+	second := httptest.NewRequestWithContext(waiting, http.MethodGet, Prefix+path+"?paged=false", nil)
+	checkCode(t, serve(t, router, second, http.StatusGatewayTimeout), "TRANSCRIPT_EXPORT_TIMEOUT")
 	select {
-	case <-finished:
-		t.Fatal("full request completed with its slot held")
+	case <-entered:
+		t.Fatal("the second export entered despite a full queue")
 	default:
 	}
 	cancel()
