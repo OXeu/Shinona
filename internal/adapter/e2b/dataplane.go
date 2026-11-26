@@ -22,6 +22,14 @@ type envdRoute struct {
 	id, accessToken, trafficToken string
 }
 
+// workspaceExecution caches an envd working directory for its resolved user.
+// An explicit directory override does not replace the probed directory.
+type workspaceExecution struct {
+	LegacyRoot bool   `json:",omitempty"`
+	User       string `json:",omitempty"`
+	Directory  string `json:",omitempty"`
+}
+
 type sandboxTransport struct {
 	control *http.Client
 	data    http.RoundTripper
@@ -96,17 +104,28 @@ func (p *Provider) dataPlane(ctx context.Context, box *sdk.Sandbox, tokens crede
 		return nil, tokens, err
 	}
 
-	// Existing records predate execution settings and used root's home.
-	if existing && tokens.WorkDirectory == "" {
-		tokens.WorkspaceUser, tokens.WorkDirectory = "root", "/root"
+	execution := workspaceExecution{}
+	if tokens.Execution != nil {
+		execution = *tokens.Execution
+	} else if existing {
+		// Keep the root workspace used by the original E2B adapter. Other
+		// older records contain effective values with no override provenance.
+		execution.LegacyRoot = tokens.WorkDirectory == "" || (tokens.WorkspaceUser == "root" && tokens.WorkDirectory == "/root")
 	}
-	if user := p.config.WorkspaceUser; user != "" && user != tokens.WorkspaceUser {
-		tokens.WorkspaceUser, tokens.WorkDirectory = user, ""
+	user := p.config.WorkspaceUser
+	if user == "" && execution.LegacyRoot {
+		user = "root"
 	}
-	if dir := p.config.WorkDirectory; dir != "" {
-		tokens.WorkDirectory = path.Clean(dir)
+	var directory string
+	switch {
+	case p.config.WorkDirectory != "":
+		directory = path.Clean(p.config.WorkDirectory)
+	case execution.LegacyRoot && user == "root":
+		directory = "/root"
+	case execution.User == user:
+		directory = execution.Directory
 	}
-	ws := &workspace{box: box, user: tokens.WorkspaceUser, directory: tokens.WorkDirectory,
+	ws := &workspace{box: box, user: user, directory: directory,
 		processCleanupTimeout: p.config.CleanupTimeout,
 		route:                 envdRoute{source: expected, target: endpoint, id: box.ID, accessToken: tokens.EnvdToken, trafficToken: tokens.TrafficToken}}
 	if ws.directory == "" {
@@ -121,7 +140,12 @@ func (p *Provider) dataPlane(ctx context.Context, box *sdk.Sandbox, tokens crede
 			return nil, tokens, errors.New("E2B did not report an absolute working directory")
 		}
 		ws.directory = path.Clean(dir)
-		tokens.WorkDirectory = ws.directory
+		execution.User, execution.Directory = user, ws.directory
 	}
+	if tokens.Execution == nil || *tokens.Execution != execution {
+		tokens.Execution = &execution
+	}
+	// Preserve the effective fields so an older binary can still reconnect.
+	tokens.WorkspaceUser, tokens.WorkDirectory = user, ws.directory
 	return &projectWorkspace{Workspace: ws, terminal: ws, sandboxID: box.ID, refresh: box.RefreshTimeout}, tokens, nil
 }

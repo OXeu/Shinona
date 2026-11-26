@@ -325,7 +325,9 @@ func benchmarkWorkspaceCommit(b *testing.B, s *benchmarkSandbox) {
 	session := s.gitFixture(b)
 	path := benchmarkSessionPath(session) + "/workspace/commits"
 	const message = "Benchmark workspace changes"
-	request := s.requestBody(b, map[string]any{"message": message, "paths": []string{"src/file-1.txt"}})
+	var changes struct{ Selection map[string]string }
+	s.rest(b, http.MethodGet, benchmarkSessionPath(session)+"/workspace/changes", nil, http.StatusOK, &changes)
+	request := s.requestBody(b, map[string]any{"message": message, "paths": []string{"src/file-1.txt"}, "selection": changes.Selection})
 	var size benchmarkPayloadSize
 	for b.Loop() {
 		var hash string

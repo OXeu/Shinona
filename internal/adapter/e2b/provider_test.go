@@ -390,6 +390,118 @@ func TestSelfHostedUsesReturnedTrafficToken(t *testing.T) {
 	}
 }
 
+func TestProjectWorkspaceOverridesFollowCurrentSettings(t *testing.T) {
+	const box = `{"sandboxID":"fixture-box","envdVersion":"0.11.0","envdAccessToken":"token"}`
+	const legacy = `{"sandboxID":"legacy-box","envdVersion":"0.11.0","envdAccessToken":"token"}`
+	var discoveries atomic.Int32
+	mux := http.NewServeMux()
+	writeBox := func(w http.ResponseWriter, status int, body string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}
+	mux.HandleFunc("POST /sandboxes", func(w http.ResponseWriter, _ *http.Request) {
+		writeBox(w, http.StatusCreated, box)
+	})
+	mux.HandleFunc("POST /sandboxes/fixture-box/connect", func(w http.ResponseWriter, _ *http.Request) {
+		writeBox(w, http.StatusOK, box)
+	})
+	mux.HandleFunc("POST /sandboxes/legacy-box/connect", func(w http.ResponseWriter, _ *http.Request) {
+		writeBox(w, http.StatusOK, legacy)
+	})
+	mux.HandleFunc("GET /files", func(w http.ResponseWriter, r *http.Request) {
+		user, _, _ := r.BasicAuth()
+		_, _ = io.WriteString(w, user+":"+r.URL.Query().Get("path"))
+	})
+	mux.HandleFunc("POST /process.Process/Start", func(w http.ResponseWriter, r *http.Request) {
+		request := readStart(t, r)
+		if request.Process.Cmd != "sh" || request.Process.Cwd != "" {
+			t.Errorf("unexpected working directory probe: %+v", request.Process)
+		}
+		discoveries.Add(1)
+		user, _, _ := r.BasicAuth()
+		dir := "/srv/template"
+		if user != "" {
+			dir = "/home/" + user
+		}
+		beginProcess(t, w)
+		processOutput(t, w, "stdout", dir+"\n")
+		finishProcess(t, w, 0)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	store := openStore(t, ":memory:")
+	seedWorkspaceOwner(t, store, "owner", "project")
+	config := Config{APIKey: "fixture", BaseURL: server.URL, ProxyURL: server.URL, APIVersion: "v1"}
+	newProvider := func(user, dir string) *Provider {
+		t.Helper()
+		config := config
+		config.WorkspaceUser, config.WorkDirectory = user, dir
+		provider, err := New(config, server.Client(), store.E2B)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider
+	}
+	ctx := t.Context()
+	read := func(ws sandbox.Workspace, want string) {
+		t.Helper()
+		if data, err := ws.ReadFile(ctx, "file.txt"); err != nil || string(data) != want {
+			t.Fatalf("workspace file request = %q, %v, want %q", data, err, want)
+		}
+		if err := ws.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := sandbox.Spec{OwnerID: "owner", ProjectID: "project", Policy: sandbox.Shared}
+	ws, err := newProvider("analyst", "/custom").Acquire(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(ws, "analyst:/custom/file.txt")
+	reconnect := func(spec sandbox.Spec, user, dir, want string) {
+		t.Helper()
+		ws, err := newProvider(user, dir).OpenProject(ctx, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read(ws, want)
+	}
+	reconnect(spec, "analyst", "", "analyst:/home/analyst/file.txt")
+	reconnect(spec, "", "", ":/srv/template/file.txt")
+	reconnect(spec, "", "/temporary", ":/temporary/file.txt")
+	reconnect(spec, "", "", ":/srv/template/file.txt")
+	if count := discoveries.Load(); count != 2 {
+		t.Fatalf("got %d working directory probes, want one per user", count)
+	}
+	legacySpec := sandbox.Spec{OwnerID: spec.OwnerID, Policy: sandbox.Shared}
+	provider := newProvider("", "")
+	if saved, err := provider.saveProject(ctx, legacySpec, "", "legacy-box", credentials{EnvdToken: "token", Timeout: provider.config.Timeout}); err != nil || !saved {
+		t.Fatalf("seed legacy workspace: saved = %t, error = %v", saved, err)
+	}
+	reconnect(legacySpec, "", "", "root:/root/file.txt")
+	reconnect(legacySpec, "analyst", "/custom", "analyst:/custom/file.txt")
+	reconnect(legacySpec, "", "", "root:/root/file.txt")
+	if count := discoveries.Load(); count != 2 {
+		t.Fatalf("legacy root and explicit directories should need no discovery, got %d probes", count)
+	}
+	// Records written before execution settings were tracked may contain the
+	// old override as the effective location. Reconnect using the template.
+	old := credentials{EnvdToken: "token", Timeout: provider.config.Timeout, WorkspaceUser: "analyst", WorkDirectory: "/custom"}
+	encoded, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.E2B.UpdateE2BCredentials(ctx, spec.OwnerID, spec.ProjectID, provider.endpoint, "fixture-box", encoded); err != nil {
+		t.Fatal(err)
+	}
+	reconnect(spec, "", "", ":/srv/template/file.txt")
+	reconnect(spec, "", "", ":/srv/template/file.txt")
+	if count := discoveries.Load(); count != 3 {
+		t.Fatalf("an older record should rediscover its template directory once, got %d total probes", count)
+	}
+}
+
 func TestUncredentialedSandboxIsDeleted(t *testing.T) {
 	var deleted atomic.Bool
 	mux := http.NewServeMux()

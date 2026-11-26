@@ -69,10 +69,11 @@ type WorkspaceStore interface {
 type credentials struct {
 	EnvdToken        string
 	TrafficToken     string
-	RecoverySnapshot string        `json:",omitempty"`
-	WorkspaceUser    string        `json:",omitempty"`
-	WorkDirectory    string        `json:",omitempty"`
-	Timeout          time.Duration `json:",omitempty"`
+	RecoverySnapshot string              `json:",omitempty"`
+	WorkspaceUser    string              `json:",omitempty"`
+	WorkDirectory    string              `json:",omitempty"`
+	Execution        *workspaceExecution `json:",omitempty"`
+	Timeout          time.Duration       `json:",omitempty"`
 }
 
 type projectSandbox struct {
@@ -327,6 +328,7 @@ func (p *Provider) createProject(ctx context.Context, spec sandbox.Spec, previou
 	tokens := credentials{RecoverySnapshot: snapshot, Timeout: p.config.Timeout}
 	if snapshot != "" {
 		tokens.WorkspaceUser, tokens.WorkDirectory = previous.tokens.WorkspaceUser, previous.tokens.WorkDirectory
+		tokens.Execution = previous.tokens.Execution
 	}
 	workspace, tokens, err := p.dataPlane(ctx, box, boxCredentials(box, tokens), snapshot != "")
 	if err != nil {
