@@ -2,6 +2,9 @@ package e2b
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 
 	sdk "github.com/eric642/e2b-go-sdk"
 
@@ -55,13 +58,27 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expect
 		p.leases.update(key, "", 0, nil)
 		return nil
 	}
-	if _, err := p.api.Kill(ctx, id); err != nil && !isGone(err) {
-		return err
+	_, killErr := p.api.Kill(ctx, id)
+	unconfirmed := killErr != nil && !isGone(killErr)
+	if unconfirmed {
+		status := httpStatus(killErr)
+		if status != 0 && status != http.StatusRequestTimeout && status < http.StatusInternalServerError {
+			return killErr
+		}
+	}
+	// Use the same cleanup deadline to confirm a lost reply and remove the
+	// binding, even if the initiating request ended.
+	cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
+	defer stop()
+	if unconfirmed {
+		_, checkErr := p.api.GetInfo(cleanup, id)
+		switch {
+		case checkErr == nil:
+			return killErr
+		case !isGone(checkErr):
+			return errors.Join(killErr, fmt.Errorf("verify E2B sandbox deletion: %w", checkErr))
+		}
 	}
 	p.leases.update(key, "", 0, nil)
-	// The remote sandbox is gone. Finish removing the binding even if the
-	// initiating request ended, with the configured resource cleanup budget.
-	save, stop := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
-	defer stop()
-	return p.store.DeleteE2BSandbox(save, spec.OwnerID, spec.ProjectID, p.endpoint, id)
+	return p.store.DeleteE2BSandbox(cleanup, spec.OwnerID, spec.ProjectID, p.endpoint, id)
 }

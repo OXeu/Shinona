@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -174,6 +175,91 @@ func TestDestroyProjectRetriesBindingCleanupAfterRemoteDeletion(t *testing.T) {
 	}
 	if retained, _, err := database.E2B.E2BSandbox(ctx, owner, project, endpoint); err != nil || retained != "" || kills != 2 || writes != 2 {
 		t.Fatalf("retry left binding %q after %d E2B requests and %d writes: %v", retained, kills, writes, err)
+	}
+}
+
+func TestDestroyProjectReconcilesAmbiguousDeletion(t *testing.T) {
+	const owner, project, id = "owner", "project", "retained-box"
+	const endpoint = "https://e2b.example.test"
+	const cleanupTimeout = time.Second
+	for _, tc := range []struct {
+		name         string
+		deleteStatus int
+		cancelDelete bool
+		checkStatus  int
+		removed      bool
+	}{
+		{name: "lost reply after client cancellation", cancelDelete: true, checkStatus: http.StatusNotFound, removed: true},
+		{name: "gateway failed after deleting", deleteStatus: http.StatusBadGateway, checkStatus: http.StatusGone, removed: true},
+		{name: "request timed out with sandbox still paused", deleteStatus: http.StatusRequestTimeout, checkStatus: http.StatusOK},
+		{name: "control plane still unavailable", deleteStatus: http.StatusBadGateway, checkStatus: http.StatusServiceUnavailable},
+		{name: "credentials rejected", deleteStatus: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := openStore(t, ":memory:")
+			seedWorkspaceOwner(t, database, owner, project)
+			ctx := t.Context()
+			if saved, err := database.E2B.SaveE2BSandbox(ctx, owner, project, endpoint, "", id, []byte("{}")); err != nil || !saved {
+				t.Fatalf("seed retained sandbox: %t, %v", saved, err)
+			}
+			request, cancel := context.WithCancel(ctx)
+			defer cancel()
+			var deletes, checks int
+			client := &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != "/sandboxes/"+id {
+					t.Fatalf("unexpected E2B request: %s %s", req.Method, req.URL)
+				}
+				response := &http.Response{Body: http.NoBody, Header: make(http.Header)}
+				// Model the final SDK result without waiting for its retry backoff.
+				response.Header.Set("Should-Retry", "false")
+				switch req.Method {
+				case http.MethodDelete:
+					deletes++
+					if tc.cancelDelete {
+						cancel()
+						return nil, context.Canceled
+					}
+					response.StatusCode = tc.deleteStatus
+				case http.MethodGet:
+					checks++
+					if deletes != 1 || tc.checkStatus == 0 || req.Context().Err() != nil {
+						t.Fatalf("unexpected deletion check after %d attempts: %v", deletes, req.Context().Err())
+					}
+					deadline, ok := req.Context().Deadline()
+					if !ok || time.Until(deadline) > cleanupTimeout {
+						t.Fatalf("deletion check must use the configured cleanup deadline, got %v", deadline)
+					}
+					response.StatusCode = tc.checkStatus
+					if tc.checkStatus == http.StatusOK {
+						response.Header.Set("Content-Type", "application/json")
+						response.Body = io.NopCloser(strings.NewReader(`{"sandboxID":"retained-box","state":"paused"}`))
+					}
+				default:
+					t.Fatalf("unexpected E2B method %s", req.Method)
+				}
+				return response, nil
+			})}
+			provider, err := New(Config{APIKey: "fixture", BaseURL: endpoint, CleanupTimeout: cleanupTimeout}, client, database.E2B)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectedID := id
+			err = provider.DestroyProject(request, sandbox.Spec{OwnerID: owner, ProjectID: project}, &expectedID)
+			retained, _, readErr := database.E2B.E2BSandbox(ctx, owner, project, endpoint)
+			if tc.removed {
+				if err != nil || retained != "" {
+					t.Fatalf("confirmed deletion left binding %q: %v", retained, err)
+				}
+			} else if !hasStatus(err, tc.deleteStatus) || retained != id {
+				t.Fatalf("unconfirmed deletion changed binding %q or lost the original error: %v", retained, err)
+			}
+			if tc.checkStatus == http.StatusServiceUnavailable && !strings.Contains(err.Error(), "verify E2B sandbox deletion: e2b: http 503") {
+				t.Fatalf("verification failure was lost: %v", err)
+			}
+			if readErr != nil || deletes != 1 || checks > 1 || (checks == 1) != (tc.checkStatus != 0) {
+				t.Fatalf("binding lookup or request count: %v, %d deletes, %d checks", readErr, deletes, checks)
+			}
+		})
 	}
 }
 
