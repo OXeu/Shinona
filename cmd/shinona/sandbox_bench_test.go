@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
@@ -109,7 +110,7 @@ type benchmarkSandbox struct {
 
 func newBenchmarkSandbox(b *testing.B, repo *sqlite.Database, name string, provider sandbox.ManagedProjectProvider) *benchmarkSandbox {
 	b.Helper()
-	api := newBenchmarkAPI(b, repo, benchmarkTarget(name, provider, demo.Agent{}))
+	api := newBenchmarkAPI(b, repo, benchmarkTarget(name, provider, demo.Agent{}), uuid.NewString)
 	project, err := api.service.CreateProject(b.Context(), api.owner, "Sandbox benchmark")
 	if err != nil {
 		b.Fatal(err)

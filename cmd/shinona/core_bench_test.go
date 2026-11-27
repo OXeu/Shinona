@@ -8,14 +8,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,6 +75,7 @@ type benchmarkAPI struct {
 	repo         *sqlite.Database
 	databasePath string
 	service      *run.Service
+	fixtures     *run.Service
 	controls     *run.Controls
 	resolve      run.ResolveTarget
 	logger       *slog.Logger
@@ -101,7 +103,7 @@ func openBenchmarkDatabase(b testing.TB, path string) *sqlite.Database {
 	return repo
 }
 
-func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target) *benchmarkAPI {
+func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target, newID func() string) *benchmarkAPI {
 	b.Helper()
 	ctx := b.Context()
 	logger := slog.New(slog.DiscardHandler)
@@ -112,7 +114,7 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target) *be
 		}
 		return target, nil
 	}
-	service := run.NewService(repo.RunStores(), resolve, uuid.NewString, controls, nil, run.DefaultWorkspaceTimeouts())
+	service := run.NewService(repo.RunStores(), resolve, newID, controls, nil, run.DefaultWorkspaceTimeouts())
 	b.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
@@ -120,7 +122,7 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target) *be
 			b.Error(err)
 		}
 	})
-	accounts := auth.New(repo.Accounts, password.Argon2id{}, uuid.NewString)
+	accounts := auth.New(repo.Accounts, password.Argon2id{}, newID)
 	const email, secret = "benchmark@example.invalid", "local benchmark password"
 	owner, err := accounts.CreatePasswordUser(ctx, email, secret)
 	if err != nil {
@@ -141,7 +143,7 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target) *be
 		b.Fatal(err)
 	}
 	fixture := &benchmarkAPI{
-		Server: server, repo: repo, service: service, controls: controls, resolve: resolve,
+		Server: server, repo: repo, service: service, fixtures: service, controls: controls, resolve: resolve,
 		logger: logger, owner: owner.ID, newHandler: newHandler, accounts: accounts,
 	}
 	fixture.post(b, "/auth/password", fixture.requestBody(b, map[string]string{"email": email, "password": secret}), http.StatusOK)
@@ -150,10 +152,50 @@ func newBenchmarkAPI(b testing.TB, repo *sqlite.Database, target run.Target) *be
 
 func newCoreBenchmarkAPI(b testing.TB, agent run.Agent) *benchmarkAPI {
 	b.Helper()
+	var idsMu sync.Mutex
+	random := rand.NewChaCha8([32]byte{1, 2, 3, 4})
+	newID := func() string {
+		var id uuid.UUID
+		idsMu.Lock()
+		_, _ = random.Read(id[:])
+		idsMu.Unlock()
+		id[6] = id[6]&0x0f | 0x40 // RFC 4122 version 4.
+		id[8] = id[8]&0x3f | 0x80 // RFC 4122 variant.
+		return id.String()
+	}
 	databasePath := filepath.Join(b.TempDir(), "benchmark.db")
-	api := newBenchmarkAPI(b, openBenchmarkDatabase(b, databasePath), benchmarkTarget("demo", demo.Provider{}, agent))
+	repo := openBenchmarkDatabase(b, databasePath)
+	api := newBenchmarkAPI(b, repo, benchmarkTarget("demo", demo.Provider{}, agent), newID)
 	api.databasePath = databasePath
+
+	// Persist fixed timestamps for fixture writes. Requests still use the regular service.
+	store := &benchmarkFixtureStore{ConversationStore: repo.Conversations}
+	stores := repo.RunStores()
+	stores.Sessions, stores.Turns = store, store
+	api.fixtures = run.NewService(stores, api.resolve, newID, api.controls, nil, run.DefaultWorkspaceTimeouts())
 	return api
+}
+
+type benchmarkFixtureStore struct {
+	*sqlite.ConversationStore
+	seconds atomic.Int64
+}
+
+func (s *benchmarkFixtureStore) nextTime() time.Time {
+	const epoch = 1_735_689_600 // 2025-01-01 UTC.
+	return time.Unix(epoch+s.seconds.Add(1), 0).UTC()
+}
+
+func (s *benchmarkFixtureStore) CreateSession(ctx context.Context, session run.Session) error {
+	session.CreatedAt = s.nextTime()
+	session.UpdatedAt = session.CreatedAt
+	return s.ConversationStore.CreateSession(ctx, session)
+}
+
+func (s *benchmarkFixtureStore) Enqueue(ctx context.Context, item run.Run, title string, queue bool) (run.Run, error) {
+	item.CreatedAt = s.nextTime()
+	item.UpdatedAt = item.CreatedAt
+	return s.ConversationStore.Enqueue(ctx, item, title, queue)
 }
 
 func benchmarkTarget(name string, provider sandbox.Provider, agent run.Agent) run.Target {
@@ -299,7 +341,7 @@ func benchmarkSocketWrite(b *testing.B, conn *websocket.Conn, payload []byte) {
 
 func (a *benchmarkAPI) session(b testing.TB, project string) string {
 	b.Helper()
-	session, err := a.service.CreateSession(b.Context(), a.owner, project)
+	session, err := a.fixtures.CreateSession(b.Context(), a.owner, project)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -314,15 +356,17 @@ func (a *benchmarkAPI) completedTurn(b testing.TB, session, prompt string, resul
 func (a *benchmarkAPI) completedTurnWithPayload(b testing.TB, session, prompt string, payload run.Payload, result run.Result) run.Run {
 	b.Helper()
 	ctx := b.Context()
-	queued, err := a.service.Submit(ctx, a.owner, session, prompt, payload, false)
+	queued, err := a.fixtures.Submit(ctx, a.owner, session, prompt, payload, false)
 	if err != nil {
 		b.Fatal(err)
 	}
-	item, err := a.repo.Conversations.ClaimNext(ctx, time.Now())
+	started := queued.CreatedAt.Add(time.Millisecond)
+	item, err := a.repo.Conversations.ClaimNext(ctx, started)
 	if err != nil || item == nil || item.ID != queued.ID {
 		b.Fatalf("claim fixture turn %s: %v, %v", queued.ID, item, err)
 	}
-	if err := a.repo.Conversations.Complete(ctx, item.ID, run.Completion{Result: result, Status: run.Succeeded, UpdatedAt: time.Now()}); err != nil {
+	completion := run.Completion{Result: result, Status: run.Succeeded, UpdatedAt: started.Add(time.Millisecond)}
+	if err := a.repo.Conversations.Complete(ctx, item.ID, completion); err != nil {
 		b.Fatal(err)
 	}
 	return *item
@@ -424,7 +468,8 @@ func benchmarkTranscriptServer(b *testing.B) {
 	serve := func() {
 		clear(response.header)
 		response.status, response.bytes = http.StatusOK, 0
-		a.Config.Handler.ServeHTTP(&response, request.Clone(b.Context()))
+		// This GET reads the request. Timing and auth attach context to their own copies.
+		a.Config.Handler.ServeHTTP(&response, request)
 	}
 	serve()
 	if response.status != http.StatusOK || response.bytes == 0 ||
@@ -536,7 +581,7 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 	}
 	path := benchmarkSessionPath(session) + "/turns"
 	body := a.requestBody(b, map[string]any{"prompt": benchmarkPrompt, "payload": struct{}{}, "queue": queue})
-	var latencies []time.Duration
+	var latencies benchmarkLatencies
 	var slowest time.Duration
 	var slowestServerTiming []string
 	for b.Loop() {
@@ -558,7 +603,7 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 		}
 		b.StopTimer()
 		if queue {
-			latencies = append(latencies, elapsed)
+			latencies.add(elapsed)
 			if elapsed > slowest {
 				slowest = elapsed
 				slowestServerTiming = response.header.Values("Server-Timing")
@@ -569,13 +614,11 @@ func benchmarkSubmitRun(b *testing.B, queue bool) {
 		}
 		b.StartTimer()
 	}
-	if queue && len(latencies) > 0 {
-		slices.Sort(latencies)
-		count := len(latencies)
-		b.ReportMetric(float64(latencies[(count+1)/2-1])/float64(time.Microsecond), "p50-us/op")
-		b.ReportMetric(float64(latencies[(99*count+99)/100-1])/float64(time.Microsecond), "p99-us/op")
-		b.Logf("queue latency across %d requests: p50 %s, p99 %s, max %s; slowest Server-Timing: %s",
-			count, latencies[(count+1)/2-1], latencies[(99*count+99)/100-1], slowest,
+	if latencies.count > 0 {
+		samples := latencies.retained()
+		latency := reportBenchmarkLatency(b, samples)
+		b.Logf("queue latency from %d samples across %d requests: p50 %s, p99 %s, max %s; slowest Server-Timing: %s",
+			len(samples), latencies.count, time.Duration(latency.P50), time.Duration(latency.P99), slowest,
 			strings.Join(slowestServerTiming, ", "))
 	}
 }

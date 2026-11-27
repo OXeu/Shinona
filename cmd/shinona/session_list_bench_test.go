@@ -68,10 +68,12 @@ func benchmarkSessionListPoll(b *testing.B) {
 	})
 	b.Run("NotModified", func(b *testing.B) {
 		_, etag, _ := full(b)
+		var size benchmarkPayloadSize
 		for b.Loop() {
-			poll(b, etag, http.StatusNotModified)
+			_, _, response := poll(b, etag, http.StatusNotModified)
+			size.add(response)
 		}
-		(benchmarkPayloadSize{}).report(b)
+		size.report(b)
 	})
 	b.Run("Delta", func(b *testing.B) {
 		page, etag, _ := full(b)

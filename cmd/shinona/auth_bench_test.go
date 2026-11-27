@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,7 +40,7 @@ func benchmarkAuthSession(b *testing.B) {
 			b.Fatal(err)
 		}
 		var size benchmarkPayloadSize
-		var latencies benchmarkAuthLatencies
+		var latencies benchmarkLatencies
 		for b.Loop() {
 			start := time.Now()
 			response, err := read(b.Context(), a.Client(), nil)
@@ -50,11 +51,11 @@ func benchmarkAuthSession(b *testing.B) {
 			size.add(response)
 		}
 		size.report(b)
-		latencies.report(b)
+		reportBenchmarkLatency(b, latencies.retained())
 	})
 	b.Run("Miss", func(b *testing.B) {
 		var size benchmarkPayloadSize
-		var latencies benchmarkAuthLatencies
+		var latencies benchmarkLatencies
 		for i := 0; b.Loop(); i++ {
 			b.StopTimer()
 			// SetAdmin invalidates all cached sessions for this owner.
@@ -71,7 +72,7 @@ func benchmarkAuthSession(b *testing.B) {
 			size.add(response)
 		}
 		size.report(b)
-		latencies.report(b)
+		reportBenchmarkLatency(b, latencies.retained())
 	})
 	b.Run("InvalidateOwner", func(b *testing.B) {
 		const sessions = 32
@@ -117,19 +118,19 @@ func benchmarkAuthSession(b *testing.B) {
 			}
 		}()
 		var mu sync.Mutex
-		var latencies []time.Duration
+		latencies := make([][]time.Duration, 0, sessions)
 		var size benchmarkPayloadSize
 		var readers atomic.Uint64
 		b.SetParallelism(16) // 32 concurrent readers with the CI's -cpu 2.
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			header := headers[(readers.Add(1)-1)%sessions]
-			var samples []time.Duration
+			var samples benchmarkLatencies
 			var payload benchmarkPayloadSize
 			for pb.Next() {
 				start := time.Now()
 				response, err := read(b.Context(), client, header)
-				samples = append(samples, time.Since(start))
+				samples.add(time.Since(start))
 				if err != nil {
 					b.Error(err)
 					return
@@ -137,7 +138,9 @@ func benchmarkAuthSession(b *testing.B) {
 				payload.add(response)
 			}
 			mu.Lock()
-			latencies = append(latencies, samples...)
+			if samples.count > 0 {
+				latencies = append(latencies, samples.retained())
+			}
 			size.wire += payload.wire
 			size.body += payload.body
 			mu.Unlock()
@@ -148,27 +151,30 @@ func benchmarkAuthSession(b *testing.B) {
 			b.Fatal(err)
 		}
 		if len(latencies) != 0 {
-			latency := benchmarkLatency(latencies)
-			b.ReportMetric(latency.P50/float64(time.Microsecond), "p50-us/op")
-			b.ReportMetric(latency.P99/float64(time.Microsecond), "p99-us/op")
+			reportBenchmarkLatency(b, slices.Concat(latencies...))
 			size.report(b)
 		}
 	})
 }
 
 // Keep percentile bookkeeping bounded, including when running long locally.
-type benchmarkAuthLatencies struct {
+type benchmarkLatencies struct {
 	samples [8192]time.Duration
 	count   int
 }
 
-func (l *benchmarkAuthLatencies) add(latency time.Duration) {
+func (l *benchmarkLatencies) add(latency time.Duration) {
 	l.samples[l.count%len(l.samples)] = latency
 	l.count++
 }
 
-func (l *benchmarkAuthLatencies) report(b *testing.B) {
-	latency := benchmarkLatency(l.samples[:min(l.count, len(l.samples))])
+func (l *benchmarkLatencies) retained() []time.Duration {
+	return l.samples[:min(l.count, len(l.samples))]
+}
+
+func reportBenchmarkLatency(b *testing.B, samples []time.Duration) readLoadMetric {
+	latency := benchmarkLatency(samples)
 	b.ReportMetric(latency.P50/float64(time.Microsecond), "p50-us/op")
 	b.ReportMetric(latency.P99/float64(time.Microsecond), "p99-us/op")
+	return latency
 }
