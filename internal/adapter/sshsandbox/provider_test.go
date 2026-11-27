@@ -205,7 +205,8 @@ func TestDestroyProjectTargetsTheInspectedContainer(t *testing.T) {
 	}{
 		{name: "removed", selection: original},
 		{name: "already removed", selection: original, exitStatus: 1},
-		{name: "replaced", selection: original, remaining: replacement},
+		{name: "replaced after acknowledged removal", selection: original, remaining: replacement},
+		{name: "replaced after ambiguous removal", selection: original, remaining: replacement, exitStatus: 1},
 		{name: "still present", selection: original, remaining: original, exitStatus: 1},
 		{name: "stale selection", selection: replacement},
 		{name: "provisioned after an empty selection"},
@@ -252,9 +253,38 @@ func TestDestroyProjectTargetsTheInspectedContainer(t *testing.T) {
 				}
 				return
 			}
-			if (err != nil) != (tc.remaining != "") || checks.Load() != 2 || removals.Load() != 1 {
+			wantChecks := int32(1)
+			if tc.exitStatus != 0 {
+				wantChecks++
+			}
+			if (err != nil) != (tc.exitStatus != 0 && tc.remaining != "") || checks.Load() != wantChecks || removals.Load() != 1 {
 				t.Fatalf("destroy returned %v after %d status checks and %d removals", err, checks.Load(), removals.Load())
 			}
 		})
+	}
+}
+
+func TestProjectConnectionsReuseMultipleTransportsForTheSameOwner(t *testing.T) {
+	provider := sshFixtureProvider(t, time.Second, func(_ ssh.Channel, _ <-chan *ssh.Request) {})
+	key := projectConnectionKey{owner: "owner", identity: provider.identity}
+	for range maxIdleConnectionsPerKey + 1 {
+		client, err := provider.connectClient(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := provider.projects.put(key, &projectConnection{client: client, opened: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range maxIdleConnectionsPerKey {
+		conn := provider.projects.take(key)
+		if conn == nil {
+			t.Fatal("an idle transport was closed instead of retained")
+		}
+		t.Cleanup(func() { _ = conn.client.Close() })
+	}
+	if conn := provider.projects.take(key); conn != nil {
+		_ = conn.client.Close()
+		t.Fatal("pool retained more transports than the per-key limit")
 	}
 }

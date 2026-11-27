@@ -29,6 +29,9 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 	if !size.Valid() {
 		return nil, errors.New("invalid terminal size")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	stream, cancel := context.WithCancel(w.requestContext(ctx))
 	reader, writer := io.Pipe()
 	shell, tag := sandbox.Shell("-i"), uuid.NewString()
@@ -47,7 +50,10 @@ func (w *workspace) OpenTerminal(ctx context.Context, size sandbox.TerminalSize)
 		if handle != nil {
 			handle.Disconnect()
 		}
-		return nil, errors.Join(err, w.stopProcess(context.WithoutCancel(ctx), tag))
+		if processMayHaveStarted(handle, err) {
+			err = errors.Join(err, w.stopProcess(context.WithoutCancel(ctx), tag))
+		}
+		return nil, err
 	}
 	finished := make(chan struct{})
 	go func() {
@@ -85,7 +91,12 @@ func (t *terminal) Close(ctx context.Context) error {
 		t.cancel()
 		t.handle.Disconnect()
 		// Wait for our pipe writer, which stops as soon as the context ends.
-		<-t.finished
+		select {
+		case <-t.finished:
+		case <-ctx.Done():
+			t.closeErr = ctx.Err()
+			return
+		}
 		if _, exited := t.handle.ExitCode(); !exited {
 			t.closeErr = t.workspace.stopProcess(ctx, t.tag)
 		}

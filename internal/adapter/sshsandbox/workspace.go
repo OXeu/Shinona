@@ -95,26 +95,13 @@ func commandError(result sandbox.Result, err error) error {
 
 // setsid gives each command its own process group. The Docker stdin pipe is
 // reserved for its watchdog so cancellation and disconnects both send EOF.
-const runCommand = `
-group=$$
-exec 3<&0
-(
-  IFS= read -r ignored <&3 || :
-  kill -s KILL -- "-$group" 2>/dev/null
-) &
-watchdog=$!
-"$@" </dev/null 3<&-
-status=$?
-kill "$watchdog" 2>/dev/null || :
-wait "$watchdog" 2>/dev/null || :
-exit "$status"`
+const runCommand = `group=$$; exec 3<&0; ` +
+	`(IFS= read -r ignored <&3 || :; kill -s KILL -- "-$group" 2>/dev/null) & watchdog=$!; ` +
+	`"$@" </dev/null 3<&-; status=$?; kill "$watchdog" 2>/dev/null || :; wait "$watchdog" 2>/dev/null || :; exit "$status"`
 
 // Launch setsid from a child of the Docker process group leader. It can
 // create a session without forking, and the parent returns the exit status.
-const startCommand = `
-exec 3<&0
-setsid "$@" <&3 3<&- &
-wait "$!"`
+const startCommand = `exec 3<&0; setsid "$@" <&3 3<&- & wait "$!"`
 
 func (w *workspace) Exec(ctx context.Context, command sandbox.Command) (sandbox.Result, error) {
 	args := []string{"exec", "-i", w.name, "sh", "-c", startCommand, "sh", "sh", "-c", runCommand, "sh", command.Program}
@@ -164,17 +151,18 @@ func dockerCommand(args []string) (string, error) {
 		if strings.ContainsRune(arg, 0) {
 			return "", errors.New("SSH command arguments cannot contain a null character")
 		}
-		// A leading '+' marks encoded data. Quotes, backslashes, history
-		// expansion, and control bytes vary across login shells.
+		// A leading '+' marks encoded data. Quotes, backslashes, and
+		// control bytes vary across login shells.
 		if strings.HasPrefix(arg, "+") || strings.IndexFunc(arg, func(ch rune) bool {
-			return ch < ' ' || ch == 0x7f || ch == '\'' || ch == '\\' || ch == '!'
+			return ch < ' ' || ch == 0x7f || ch == '\'' || ch == '\\'
 		}) >= 0 {
 			arguments.WriteString(" +")
 			arguments.WriteString(base64.StdEncoding.EncodeToString([]byte(arg)))
 			encoded = true
 		} else {
 			arguments.WriteString(" '")
-			arguments.WriteString(arg)
+			// Escape history expansion in tcsh, even inside single quotes.
+			arguments.WriteString(strings.ReplaceAll(arg, "!", `'\!'`))
 			arguments.WriteByte('\'')
 		}
 	}

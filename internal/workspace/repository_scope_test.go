@@ -1,9 +1,9 @@
 package workspace
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,10 +35,10 @@ func (w localWorkspace) Exec(ctx context.Context, command sandbox.Command) (sand
 	// above it. This also keeps the tests independent of the directory the test
 	// binary happens to run in, such as a checkout that is itself a repository.
 	cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(w.dir))
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	stdout, stderr := sandbox.NewOutput(command.OutputLimit()), sandbox.NewOutput(sandbox.DefaultOutputLimit)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	err := cmd.Run()
-	result := sandbox.Result{Stdout: stdout.String(), Stderr: stderr.String()}
+	result := sandbox.Result{Stdout: stdout.String(), Stderr: stderr.String(), Truncated: stdout.Truncated() || stderr.Truncated()}
 	if err == nil {
 		return result, nil
 	}
@@ -173,6 +173,39 @@ func TestCommitOnlyTouchesPathsInsideScope(t *testing.T) {
 	}
 	if len(status.Entries) != 1 || status.Entries[0].Path != "web/app.ts" || status.Entries[0].Status != "M" {
 		t.Fatalf("outside change was disturbed: %+v", status.Entries)
+	}
+}
+
+func TestCommitCanSelectAPathBeyondTheStatusLimit(t *testing.T) {
+	const selected = "zz-selected\n.txt"
+	for _, change := range []string{"untracked", "rename"} {
+		t.Run(change, func(t *testing.T) {
+			dir := scaffold(t)
+			for i := range 350 {
+				write(t, dir, fmt.Sprintf("api/%03d-%s", i, strings.Repeat("x", 200)), "")
+			}
+			if change == "rename" {
+				gitTest(t, dir, "add", "api")
+				gitTest(t, dir, "mv", "api/main.go", "api/"+selected)
+			} else {
+				write(t, dir, "api/"+selected, "selected\n")
+			}
+			repo := New(localWorkspace{dir}).At("api")
+			changePreview, err := repo.status(t.Context(), sandbox.MaxFileBytes, ".")
+			if err != nil || !changePreview.Truncated {
+				t.Fatalf("expected truncated status, got %d bytes and error %v", len(changePreview.Stdout), err)
+			}
+			if hash, err := repo.Commit(t.Context(), "a@b.c", "select one file", []string{selected}); err != nil || hash == "" {
+				t.Fatalf("commit returned %q, %v", hash, err)
+			}
+			if change == "rename" {
+				result, err := repo.git(t.Context(), "diff-tree", "-r", "-M", "--no-commit-id", "--name-status", "-z", "HEAD")
+				want := "R100\x00api/main.go\x00api/" + selected + "\x00"
+				if err != nil || result.ExitCode != 0 || result.Stdout != want {
+					t.Fatalf("commit did not include both sides of the rename: %+v, %v", result, err)
+				}
+			}
+		})
 	}
 }
 

@@ -500,6 +500,18 @@ func TestProjectWorkspaceOverridesFollowCurrentSettings(t *testing.T) {
 	if count := discoveries.Load(); count != 3 {
 		t.Fatalf("an older record should rediscover its template directory once, got %d total probes", count)
 	}
+	old.WorkspaceUser, old.WorkDirectory = "root", "/root"
+	encoded, err = json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.E2B.UpdateE2BCredentials(ctx, spec.OwnerID, spec.ProjectID, provider.endpoint, "fixture-box", encoded); err != nil {
+		t.Fatal(err)
+	}
+	reconnect(spec, "", "", ":/srv/template/file.txt")
+	if count := discoveries.Load(); count != 4 {
+		t.Fatalf("clearing an old root override should probe the template, got %d total probes", count)
+	}
 }
 
 func TestUncredentialedSandboxIsDeleted(t *testing.T) {

@@ -110,7 +110,7 @@ func (p *Provider) dataPlane(ctx context.Context, box *sdk.Sandbox, tokens crede
 	} else if existing {
 		// Keep the root workspace used by the original E2B adapter. Other
 		// older records contain effective values with no override provenance.
-		execution.LegacyRoot = tokens.WorkDirectory == "" || (tokens.WorkspaceUser == "root" && tokens.WorkDirectory == "/root")
+		execution.LegacyRoot = tokens.WorkspaceUser == "" && tokens.WorkDirectory == ""
 	}
 	user := p.config.WorkspaceUser
 	if user == "" && execution.LegacyRoot {

@@ -58,27 +58,38 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expect
 		p.leases.update(key, "", 0, nil)
 		return nil
 	}
-	_, killErr := p.api.Kill(ctx, id)
-	unconfirmed := killErr != nil && !isGone(killErr)
-	if unconfirmed {
-		status := httpStatus(killErr)
-		if status != 0 && status != http.StatusRequestTimeout && status < http.StatusInternalServerError {
-			return killErr
-		}
+	if err := p.killSandbox(ctx, id); err != nil {
+		return err
 	}
-	// Use the same cleanup deadline to confirm a lost reply and remove the
-	// binding, even if the initiating request ended.
+	// Give the binding deletion its own budget after remote confirmation.
+	p.leases.update(key, "", 0, nil)
 	cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
 	defer stop()
-	if unconfirmed {
-		_, checkErr := p.api.GetInfo(cleanup, id)
-		switch {
-		case checkErr == nil:
-			return killErr
-		case !isGone(checkErr):
-			return errors.Join(killErr, fmt.Errorf("verify E2B sandbox deletion: %w", checkErr))
-		}
-	}
-	p.leases.update(key, "", 0, nil)
 	return p.store.DeleteE2BSandbox(cleanup, spec.OwnerID, spec.ProjectID, p.endpoint, id)
+}
+
+func (p *Provider) killSandbox(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, killErr := p.api.Kill(ctx, id)
+	if killErr == nil || isGone(killErr) {
+		return nil
+	}
+	status := httpStatus(killErr)
+	if status != 0 && status != http.StatusRequestTimeout && status < http.StatusInternalServerError {
+		return killErr
+	}
+	// The remote deletion may have succeeded before the reply was lost.
+	check, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
+	defer cancel()
+	_, checkErr := p.api.GetInfo(check, id)
+	switch {
+	case checkErr == nil:
+		return killErr
+	case isGone(checkErr):
+		return nil
+	default:
+		return errors.Join(killErr, fmt.Errorf("verify E2B sandbox deletion: %w", checkErr))
+	}
 }

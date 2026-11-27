@@ -82,11 +82,11 @@ func (w *workspace) Exec(ctx context.Context, command sandbox.Command) (sandbox.
 		},
 	})
 	var exit *sdk.CommandResult
-	if err == nil {
+	if handle != nil {
 		defer handle.Disconnect()
 		exit, err = handle.Wait(ctx)
 	}
-	if exit == nil && err != nil {
+	if exit == nil && err != nil && processMayHaveStarted(handle, err) {
 		if stopErr := w.stopProcess(context.WithoutCancel(ctx), tag); stopErr != nil {
 			err = errors.Join(err, fmt.Errorf("could not confirm that envd stopped the command: %w", stopErr))
 		}
@@ -102,6 +102,21 @@ func (w *workspace) Exec(ctx context.Context, command sandbox.Command) (sandbox.
 		return result, fmt.Errorf("envd process failed: %s", exit.Error)
 	}
 	return result, nil
+}
+
+func processMayHaveStarted(handle *sdk.CommandHandle, err error) bool {
+	if handle == nil {
+		return false
+	}
+	if handle.PID() != 0 {
+		return true
+	}
+	// The SDK can return a handle before envd rejects the start request.
+	// Keep cleanup for ambiguous stream failures without a start event.
+	_, invalid := errors.AsType[*sdk.InvalidArgumentError](err)
+	_, unauthorized := errors.AsType[*sdk.AuthenticationError](err)
+	_, missing := errors.AsType[*sdk.FileNotFoundError](err)
+	return !invalid && !unauthorized && !missing
 }
 
 func (w *workspace) stopProcess(ctx context.Context, tag string) error {

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"slices"
@@ -142,13 +143,25 @@ func privateKey(config Config) ([]byte, error) {
 		}
 		return []byte(config.PrivateKey), nil
 	}
-	file, err := os.Stat(config.KeyPath)
-	if err != nil || !file.Mode().IsRegular() || file.Size() > sandbox.MaxFileBytes {
+	info, err := os.Stat(config.KeyPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > sandbox.MaxFileBytes {
 		return nil, errors.New("SSH private key path must point to a readable key file")
 	}
-	key, err := os.ReadFile(config.KeyPath)
+	file, err := os.Open(config.KeyPath)
+	if err != nil {
+		return nil, errors.New("SSH private key path must point to a readable key file")
+	}
+	defer func() { _ = file.Close() }()
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > sandbox.MaxFileBytes {
+		return nil, errors.New("SSH private key path must point to a readable key file")
+	}
+	key, err := io.ReadAll(io.LimitReader(file, sandbox.MaxFileBytes+1))
 	if err != nil {
 		return nil, errors.New("could not read the SSH private key file")
+	}
+	if len(key) > sandbox.MaxFileBytes {
+		return nil, ErrInvalidPrivateKey
 	}
 	return key, nil
 }
@@ -222,8 +235,11 @@ func (p *Provider) Acquire(ctx context.Context, spec sandbox.Spec) (sandbox.Work
 	if spec.Policy != sandbox.Shared {
 		return nil, sandbox.ErrPolicy
 	}
-	ctx, cancel := context.WithTimeout(ctx, provisionTimeout)
-	defer cancel()
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, provisionTimeout)
+		defer cancel()
+	}
 	release, err := provisionGates.Acquire(ctx, spec.ProjectKey(), false)
 	if err != nil {
 		return nil, err
@@ -362,27 +378,29 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expect
 		return nil
 	}
 	removeErr := ws.docker(ctx, "rm", "--force", "--volumes", "--", status.ID)
-	remaining, checkErr := ws.status(ctx)
-	if checkErr != nil {
-		if !ws.discard.Load() || ctx.Err() != nil {
-			return errors.Join(removeErr, checkErr)
-		}
-		// Docker may have removed the container before SSH lost its reply.
-		// Recheck on a healthy transport before reporting the outcome.
-		_ = ws.Close(ctx)
-		observed, err := p.ProjectStatus(ctx, spec)
-		if err != nil {
-			return errors.Join(removeErr, checkErr, err)
-		}
-		remaining = observed
-	}
-	if remaining.State == sandbox.ProjectNone {
+	if removeErr == nil {
 		return nil
 	}
-	if removeErr != nil {
-		return removeErr
+	var remaining sandbox.ProjectStatus
+	var checkErr error
+	if !ws.discard.Load() {
+		remaining, checkErr = ws.status(ctx)
+		if checkErr == nil && remaining.State == sandbox.ProjectNone {
+			return nil
+		}
 	}
-	return errors.New("project sandbox is still present after container removal")
+	if ws.discard.Load() && ctx.Err() == nil {
+		// Docker may have removed the container before SSH lost its reply.
+		// Recheck on a healthy transport before reporting the outcome.
+		stop()
+		_ = ws.Close(ctx)
+		observed, err := p.ProjectStatus(ctx, spec)
+		if err == nil && observed.State == sandbox.ProjectNone {
+			return nil
+		}
+		checkErr = errors.Join(checkErr, err)
+	}
+	return errors.Join(removeErr, checkErr, ctx.Err())
 }
 
 var _ sandbox.ManagedProjectProvider = (*Provider)(nil)

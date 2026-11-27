@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // Docker can keep an exec PTY open after its client disconnects. A separate
@@ -30,20 +33,22 @@ IFS= read -r stat < "/proc/$$/stat" || exit 1
 groups=${stat##*) }
 kill_jobs() {
   for proc in /proc/[0-9]*/stat; do
-    stat=$(cat "$proc" 2>/dev/null) || continue
+    IFS= read -r stat 2>/dev/null < "$proc" || continue
     set -- ${stat##*) }
     if [ "$4" = "$terminal_session" ] && [ "$3" != "$terminal_group" ]; then
       kill -s KILL -- "-$3" 2>/dev/null || :
     fi
   done
 }
-read -r state parent terminal_group terminal_session rest <<EOF
-$groups
-EOF
+terminal_groups() {
+  set -- $groups
+  terminal_group=$3 terminal_session=$4
+}
+terminal_groups
 # Only clean up an independent session created for this Docker exec PTY.
 [ "$terminal_group" = "$$" ] && [ "$terminal_session" = "$$" ] || exit 1
 (
-  while guard_alive; do sleep 1; done
+  while guard_alive; do sleep 1 || break; done
   kill_jobs
   kill -s KILL -- "-$terminal_group"
 ) </dev/null >/dev/null 2>&1 &
@@ -55,39 +60,80 @@ wait "$watchdog" 2>/dev/null || :
 kill_jobs
 exit "$status"`
 
-func (w *workspace) startTerminalGuard(ctx context.Context) ([]string, error) {
+type terminalGuard struct {
+	session *ssh.Session
+	stdin   io.WriteCloser
+	pid     string
+	started string
+}
+
+func (g terminalGuard) close(ctx context.Context, w *workspace) error {
+	cleanup, cancel := context.WithTimeout(ctx, w.cleanup)
+	defer cancel()
+	stop := context.AfterFunc(cleanup, w.abortTransport)
+	defer stop()
+	if g.stdin != nil {
+		_ = g.stdin.Close()
+	}
+	return w.closeSession(cleanup, g.session)
+}
+
+func (w *workspace) startTerminalGuard(ctx context.Context) (_ terminalGuard, err error) {
 	command, err := dockerCommand([]string{"exec", "-i", w.name, "sh", "-c", terminalGuardCommand})
 	if err != nil {
-		return nil, err
+		return terminalGuard{}, err
 	}
 	session, err := w.openSession(ctx)
 	if err != nil {
-		return nil, err
+		return terminalGuard{}, err
 	}
+	guard := terminalGuard{session: session}
+	defer func() {
+		if err != nil {
+			_ = guard.close(context.WithoutCancel(ctx), w)
+		}
+	}()
 	output, err := session.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return terminalGuard{}, err
 	}
-	// Keep the write half open until the SSH transport closes.
-	if _, err := session.StdinPipe(); err != nil {
-		return nil, err
+	guard.stdin, err = session.StdinPipe()
+	if err != nil {
+		return terminalGuard{}, err
 	}
 	if err := session.Start(command); err != nil {
-		return nil, err
+		return terminalGuard{}, err
 	}
-	go func() { _ = session.Wait() }()
-	line, err := bufio.NewReaderSize(output, 64).ReadSlice('\n')
+	guard.pid, guard.started, err = readGuardIdentity(output)
 	if err != nil {
-		return nil, fmt.Errorf("start SSH terminal watchdog: %w", err)
+		return terminalGuard{}, fmt.Errorf("start SSH terminal watchdog: %w", err)
 	}
-	fields := strings.Fields(string(line))
-	if len(fields) != 2 {
-		return nil, errors.New("invalid SSH terminal watchdog identity")
-	}
-	for _, field := range fields {
-		if value, err := strconv.ParseUint(field, 10, 64); err != nil || value == 0 {
-			return nil, errors.New("invalid SSH terminal watchdog identity")
+	return guard, nil
+}
+
+func readGuardIdentity(output io.Reader) (pid, started string, err error) {
+	reader := bufio.NewReader(output)
+	var skipping bool
+	for {
+		line, err := reader.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			skipping = true
+			continue
+		}
+		if err != nil {
+			return "", "", err
+		}
+		if skipping {
+			skipping = false
+			continue
+		}
+		fields := strings.Fields(string(line))
+		if len(fields) == 2 {
+			id, idErr := strconv.ParseUint(fields[0], 10, 64)
+			start, startErr := strconv.ParseUint(fields[1], 10, 64)
+			if idErr == nil && startErr == nil && id > 0 && start > 0 {
+				return fields[0], fields[1], nil
+			}
 		}
 	}
-	return fields, nil
 }

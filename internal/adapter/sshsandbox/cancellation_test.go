@@ -136,13 +136,18 @@ func TestSSHTerminalSetupPreservesCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	requested := make(chan struct{})
-	provider := sshFixtureProvider(t, 50*time.Millisecond, func(_ ssh.Channel, requests <-chan *ssh.Request) {
+	provider := sshFixtureProvider(t, 50*time.Millisecond, func(channel ssh.Channel, requests <-chan *ssh.Request) {
 		for request := range requests {
-			if request.Type == "pty-req" {
+			switch request.Type {
+			case "pty-req":
 				close(requested)
-				continue
+			case "exec":
+				_ = request.Reply(true, nil)
+				_, _ = io.WriteString(channel, "123 456\n")
+				_, _ = io.Copy(io.Discard, channel)
+			default:
+				_ = request.Reply(false, nil)
 			}
-			_ = request.Reply(false, nil)
 		}
 	})
 	workspace, err := provider.connect(ctx, sandbox.Spec{})
@@ -233,16 +238,25 @@ func (c *stalledSSHTransport) Close() error {
 func sshCancellationWorkspace(t *testing.T, ctx context.Context, cleanup time.Duration) (*workspace, *stalledSSHTransport, <-chan struct{}, <-chan struct{}) {
 	t.Helper()
 	started, guardExited := make(chan struct{}), make(chan struct{})
+	guardStarted := make(chan struct{})
 	guardScript := base64.StdEncoding.EncodeToString([]byte(terminalGuardCommand))
 	provider := sshFixtureProvider(t, cleanup, func(channel ssh.Channel, requests <-chan *ssh.Request) {
 		for request := range requests {
 			switch request.Type {
 			case "pty-req":
+				// Withhold the PTY reply until the watchdog starts on its
+				// own channel. A sequential setup would block here.
+				select {
+				case <-guardStarted:
+				case <-ctx.Done():
+					return
+				}
 				_ = request.Reply(true, nil)
 			case "exec":
 				_ = request.Reply(true, nil)
 				if strings.Contains(string(request.Payload), guardScript) {
-					_, _ = io.WriteString(channel, "123 456\n")
+					close(guardStarted)
+					_, _ = io.WriteString(channel, strings.Repeat("login banner ", 512)+"\n123 456\n")
 					_, _ = io.Copy(io.Discard, channel)
 					close(guardExited)
 					return

@@ -49,11 +49,15 @@ func TestDockerCommandRoundTripsArgumentsAndInputThroughLoginShell(t *testing.T)
 			}
 			for _, args := range [][]string{
 				{"ps", "--format", "{{.ID}} {{.State}}"},
+				{"exec", "-i", "fixture", "sh", "-c", startCommand, "sh", "sh", "-c", runCommand, "sh", "git", "status"},
 				{"exec", "--", "", "+literal", `nested\path\`, "quotes ' and \"", "bang!", "line with final newlines\n\n", `$(exit 99)`, "中文"},
 			} {
 				command, err := dockerCommand(args)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if args[1] == "-i" && !strings.HasPrefix(command, "exec docker ") {
+					t.Fatal("ordinary workspace execution used the bootstrap")
 				}
 				options := append(slices.Clone(shell[1:]), "-c", command)
 				runner := exec.CommandContext(t.Context(), path, options...)

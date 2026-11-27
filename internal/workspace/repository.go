@@ -3,6 +3,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -114,16 +115,19 @@ func relative(prefix, name string) (string, bool) {
 }
 
 func (r Repository) git(ctx context.Context, args ...string) (sandbox.Result, error) {
+	return r.workspace.Exec(ctx, r.gitCommand(0, args...))
+}
+
+func (r Repository) gitCommand(limit int, args ...string) sandbox.Command {
 	options := []string{"--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
 		"-c", "commit.gpgSign=false", "-c", "color.ui=false"}
 	args = append(options, args...)
-	if r.root == "" {
-		return r.workspace.Exec(ctx, sandbox.Command{Program: "git", Args: args})
+	command := sandbox.Command{Program: "git", Args: args, StdoutLimit: limit}
+	if r.root != "" {
+		command.Program = "sh"
+		command.Args = append([]string{"-c", resolveDirectory + `shift; exec git "$@"`, "shinona-git", r.root}, args...)
 	}
-	return r.workspace.Exec(ctx, sandbox.Command{Program: "sh", Args: append([]string{
-		"-c", resolveDirectory + `shift
-exec git "$@"`, "shinona-git", r.root,
-	}, args...)})
+	return command
 }
 
 func (r Repository) requireGit(ctx context.Context) error {
@@ -140,17 +144,33 @@ func (r Repository) Changes(ctx context.Context) (Changes, error) {
 	if err != nil {
 		return Changes{}, err
 	}
-	// The pathspec limits status to the scoped directory, so renames that cross
-	// its boundary report as an addition or deletion on this side only.
-	status, err := r.git(ctx, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".")
+	status, err := r.status(ctx, 0, ".")
 	if err != nil {
 		return Changes{}, err
 	}
-	if status.ExitCode != 0 {
-		return Changes{}, ErrRepository
+	return Changes{
+		Branch: strings.TrimSpace(branch.Stdout), Entries: statusEntries(status.Stdout, prefix), Truncated: status.Truncated,
+	}, nil
+}
+
+func (r Repository) statusCommand(limit int, paths ...string) sandbox.Command {
+	// The scope-wide pathspec reports cross-boundary renames as additions
+	// or deletions on this side.
+	args := []string{"--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--"}
+	return r.gitCommand(limit, append(args, paths...)...)
+}
+
+func (r Repository) status(ctx context.Context, limit int, paths ...string) (sandbox.Result, error) {
+	result, err := r.workspace.Exec(ctx, r.statusCommand(limit, paths...))
+	if err == nil && result.ExitCode != 0 {
+		err = ErrRepository
 	}
-	result := Changes{Branch: strings.TrimSpace(branch.Stdout), Entries: []Change{}, Truncated: status.Truncated}
-	fields := terminatedFields(status.Stdout)
+	return result, err
+}
+
+func statusEntries(output, prefix string) []Change {
+	entries := []Change{}
+	fields := terminatedFields(output)
 	for i := 0; i < len(fields); i++ {
 		field := fields[i]
 		if len(field) < 4 {
@@ -178,10 +198,10 @@ func (r Repository) Changes(ctx context.Context) (Changes, error) {
 			}
 		}
 		if validPath(entry.Path) {
-			result.Entries = append(result.Entries, entry)
+			entries = append(entries, entry)
 		}
 	}
-	return result, nil
+	return entries
 }
 
 func (r Repository) History(ctx context.Context) (History, error) {
@@ -213,28 +233,15 @@ func (r Repository) History(ctx context.Context) (History, error) {
 	return result, nil
 }
 
-const workspaceRoot = `set -eu
-root=$(pwd -P && printf '.')
-root=${root%??}
-`
-
-const requireWorkspacePath = `
-case "$target" in "$root"|"${root%/}"/*) ;; *) exit 2 ;; esac
-case "$target" in */.git|*/.git/*) exit 2 ;; esac
-`
+const requireWorkspacePath = `case "$target" in "$root"|"${root%/}"/*) ;; *) exit 2 ;; esac; ` +
+	`case "$target" in */.git|*/.git/*) exit 2 ;; esac; `
 
 // Directory operations only need the shell's physical directory resolution.
-const resolveDirectory = workspaceRoot + `cd -P "./$1" || exit 2
-target=$(pwd -P && printf '.')
-target=${target%??}
-` + requireWorkspacePath
+const resolveDirectory = `set -eu; cd -P . || exit 2; root=$PWD; cd -P "./$1" || exit 2; target=$PWD; ` + requireWorkspacePath
 
-const resolveFile = resolveDirectory + `target=./$2
-if [ -L "$target" ]; then
-  target=$(realpath "$target" && printf '.') || exit 2
-  target=${target%??}
-` + requireWorkspacePath + `fi
-`
+// Physical directory resolution cannot follow the final link to a file.
+const resolveFile = resolveDirectory + `target=./$2; if [ -L "$target" ]; then ` +
+	`target=$(realpath "$target" && printf .) || exit 2; target=${target%??}; ` + requireWorkspacePath + `fi; `
 
 func (r Repository) Directory(ctx context.Context, folder string) (Directory, error) {
 	if folder != "." && !validPath(folder) {
@@ -311,7 +318,7 @@ func (r Repository) File(ctx context.Context, name string) (Preview, error) {
 }
 
 func (r Repository) file(ctx context.Context, name string) (Preview, error) {
-	const previewBytes = 16 << 10
+	const previewBytes = sandbox.DefaultOutputLimit
 	// Read one byte past the preview boundary to distinguish an exact fit.
 	result, err := r.workspace.Exec(ctx, sandbox.Command{Program: "sh", StdoutLimit: previewBytes + 1, Args: []string{
 		"-c", resolveFile + `[ -f "$target" ] && dd if="$target" bs="$3" count=1 2>/dev/null`,
@@ -353,28 +360,16 @@ func (r Repository) Commit(ctx context.Context, email, message string, selected 
 	if message == "" || len(message) > 4096 || strings.ContainsRune(message, 0) || len(selected) == 0 {
 		return "", ErrCommit
 	}
-	changes, err := r.Changes(ctx)
+	entries, err := r.selectedChanges(ctx, selected)
 	if err != nil {
 		return "", err
 	}
-	if len(selected) > len(changes.Entries) {
-		return "", ErrCommit
-	}
-	byPath := make(map[string]Change, len(changes.Entries))
-	for _, change := range changes.Entries {
-		byPath[change.Path] = change
-	}
 	var untracked, paths []string
-	for _, name := range selected {
-		entry, ok := byPath[name]
-		if !ok {
-			return "", ErrCommit
-		}
-		delete(byPath, name)
+	for _, entry := range entries {
 		if entry.Untracked {
-			untracked = append(untracked, name)
+			untracked = append(untracked, entry.Path)
 		}
-		paths = append(paths, name)
+		paths = append(paths, entry.Path)
 		if entry.Original != "" {
 			paths = append(paths, entry.Original)
 		}
@@ -386,26 +381,145 @@ func (r Repository) Commit(ctx context.Context, email, message string, selected 
 			}
 			cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 			defer stop()
-			_, resetErr := r.git(cleanup, append([]string{"reset", "--"}, untracked...)...)
-			err = errors.Join(err, resetErr)
+			reset, resetErr := r.git(cleanup, append([]string{"reset", "--"}, untracked...)...)
+			err = errors.Join(err, commitError("roll back intent to add", reset, resetErr))
 		}()
 		staged, stageErr := r.git(ctx, append([]string{"add", "-N", "--"}, untracked...)...)
-		if stageErr != nil || staged.ExitCode != 0 {
-			return "", errors.Join(ErrCommit, stageErr)
+		if err := commitError("mark untracked files for addition", staged, stageErr); err != nil {
+			return "", err
 		}
 	}
 	name, _, _ := strings.Cut(email, "@")
 	args := []string{"-c", "user.name=" + name, "-c", "user.email=" + email,
 		"commit", "--only", "--message", message, "--"}
 	committed, err := r.git(ctx, append(args, paths...)...)
-	if err != nil || committed.ExitCode != 0 {
-		return "", errors.Join(ErrCommit, err)
+	if err := commitError("commit selected changes", committed, err); err != nil {
+		return "", err
 	}
 	head, err := r.git(ctx, "rev-parse", "--short", "HEAD")
 	if err != nil || head.ExitCode != 0 {
 		return "", nil
 	}
 	return strings.TrimSpace(head.Stdout), nil
+}
+
+func (r Repository) selectedChanges(ctx context.Context, selected []string) ([]Change, error) {
+	pending := make(map[string]bool, len(selected))
+	for _, name := range selected {
+		if !validPath(name) || pending[name] {
+			return nil, ErrCommit
+		}
+		pending[name] = true
+	}
+	prefix, err := r.workTree(ctx)
+	if err != nil {
+		return nil, err
+	}
+	status, err := r.status(ctx, sandbox.MaxFileBytes, selected...)
+	if err != nil {
+		return nil, err
+	}
+	changes := statusEntries(status.Stdout, prefix)
+	// Narrow pathspecs can change how Git pairs renames. Consult the whole
+	// scope when a tracked path could be on either side of a move.
+	if status.Truncated || slices.ContainsFunc(changes, func(entry Change) bool {
+		return pending[entry.Path] && strings.ContainsAny(entry.Status, "ADRC")
+	}) {
+		status, err = r.status(ctx, sandbox.MaxFileBytes, ".")
+		if err != nil {
+			return nil, err
+		}
+		changes = statusEntries(status.Stdout, prefix)
+	}
+	byPath := make(map[string]Change, len(selected))
+	for _, entry := range changes {
+		if pending[entry.Path] {
+			byPath[entry.Path] = entry
+		}
+	}
+	entries := make([]Change, 0, len(selected))
+	for _, name := range selected {
+		entry, ok := byPath[name]
+		if !ok && status.Truncated {
+			entry, err = r.checkTruncatedStatus(ctx, prefix, name)
+			if err != nil {
+				return nil, err
+			}
+			ok = true
+		}
+		if !ok {
+			return nil, ErrCommit
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+// Keep the scope-wide pathspec to retain rename pairs. Stream the result as
+// hex because POSIX awk has no NUL-delimited input mode. An empty record
+// signals a successful Git exit; paths and rename sources always have bytes.
+const selectStatusEntry = `target=$1; shift
+( "$@" && printf '\000' ) | LC_ALL=C od -An -v -tx1 | LC_ALL=C awk -v target="$target" '
+{
+  for (i = 1; i <= NF; i++) {
+    if ($i != "00") {
+      record = record $i
+      continue
+    }
+    if (record == "") {
+      complete = 1
+    } else if (has_source) {
+      if (selected) print previous "00" record "00"
+      has_source = 0
+    } else {
+      selected = substr(record, 7) == target
+      has_source = substr(record, 1, 4) ~ /^(43|52)|(..)(43|52)$/
+      if (has_source) previous = record
+      else if (selected) print record "00"
+    }
+    record = ""
+  }
+}
+END { if (!complete || has_source) exit 2 }'`
+
+func (r Repository) checkTruncatedStatus(ctx context.Context, prefix, name string) (Change, error) {
+	command := r.statusCommand(0, ".")
+	args := []string{"-c", selectStatusEntry, "shinona-status", hex.EncodeToString([]byte(prefix + name)), command.Program}
+	status, err := r.workspace.Exec(ctx, sandbox.Command{
+		Program: "sh", Args: append(args, command.Args...), StdoutLimit: sandbox.MaxFileBytes,
+	})
+	if err != nil {
+		return Change{}, err
+	}
+	if status.ExitCode != 0 {
+		if detail := strings.TrimSpace(status.Stderr); detail != "" {
+			return Change{}, fmt.Errorf("%w: %s", ErrRepository, detail)
+		}
+		return Change{}, ErrRepository
+	}
+	output, err := hex.DecodeString(strings.TrimSpace(status.Stdout))
+	if err != nil {
+		return Change{}, errors.Join(ErrCommit, err)
+	}
+	for _, entry := range statusEntries(string(output), prefix) {
+		if entry.Path == name {
+			return entry, nil
+		}
+	}
+	return Change{}, ErrCommit
+}
+
+func commitError(operation string, result sandbox.Result, err error) error {
+	if detail := strings.TrimSpace(result.Stderr); detail != "" && (err != nil || result.ExitCode != 0) {
+		err = errors.Join(err, errors.New(detail))
+	}
+	if err != nil {
+		return errors.Join(ErrCommit, fmt.Errorf("%s (exit %d): %w", operation, result.ExitCode, err))
+	}
+	if result.ExitCode != 0 {
+		return errors.Join(ErrCommit, fmt.Errorf("%s (exit %d)", operation, result.ExitCode))
+	}
+	return nil
 }
 
 func validPath(name string) bool {

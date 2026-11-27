@@ -2,6 +2,7 @@ package e2b
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -130,7 +131,7 @@ func (p *ProjectLeases) renew(ctx context.Context, key leaseKey, lease *projectL
 		}
 
 		request, cancel := context.WithTimeout(ctx, apiTimeout)
-		release, err := p.gates.Acquire(request, key, false)
+		release, err := p.gates.Acquire(request, key, true)
 		if err == nil {
 			// A reconnect could apply a new timeout while this tick waited.
 			p.mu.Lock()
@@ -149,10 +150,9 @@ func (p *ProjectLeases) renew(ctx context.Context, key leaseKey, lease *projectL
 }
 
 func (w *projectWorkspace) Close(ctx context.Context) error {
+	var err error
 	if w.releaseLease != nil {
-		if err := w.releaseLease(ctx); err != nil {
-			return err
-		}
+		err = w.releaseLease(ctx)
 	}
-	return w.Workspace.Close(ctx)
+	return errors.Join(err, w.Workspace.Close(ctx))
 }

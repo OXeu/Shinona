@@ -218,7 +218,8 @@ func (p *Provider) acquireProject(ctx context.Context, spec sandbox.Spec) (*proj
 }
 
 func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.Workspace, error) {
-	release, err := p.leases.gates.Acquire(ctx, p.leaseKey(spec), false)
+	key := p.leaseKey(spec)
+	release, err := p.leases.gates.Acquire(ctx, key, true)
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +227,20 @@ func (p *Provider) OpenProject(ctx context.Context, spec sandbox.Spec) (sandbox.
 	project, err := p.loadProject(ctx, spec)
 	if err != nil {
 		return nil, err
+	}
+	if project.id != "" && project.tokens.Timeout != p.config.Timeout {
+		// A timeout change must be ordered against connects and renewals
+		// that could otherwise restore the previous expiration.
+		release()
+		release, err := p.leases.gates.Acquire(ctx, key, false)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		project, err = p.loadProject(ctx, spec)
+		if err != nil {
+			return nil, err
+		}
 	}
 	workspace, err := p.reconnectProject(ctx, spec, project)
 	if err != nil {
@@ -276,7 +291,10 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 	case project.tokens.Timeout == 0 || project.tokens.Timeout > p.config.Timeout:
 		// Connect can extend the expiration. Overwrite it when the previous
 		// duration was longer or the workspace predates saved timeout settings.
-		if timeoutErr := box.SetTimeout(ctx, p.config.Timeout); timeoutErr != nil {
+		timeout, cancel := context.WithTimeout(ctx, apiTimeout)
+		timeoutErr := box.SetTimeout(timeout, p.config.Timeout)
+		cancel()
+		if timeoutErr != nil {
 			err = fmt.Errorf("set E2B project sandbox timeout: %w", timeoutErr)
 		}
 	}
@@ -287,7 +305,6 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 		}
 		return nil, err
 	}
-	p.leases.update(p.leaseKey(spec), id, p.config.Timeout, box.RefreshTimeout)
 	tokens := boxCredentials(box, project.tokens)
 	tokens.Timeout = p.config.Timeout
 	workspace, tokens, err := p.dataPlane(ctx, box, tokens, true)
@@ -299,12 +316,13 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 		if err != nil {
 			return nil, err
 		}
-		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		save, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
 		defer cancel()
 		if err := p.store.UpdateE2BCredentials(save, spec.OwnerID, spec.ProjectID, p.endpoint, id, encoded); err != nil {
 			return nil, err
 		}
 	}
+	p.leases.update(p.leaseKey(spec), id, p.config.Timeout, box.RefreshTimeout)
 	return workspace, nil
 }
 
@@ -398,13 +416,15 @@ func (p *Provider) reconcileCreatedProject(ctx context.Context, spec sandbox.Spe
 	// A canceled request can still have created a sandbox. Resolve ownership
 	// before cleanup because an idempotent response might already be retained.
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
-	defer cancel()
 	id, stored, err := p.store.E2BSandbox(cleanup, spec.OwnerID, spec.ProjectID, p.endpoint)
+	cancel()
 	if err != nil {
 		return nil, errors.Join(failure, fmt.Errorf("check retained project sandbox before cleanup: %w", err))
 	}
 	if id != box.ID {
-		if err := box.Kill(cleanup); err != nil && !isGone(err) {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
+		defer cancel()
+		if err := p.killSandbox(cleanup, box.ID); err != nil {
 			return nil, errors.Join(failure, fmt.Errorf("discard unused E2B sandbox: %w", err))
 		}
 	}
@@ -424,7 +444,7 @@ func (p *Provider) saveProject(ctx context.Context, spec sandbox.Spec, previousI
 		return false, err
 	}
 	// A canceled turn can still have provisioned a workspace for the project.
-	save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	save, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
 	defer cancel()
 	return p.store.SaveE2BSandbox(save, spec.OwnerID, spec.ProjectID, p.endpoint, previousID, id, encoded)
 }

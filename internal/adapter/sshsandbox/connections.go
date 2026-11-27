@@ -2,6 +2,7 @@ package sshsandbox
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -12,13 +13,15 @@ const (
 	projectIdleTimeout        = 30 * time.Second
 	projectConnectionAge      = 5 * time.Minute
 	maxIdleProjectConnections = 64
+	maxIdleConnectionsPerKey  = 4
 )
 
 // ProjectConnections holds idle SSH transports for retained workspace requests.
 // Each transport belongs to one lease at a time. The zero value is ready to use.
 type ProjectConnections struct {
 	mu     sync.Mutex
-	idle   map[projectConnectionKey]*idleProjectConnection
+	idle   map[projectConnectionKey][]*idleProjectConnection
+	count  int
 	closed bool
 }
 
@@ -42,42 +45,58 @@ type idleProjectConnection struct {
 }
 
 func (p *ProjectConnections) take(key projectConnectionKey) *projectConnection {
-	p.mu.Lock()
-	entry := p.idle[key]
-	delete(p.idle, key)
-	p.mu.Unlock()
-	if entry == nil {
-		return nil
-	}
-	if !entry.timer.Stop() {
+	for {
+		p.mu.Lock()
+		entries := p.idle[key]
+		if len(entries) == 0 {
+			p.mu.Unlock()
+			return nil
+		}
+		last := len(entries) - 1
+		entry := entries[last]
+		p.removeIdle(key, entries, last)
+		p.mu.Unlock()
+		if entry.timer.Stop() {
+			return entry.conn
+		}
 		_ = entry.conn.client.Close()
-		return nil
 	}
-	return entry.conn
+}
+
+func (p *ProjectConnections) removeIdle(key projectConnectionKey, entries []*idleProjectConnection, index int) {
+	if len(entries) == 1 {
+		delete(p.idle, key)
+	} else {
+		p.idle[key] = slices.Delete(entries, index, index+1)
+	}
+	p.count--
 }
 
 func (p *ProjectConnections) put(key projectConnectionKey, conn *projectConnection) error {
 	lifetime := min(projectIdleTimeout, projectConnectionAge-time.Since(conn.opened))
 	p.mu.Lock()
-	if p.closed || lifetime <= 0 || len(p.idle) >= maxIdleProjectConnections || p.idle[key] != nil {
+	if p.closed || lifetime <= 0 || p.count >= maxIdleProjectConnections || len(p.idle[key]) >= maxIdleConnectionsPerKey {
 		p.mu.Unlock()
 		return conn.client.Close()
 	}
 	if p.idle == nil {
-		p.idle = make(map[projectConnectionKey]*idleProjectConnection)
+		p.idle = make(map[projectConnectionKey][]*idleProjectConnection)
 	}
 	entry := &idleProjectConnection{conn: conn}
 	entry.timer = time.AfterFunc(lifetime, func() {
 		p.mu.Lock()
-		if p.idle[key] != entry {
+		entries := p.idle[key]
+		index := slices.Index(entries, entry)
+		if index < 0 {
 			p.mu.Unlock()
 			return
 		}
-		delete(p.idle, key)
+		p.removeIdle(key, entries, index)
 		p.mu.Unlock()
 		_ = conn.client.Close()
 	})
-	p.idle[key] = entry
+	p.idle[key] = append(p.idle[key], entry)
+	p.count++
 	p.mu.Unlock()
 	return nil
 }
@@ -89,11 +108,14 @@ func (p *ProjectConnections) Close() error {
 	p.closed = true
 	idle := p.idle
 	p.idle = nil
+	p.count = 0
 	p.mu.Unlock()
 	var err error
-	for _, entry := range idle {
-		entry.timer.Stop()
-		err = errors.Join(err, entry.conn.client.Close())
+	for _, entries := range idle {
+		for _, entry := range entries {
+			entry.timer.Stop()
+			err = errors.Join(err, entry.conn.client.Close())
+		}
 	}
 	return err
 }
