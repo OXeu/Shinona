@@ -55,6 +55,20 @@ func NewWorker(repo WorkerRepository, projects ProjectSandboxRepository, resolve
 func (w *Worker) Serve(ctx context.Context) {
 	ticker := time.NewTicker(queueInterval)
 	defer ticker.Stop()
+	// Cancel execution immediately on shutdown. Give pending completion writes
+	// one shared grace period to finish, including retries after transient errors.
+	completions, cancelCompletions := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelCompletions()
+	stopGrace := context.AfterFunc(ctx, func() {
+		timer := time.NewTimer(completionWriteTimeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			cancelCompletions()
+		case <-completions.Done():
+		}
+	})
+	defer stopGrace()
 	wake := w.controls.queueWake()
 	// Allow one pending completion per execution slot. A slow write can then
 	// block its own project without immediately consuming a model slot.
@@ -81,7 +95,7 @@ func (w *Worker) Serve(ctx context.Context) {
 				outstanding++
 				go func() {
 					defer func() { updates <- completionFinished }()
-					w.execute(ctx, item, func() { updates <- executionFinished })
+					w.execute(ctx, completions, item, func() { updates <- executionFinished })
 				}()
 				continue
 			}
@@ -102,7 +116,7 @@ func (w *Worker) Serve(ctx context.Context) {
 	}
 }
 
-func (w *Worker) execute(ctx context.Context, active *activeTurn, releaseExecution func()) {
+func (w *Worker) execute(ctx, completions context.Context, active *activeTurn, releaseExecution func()) {
 	defer active.cancel()
 	item := active.item
 	result, err := w.runSafely(active)
@@ -132,8 +146,8 @@ func (w *Worker) execute(ctx context.Context, active *activeTurn, releaseExecuti
 	completion := Completion{
 		Result: result, Steering: active.steering.close(), Status: status, UpdatedAt: finished,
 	}
-	for {
-		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), completionWriteTimeout)
+	for completions.Err() == nil {
+		saveCtx, cancel := context.WithTimeout(completions, completionWriteTimeout)
 		err := w.repo.Complete(saveCtx, item.ID, completion)
 		cancel()
 		if err == nil || errors.Is(err, ErrNotRunning) {
@@ -149,7 +163,7 @@ func (w *Worker) execute(ctx context.Context, active *activeTurn, releaseExecuti
 		w.logger.Error("persist run completion", "run_id", item.ID, "error", err)
 		retry := time.NewTimer(time.Second)
 		select {
-		case <-ctx.Done():
+		case <-completions.Done():
 			retry.Stop()
 			return
 		case <-retry.C:

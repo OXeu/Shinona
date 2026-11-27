@@ -30,7 +30,17 @@ func (r completingRepository) Complete(_ context.Context, _ string, completion C
 
 type retryCompletionRepository struct {
 	completingRepository
+	queued   chan Run
 	attempts int
+}
+
+func (r *retryCompletionRepository) ClaimNext(context.Context, time.Time) (*Run, error) {
+	select {
+	case item := <-r.queued:
+		return &item, nil
+	default:
+		return nil, nil
+	}
 }
 
 func (r *retryCompletionRepository) Complete(ctx context.Context, id string, completion Completion) error {
@@ -46,7 +56,7 @@ func (r *retryCompletionRepository) Complete(ctx context.Context, id string, com
 
 func TestWorkerRetriesCompletionAfterPanic(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		repo := &retryCompletionRepository{completingRepository{writes: make(chan Completion)}, 0}
+		repo := &retryCompletionRepository{completingRepository: completingRepository{writes: make(chan Completion)}}
 		active := &activeTurn{item: Run{ID: "turn", OwnerID: "owner", SessionID: "session"}}
 		active.ctx, active.cancel = context.WithCancel(t.Context())
 		defer active.cancel()
@@ -55,7 +65,7 @@ func TestWorkerRetriesCompletionAfterPanic(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			worker.execute(t.Context(), active, func() {})
+			worker.execute(t.Context(), t.Context(), active, func() {})
 		}()
 		first := <-repo.writes
 		if first.Status != Failed || len(first.Parts) != 1 || first.Parts[0].Output != "agent turn failed unexpectedly" {
@@ -76,6 +86,40 @@ func TestWorkerRetriesCompletionAfterPanic(t *testing.T) {
 	})
 }
 
+func TestWorkerRetriesCompletionDuringShutdown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		repo := &retryCompletionRepository{
+			completingRepository: completingRepository{writes: make(chan Completion)},
+			queued:               make(chan Run, 1),
+		}
+		repo.queued <- Run{ID: "turn", OwnerID: "owner", SessionID: "session"}
+		controls := &Controls{}
+		worker := NewWorker(repo, nil, nil, slog.New(slog.DiscardHandler), controls, 1, DefaultWorkspaceTimeouts())
+		ctx, shutdown := context.WithCancel(t.Context())
+		defer shutdown()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			worker.Serve(ctx)
+		}()
+
+		first := <-repo.writes
+		shutdown()
+		select {
+		case retried := <-repo.writes:
+			if retried.Status != first.Status || retried.UpdatedAt != first.UpdatedAt {
+				t.Fatalf("shutdown changed the pending completion: %+v, want %+v", retried, first)
+			}
+		case <-done:
+			t.Fatal("worker exited after the first completion write failed")
+		}
+		<-done
+		if len(controls.active) != 0 {
+			t.Fatal("worker retained the completed turn")
+		}
+	})
+}
+
 func TestWorkerRecordsServerShutdown(t *testing.T) {
 	lifetime, stop := context.WithCancel(t.Context())
 	defer stop()
@@ -86,7 +130,7 @@ func TestWorkerRecordsServerShutdown(t *testing.T) {
 	worker := NewWorker(repo, nil, nil, slog.New(slog.DiscardHandler), controls, 1, DefaultWorkspaceTimeouts())
 
 	stop()
-	worker.execute(lifetime, active, func() {})
+	worker.execute(lifetime, t.Context(), active, func() {})
 	completion := <-repo.writes
 	if completion.Status != Failed || len(completion.Parts) != 1 || completion.Parts[0].Text != FailureInterrupted {
 		t.Fatalf("interrupted turn was not recorded: %+v", completion)
@@ -119,6 +163,35 @@ func (r pendingCompletionRepository) Complete(ctx context.Context, id string, _ 
 		}
 	}
 	return nil
+}
+
+func TestWorkerBoundsCompletionRetriesDuringShutdown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		repo := pendingCompletionRepository{
+			queued: make(chan Run, 1), writes: make(chan string, 2),
+			permit: map[string]chan struct{}{"turn": make(chan struct{})},
+		}
+		repo.queued <- Run{ID: "turn", OwnerID: "owner", SessionID: "session"}
+		worker := NewWorker(repo, nil, nil, slog.New(slog.DiscardHandler), &Controls{}, 1, DefaultWorkspaceTimeouts())
+		ctx, shutdown := context.WithCancel(t.Context())
+		defer shutdown()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			worker.Serve(ctx)
+		}()
+
+		<-repo.writes
+		// The first attempt expires before the shutdown grace period. A retry
+		// can use the remaining time, but cannot extend the grace period.
+		time.Sleep(3 * time.Second)
+		stopping := time.Now()
+		shutdown()
+		<-done
+		if elapsed := time.Since(stopping); elapsed != completionWriteTimeout || len(repo.writes) != 1 {
+			t.Fatalf("shutdown took %v, with %d completion retries", elapsed, len(repo.writes))
+		}
+	})
 }
 
 func TestWorkerKeepsExecutingWhileCompletionsWaitForStorage(t *testing.T) {
@@ -224,7 +297,7 @@ func TestWorkerBoundsStartupAndCompletesTimedOutTurn(t *testing.T) {
 			}}, nil
 		}
 		worker := NewWorker(repo, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), controls, 1, limits)
-		worker.execute(t.Context(), active, func() {})
+		worker.execute(t.Context(), t.Context(), active, func() {})
 		completion := <-writes
 		if time.Since(start) != limits.Lifecycle || completion.Status != Failed || len(completion.Parts) != 1 || completion.Parts[0].Text != "deadline" {
 			t.Fatalf("startup ended after %v with %+v", time.Since(start), completion)
