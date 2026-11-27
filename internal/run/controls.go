@@ -178,11 +178,20 @@ func (c *Controls) cancelActive(key sessionKey, id string) bool {
 	return true
 }
 
+func (c *Controls) beginCompletion(active *activeTurn) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	active.finishing = true
+	return active.stopping
+}
+
 func (c *Controls) stopAccount(owner string) {
 	c.mu.Lock()
 	for key, active := range c.active {
 		if key.owner == owner {
-			active.stopping = true
+			if !active.finishing {
+				active.stopping = true
+			}
 			active.cancel()
 		}
 	}

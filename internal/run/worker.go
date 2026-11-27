@@ -122,11 +122,7 @@ func (w *Worker) execute(ctx, completions context.Context, active *activeTurn, r
 	item := active.item
 	result, err := w.runSafely(active)
 
-	// Freeze the terminal status before writing it to the repository.
-	w.controls.mu.Lock()
-	active.finishing = true
-	stopping := active.stopping
-	w.controls.mu.Unlock()
+	stopping := w.controls.beginCompletion(active)
 	unstarted := errors.Is(err, errClaimedProjectChanged)
 	status := Succeeded
 	switch {
@@ -181,6 +177,15 @@ func (w *Worker) runSafely(active *activeTurn) (result Result, err error) {
 		}
 	}()
 	return w.run(active.ctx, active)
+}
+
+func (w *Worker) closeTurnWorkspace(ctx context.Context, id string, workspace sandbox.Workspace) {
+	defer func() {
+		if recover() != nil {
+			w.logger.Error("panic closing turn workspace", "run_id", id, "stack", string(debug.Stack()))
+		}
+	}()
+	_ = w.workspace.closeResource(ctx, workspace.Close)
 }
 
 var diagnosticCredentials = regexp.MustCompile(`(?i)(\b(?:api[ _-]?key|client[ _-]?secret|access[ _-]?token|refresh[ _-]?token|authorization)\b["']?\s*[:=]\s*["']?(?:(?:bearer|basic)[ \t]+)?|\b(?:bearer|basic)[ \t]+)[^\s"',;&}\]]+`)
@@ -276,13 +281,16 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %w", errWorkspaceSetup, errors.Join(err, startupErr))
 	}
-	// closeResource logs cleanup failures independently of the turn's outcome.
-	defer func() { _ = w.workspace.closeResource(ctx, workspace.Close) }()
+	defer w.closeTurnWorkspace(ctx, item.ID, workspace)
 	if startupErr != nil {
+		w.controls.beginCompletion(active)
 		return Result{}, startupErr
 	}
 	detach := w.controls.publishWorkspace(active, workspace, projectID)
 	defer detach()
+	// Freeze the outcome before draining borrowed readers or closing the
+	// workspace. Neither cleanup step should accept a late stop request.
+	defer w.controls.beginCompletion(active)
 	return agent.Run(ctx, Input{
 		OwnerID: item.OwnerID, SessionID: item.SessionID, Prompt: item.Prompt, History: history, Payload: item.Payload, Steering: &active.steering,
 		ReportParts:   func(offset int, parts []TurnPart) { w.controls.reportParts(active, offset, parts) },

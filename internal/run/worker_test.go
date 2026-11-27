@@ -373,15 +373,17 @@ func TestWorkerKeepsAcquiredLeasePastStartupDeadline(t *testing.T) {
 	})
 }
 
-func TestWorkerPreservesTurnOutcomeAfterWorkspaceCleanupTimeout(t *testing.T) {
+func TestWorkerPreservesTurnOutcomeDuringWorkspaceCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		agentError error
+		panicClose bool
 		status     Status
 		failure    string
 	}{
 		{name: "answered", status: Succeeded},
 		{name: "model idle", agentError: ErrModelIdle, status: Failed, failure: "model_idle"},
+		{name: "workspace cleanup panics", panicClose: true, status: Succeeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -394,6 +396,13 @@ func TestWorkerPreservesTurnOutcomeAfterWorkspaceCleanupTimeout(t *testing.T) {
 				controls := &Controls{active: map[sessionKey]*activeTurn{active.key(): active}}
 				var cleanupError error
 				workspace := timedWorkspace{close: func(cleanup context.Context) error {
+					repo := schedulerFixture{stop: func(string) error { return ErrTurnClaimed }}
+					if err := controls.stop(ctx, repo, "owner", "session", "turn"); !errors.Is(err, ErrNotRunning) {
+						t.Errorf("stop during cleanup returned %v, want %v", err, ErrNotRunning)
+					}
+					if tc.panicClose {
+						panic("cleanup panic")
+					}
 					<-cleanup.Done()
 					cleanupError = cleanup.Err()
 					return cleanupError
@@ -409,7 +418,10 @@ func TestWorkerPreservesTurnOutcomeAfterWorkspaceCleanupTimeout(t *testing.T) {
 				worker := NewWorker(repo, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), controls, 1, DefaultWorkspaceTimeouts())
 				worker.execute(ctx, ctx, active, func() {})
 				completion := <-writes
-				if !errors.Is(cleanupError, context.DeadlineExceeded) || completion.Status != tc.status || completion.Output != "model output" {
+				if !tc.panicClose && !errors.Is(cleanupError, context.DeadlineExceeded) {
+					t.Fatalf("workspace cleanup returned %v", cleanupError)
+				}
+				if completion.Status != tc.status || completion.Output != "model output" {
 					t.Fatalf("workspace cleanup returned %v; persisted completion: %+v", cleanupError, completion)
 				}
 				var failure string
