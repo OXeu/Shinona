@@ -50,6 +50,7 @@ defineExpose({
         :disabled="!entries.length || busy"
         @update:model-value="selected = $event ? entries.map(({ path }) => path) : []"
       />
+      <UiIcon v-if="changes?.branch" name="git-branch-line" />
       <UiInline class="workspace-ellipsis" :title="changes?.branch">
         {{ changes?.branch || t('repository.changedFiles') }}
       </UiInline>
