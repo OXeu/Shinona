@@ -97,8 +97,11 @@ func writeError(c *gin.Context, err error) {
 		status = http.StatusConflict
 	case "SANDBOX_PROVIDER_UNAVAILABLE", "WORKSPACE_UNAVAILABLE":
 		status = http.StatusServiceUnavailable
-	case "MODEL_FETCH_FAILED", "PROJECT_SANDBOX_CLEANUP_FAILED":
+	case "MODEL_FETCH_FAILED", "PROJECT_SANDBOX_CLEANUP_FAILED", "OAUTH_DISCOVERY_FAILED",
+		"SSH_CONNECTION_REFUSED", "SSH_HOST_UNREACHABLE", "SSH_CONNECTION_FAILED":
 		status = http.StatusBadGateway
+	case "SSH_CONNECTION_TIMEOUT", "SSH_DOCKER_TIMEOUT":
+		status = http.StatusGatewayTimeout
 	}
 	reject(c, status, failure.code, failure.Error())
 }

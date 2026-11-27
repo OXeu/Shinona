@@ -53,6 +53,7 @@ func Attachment(reader AttachmentReader, logger *slog.Logger) http.Handler {
 			var visible bool
 			visible, err = reader.AttachmentTurnVisible(r.Context(), key.owner, key.session, key.turn)
 			if err == nil && !visible {
+				images.Delete(key)
 				httpserver.WriteError(w, http.StatusNotFound, "ATTACHMENT_NOT_FOUND", "Attachment not found.")
 				return
 			}

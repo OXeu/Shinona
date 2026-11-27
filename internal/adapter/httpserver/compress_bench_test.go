@@ -35,10 +35,10 @@ func BenchmarkZstdTranscriptEncoding(b *testing.B) {
 			}
 			var buffer bytes.Buffer
 			var encoded []byte
-			for b.Loop() {
+			encode := func() {
 				if variant.all {
 					encoded = writer.EncodeAll(fixture.Bytes(), encoded[:0])
-					continue
+					return
 				}
 				buffer.Reset()
 				writer.Reset(&buffer)
@@ -50,6 +50,10 @@ func BenchmarkZstdTranscriptEncoding(b *testing.B) {
 				if err := writer.Close(); err != nil {
 					b.Fatal(err)
 				}
+			}
+			encode()
+			for b.Loop() {
+				encode()
 			}
 			b.ReportMetric(float64(max(len(encoded), buffer.Len())), "compressed-B/op")
 		})

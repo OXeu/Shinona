@@ -13,11 +13,23 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-func TestCachedZstdEncodingFitsTheReservedSpace(t *testing.T) {
-	plain := bytes.Repeat([]byte("session snapshot"), 128)
+func TestCachedZstdEncodingUsesLengthToCheckSavings(t *testing.T) {
+	// With the low-memory encoder this compresses to 10 bytes, but EncodeAll
+	// grows its output buffer to a capacity of 16.
+	plain := bytes.Repeat([]byte("x"), 11)
 	compressed := EncodeZstdForCache(plain)
-	if compressed == nil || cap(compressed) > len(plain) {
-		t.Fatalf("the cache is allowed to retain %d bytes, got a buffer with capacity %d", len(plain), cap(compressed))
+	if len(compressed) == 0 || len(compressed) >= len(plain) || cap(compressed) != len(compressed) {
+		t.Fatalf("expected a tightly sized encoding smaller than %d bytes, got length %d and capacity %d",
+			len(plain), len(compressed), cap(compressed))
+	}
+}
+
+func TestCachedZstdEncodingFitsTheReservedSpace(t *testing.T) {
+	plain := bytes.Repeat([]byte("session snapshot"), 64)
+	compressed := EncodeZstdForCache(plain)
+	if len(compressed) == 0 || len(compressed) >= len(plain) || cap(compressed) != len(compressed) {
+		t.Fatalf("expected a smaller, tightly sized encoding of %d bytes, got length %d and capacity %d",
+			len(plain), len(compressed), cap(compressed))
 	}
 	decoder, err := zstd.NewReader(nil)
 	if err != nil {

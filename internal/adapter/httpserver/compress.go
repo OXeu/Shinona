@@ -36,8 +36,13 @@ func EncodeZstdForCache(body []byte) []byte {
 	encoder := zstdBuffers.Get().(*zstd.Encoder)
 	defer zstdBuffers.Put(encoder)
 	compressed := encoder.EncodeAll(body, nil)
-	if cap(compressed) > len(body) {
+	if len(compressed) >= len(body) {
 		return nil
+	}
+	if cap(compressed) > len(compressed) {
+		exact := make([]byte, len(compressed))
+		copy(exact, compressed)
+		return exact
 	}
 	return compressed
 }

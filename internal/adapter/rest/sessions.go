@@ -163,12 +163,12 @@ func (r *handler) transcript(c *gin.Context) {
 	}
 	c.Header("X-Content-Type-Options", "nosniff")
 	key := (transcriptPageKey{owner: owner, session: args.ID, before: before, full: !paged, zstd: zstd}).withSettings(settings)
-	cached, err := r.serveCachedTranscript(c, key)
+	cacheKey, cacheable, err := r.lookupTranscriptKey(ctx, key)
 	if err != nil {
 		r.writeTranscriptFailure(c, err)
 		return
 	}
-	if cached {
+	if cacheable && r.serveCachedTranscript(c, cacheKey) {
 		return
 	}
 	slots := r.fullTranscript
@@ -187,16 +187,10 @@ func (r *handler) transcript(c *gin.Context) {
 	}
 	defer slots.Release(1)
 
-	if waited {
-		// A request waiting for a slot can reuse a response filled in that time.
-		cached, err := r.serveCachedTranscript(c, key)
-		if err != nil {
-			r.writeTranscriptFailure(c, err)
-			return
-		}
-		if cached {
-			return
-		}
+	// A request waiting for a slot can reuse a response filled for the
+	// same snapshot it validated when it first looked in the cache.
+	if waited && cacheable && r.serveCachedTranscript(c, cacheKey) {
+		return
 	}
 	if paged {
 		err = r.pagedTranscriptResponse(c, key, settings)

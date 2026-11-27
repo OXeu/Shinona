@@ -53,6 +53,7 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 			httpserver.WriteError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "Sign in required.")
 			return
 		}
+		nextAuth := time.Now().Add(heartbeat)
 		conn, err := upgrader.Upgrade(w, r, httpserver.WebSocketTimingHeaders(w))
 		if err != nil {
 			return
@@ -70,7 +71,7 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 			if readerDone != nil {
 				<-readerDone
 			}
-			h.logSocketTimings("live", phases)
+			h.logSocketTimings(ctx, "live", phases)
 		}()
 		request, err := readLiveRequest(conn)
 		if err != nil {
@@ -105,7 +106,6 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 			}
 		}
 		var sequence uint32
-		var nextAuth time.Time
 		send := func(message *sessionpb.LiveMessage) error {
 			// Recheck at the heartbeat interval and before a frame if loading
 			// data has already taken us beyond the next check.
@@ -132,6 +132,7 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 				return err
 			}
 			defer timing.Start(ctx, "websocket_write")()
+			conn.EnableWriteCompression(len(payload) >= httpserver.MinimumCompressSize)
 			return conn.WriteMessage(websocket.BinaryMessage, payload)
 		}
 		state := liveConnection{window: run.LiveLatestPage, known: known}

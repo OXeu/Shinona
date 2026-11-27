@@ -30,10 +30,13 @@ func New(reader Reader, logger *slog.Logger) *Handler {
 	return &Handler{reader: reader, logger: logger}
 }
 
-func (h *Handler) logSocketTimings(operation string, phases *timing.Recorder) {
+func (h *Handler) logSocketTimings(ctx context.Context, operation string, phases *timing.Recorder) {
+	if !h.logger.Enabled(ctx, slog.LevelInfo) {
+		return
+	}
 	values := phases.LogValue()
 	if len(values.Group()) > 0 {
-		h.logger.Info("session transfer timing", "operation", operation, "phases", values)
+		h.logger.InfoContext(ctx, "session transfer timing", "operation", operation, "phases", values)
 	}
 }
 
@@ -49,5 +52,6 @@ func encodeProtobuf(ctx context.Context, message proto.Message) ([]byte, error) 
 	if proto.Size(message) > run.MaxLiveMessageBytes {
 		return nil, errLiveMessageTooLarge
 	}
-	return proto.Marshal(message)
+	// Generated messages reuse the size computed above when marshaled unchanged.
+	return (proto.MarshalOptions{UseCachedSize: true}).Marshal(message)
 }

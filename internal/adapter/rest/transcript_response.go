@@ -2,7 +2,7 @@ package rest
 
 import (
 	"bufio"
-	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"strconv"
@@ -35,11 +35,14 @@ const (
 )
 
 type transcriptPageKey struct {
-	owner, session, policies string
-	selected                 sandbox.Policy
-	before                   int
-	head, summary            string
-	zstd, full               bool
+	owner, session, policies                 string
+	selected                                 sandbox.Policy
+	before                                   int
+	head, project, title                     string
+	updatedAt                                int64
+	updatedNanos, zoneOffset                 int
+	turnCount                                int
+	defaultTitle, pinned, unread, zstd, full bool
 }
 
 type transcriptPageBody struct {
@@ -59,33 +62,38 @@ func (key transcriptPageKey) withSettings(settings run.Settings) transcriptPageK
 	return key
 }
 
-func (key transcriptPageKey) withState(state run.TranscriptState) (transcriptPageKey, error) {
-	summary, err := proto.Marshal(sessiontransfer.Summary(state.Session))
-	key.head, key.summary = state.HeadID, string(summary)
-	return key, err
+func (key transcriptPageKey) withState(state run.TranscriptState) transcriptPageKey {
+	session := state.Session
+	key.head, key.project, key.title = state.HeadID, session.ProjectID, session.Title
+	key.updatedAt, key.updatedNanos = session.UpdatedAt.Unix(), session.UpdatedAt.Nanosecond()
+	_, key.zoneOffset = session.UpdatedAt.Zone()
+	key.turnCount, key.pinned, key.unread = session.TurnCount, session.Pinned, session.Unread
+	key.defaultTitle = session.TurnCount == 0 && !session.CustomTitle
+	return key
 }
 
-func (r *handler) serveCachedTranscript(c *gin.Context, key transcriptPageKey) (bool, error) {
+func (r *handler) lookupTranscriptKey(ctx context.Context, key transcriptPageKey) (transcriptPageKey, bool, error) {
 	if r.transcriptPages == nil {
-		return false, nil
+		return key, false, nil
 	}
-	state, err := r.service.TranscriptState(c.Request.Context(), key.owner, key.session)
+	state, err := r.service.TranscriptState(ctx, key.owner, key.session)
 	if err != nil || state == nil || state.Session.Active {
-		return false, err
+		return key, false, err
 	}
-	key, err = key.withState(*state)
-	if err != nil {
-		return false, err
-	}
+	return key.withState(*state), true, nil
+}
+
+func (r *handler) serveCachedTranscript(c *gin.Context, key transcriptPageKey) bool {
 	lookup := timing.Start(c.Request.Context(), "transcript_response_cache_hit")
-	if hit, ok := r.transcriptPages.Get(key); ok {
-		lookup()
-		c.Header("Content-Encoding", hit.encoding)
-		c.Header("Cache-Control", "private, no-store")
-		c.Data(http.StatusOK, hit.contentType, hit.data)
-		return true, nil
+	hit, ok := r.transcriptPages.Get(key)
+	if !ok {
+		return false
 	}
-	return false, nil
+	lookup()
+	c.Header("Content-Encoding", hit.encoding)
+	c.Header("Cache-Control", "private, no-store")
+	c.Data(http.StatusOK, hit.contentType, hit.data)
+	return true
 }
 
 func (r *handler) saveTranscriptResponse(c *gin.Context, key transcriptPageKey, state run.TranscriptState, capture *boundedCapture) {
@@ -94,14 +102,10 @@ func (r *handler) saveTranscriptResponse(c *gin.Context, key transcriptPageKey, 
 	}
 	// Use the state captured with these turns, even if a concurrent write
 	// changed the session after the initial cache lookup.
-	key, err := key.withState(state)
-	if err != nil {
-		r.logger.Debug("encode transcript cache key", "error", err)
-		return
-	}
+	key = key.withState(state)
 	encoding := c.Writer.Header().Get("Content-Encoding")
 	r.transcriptPages.Put(key, transcriptPageBody{c.Writer.Header().Get("Content-Type"), encoding, capture.Bytes()},
-		capture.Cap()+len(key.owner)+len(key.session)+len(key.policies)+len(key.head)+len(key.summary)+len(key.selected))
+		capture.Cap()+len(key.owner)+len(key.session)+len(key.policies)+len(key.head)+len(key.project)+len(key.title)+len(key.selected))
 }
 
 func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey, settings run.Settings) error {
@@ -133,9 +137,6 @@ func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey,
 			}
 			turns[i] = body
 		}
-		if r.transcriptPages != nil && !page.Session.Active {
-			capture = &boundedCapture{}
-		}
 	}
 	header, err := proto.Marshal(meta)
 	if err != nil {
@@ -148,6 +149,9 @@ func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey,
 		size += protowire.SizeTag(pageTurnField) + protowire.SizeBytes(len(turn))
 	}
 	compress := key.zstd && size >= httpserver.MinimumCompressSize
+	if r.transcriptPages != nil && page != nil && !page.Session.Active && (compress || size <= maxCachedTranscriptResponse) {
+		capture = &boundedCapture{}
+	}
 	if !compress {
 		c.Header("Content-Length", strconv.Itoa(size))
 	}
@@ -177,19 +181,44 @@ func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey,
 }
 
 type boundedCapture struct {
-	bytes.Buffer
+	chunks   [][]byte
+	length   int
 	overflow bool
 }
 
-func (b *boundedCapture) Write(data []byte) (int, error) {
-	if len(data) > maxCachedTranscriptResponse-b.Len() {
-		b.overflow = true
-		b.Buffer = bytes.Buffer{}
+func (b *boundedCapture) Bytes() []byte {
+	if len(b.chunks) == 1 {
+		return b.chunks[0]
 	}
-	if b.overflow {
+	body := make([]byte, 0, b.length)
+	for _, chunk := range b.chunks {
+		body = append(body, chunk...)
+	}
+	return body
+}
+
+func (b *boundedCapture) Len() int { return b.length }
+
+// Each chunk is allocated to the exact size written.
+func (b *boundedCapture) Cap() int { return b.length }
+
+func (b *boundedCapture) Write(data []byte) (int, error) {
+	if b.overflow || len(data) == 0 {
 		return len(data), nil
 	}
-	return b.Buffer.Write(data)
+	if len(data) > maxCachedTranscriptResponse-b.Len() {
+		b.overflow = true
+		b.chunks = nil
+		b.length = 0
+		return len(data), nil
+	}
+	// Large exports can overrun the cache limit. Avoid reallocating and
+	// copying their prefix as it grows, and join only a cacheable response.
+	chunk := make([]byte, len(data))
+	copy(chunk, data)
+	b.chunks = append(b.chunks, chunk)
+	b.length += len(data)
+	return len(data), nil
 }
 
 type transcriptWire struct {
