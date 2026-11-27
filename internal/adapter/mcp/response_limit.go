@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -32,7 +34,19 @@ func (t responseLimitTransport) RoundTrip(req *http.Request) (*http.Response, er
 		_ = resp.Body.Close()
 		return nil, errMCPResponseTooLarge
 	}
-	resp.Body = limitedResponseBody{http.MaxBytesReader(nil, resp.Body, limit)}
+	body := limitedResponseBody{http.MaxBytesReader(nil, resp.Body, limit)}
+	resp.Body = body
+	if req.Method == http.MethodPost && resp.StatusCode == http.StatusOK && mediaType == "application/json" {
+		// A JSON reply is a single bounded message. Read it before handing it
+		// to the SDK so cancellation or truncation fails this HTTP request.
+		// An error in the SDK's asynchronous JSON reader closes the session.
+		data, err := io.ReadAll(body)
+		_ = body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read MCP JSON response: %w", err)
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(data))
+	}
 	return resp, nil
 }
 

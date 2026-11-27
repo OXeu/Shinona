@@ -122,6 +122,89 @@ func TestMCPToolReleasesStreamWhenItsResultArrives(t *testing.T) {
 	}
 }
 
+func TestMCPIncompleteJSONResponseKeepsSessionUsable(t *testing.T) {
+	t.Run("truncated", func(t *testing.T) {
+		testMCPIncompleteJSONResponse(t, 0)
+	})
+	t.Run("deadline", func(t *testing.T) {
+		testMCPIncompleteJSONResponse(t, 250*time.Millisecond)
+	})
+}
+
+func testMCPIncompleteJSONResponse(t *testing.T, deadline time.Duration) {
+	t.Helper()
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+	sdk.AddTool(server, &sdk.Tool{Name: "echo"}, func(_ context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "complete"}}}, nil, nil
+	})
+	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server },
+		&sdk.StreamableHTTPOptions{JSONResponse: true})
+	var calls atomic.Int32
+	firstSession := make(chan string, 1)
+	secondSession := make(chan string, 1)
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, err := io.ReadAll(r.Body)
+			var request struct{ Method string }
+			if err != nil || json.Unmarshal(body, &request) != nil {
+				t.Error("could not read the MCP request")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if request.Method == "tools/call" {
+				switch calls.Add(1) {
+				case 1:
+					firstSession <- r.Header.Get("Mcp-Session-Id")
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Content-Length", "100")
+					_, _ = io.WriteString(w, `{"jsonrpc":"2.0",`)
+					if deadline != 0 {
+						w.(http.Flusher).Flush()
+						<-r.Context().Done()
+					}
+					return
+				case 2:
+					secondSession <- r.Header.Get("Mcp-Session-Id")
+				}
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(fixture.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	servers := NewServers(settings.MCPConfig{{Name: "fixture", URL: fixture.URL}}, fixture.Client(), nil)
+	tools, release, err := servers.Open(ctx, "owner", []string{"fixture"})
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("open fixture: %d tools, %v", len(tools), err)
+	}
+	defer func() { _ = release() }()
+	callCtx := ctx
+	if deadline != 0 {
+		var stop context.CancelFunc
+		callCtx, stop = context.WithTimeout(ctx, deadline)
+		defer stop()
+	}
+	result, err := tools[0].Execute(callCtx, nil)
+	if err == nil || result.Text != "" || ctx.Err() != nil {
+		t.Fatalf("expected an isolated body read error: %+v, %v", result, err)
+	}
+	if deadline != 0 {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected a tool deadline: %v", err)
+		}
+	} else if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("expected a truncated response: %v", err)
+	}
+	if result, err := tools[0].Execute(ctx, nil); err != nil || result.Text != "complete" {
+		t.Fatalf("next call after a truncated response: %+v, %v", result, err)
+	}
+	if first, second := <-firstSession, <-secondSession; first == "" || first != second || calls.Load() != 2 {
+		t.Fatalf("expected one POST per call within the same session, got %d calls and session IDs %q and %q", calls.Load(), first, second)
+	}
+}
+
 func TestMCPRejectsOversizedToolResponse(t *testing.T) {
 	for _, tc := range []struct {
 		name, want string
