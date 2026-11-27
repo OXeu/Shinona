@@ -162,7 +162,9 @@ async function copy() {
     <UiMarkdown class="agent-answer" :hidden="!turn.output" :text="turn.output" />
     <UiBox class="agent-message-meta" :hidden="!settled">
       <UiInline :hidden="!tokenUsage" class="agent-token-usage">{{ tokenUsage }}</UiInline>
-      <UiTime :datetime="turn.updatedAt" :title="formatTime(turn.updatedAt)">{{ formatRelativeTime(turn.updatedAt, now, { maxDays: 3 }) }}</UiTime>
+      <UiTime :datetime="turn.updatedAt" :title="formatTime(turn.updatedAt)">
+        {{ formatRelativeTime(turn.updatedAt, now, { maxDays: 3 }) }}
+      </UiTime>
       <UiIconButton
         class="message-action agent-copy"
         icon="file-copy-line"

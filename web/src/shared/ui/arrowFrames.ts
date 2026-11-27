@@ -96,7 +96,9 @@ export async function mountArrowFrame({ slot, title, signal, onWait, onRevoke, p
 
   const element = document.createElement('iframe')
   let markReady = () => {}
-  const ready = new Promise<void>(resolve => { markReady = resolve })
+  const ready = new Promise<void>(resolve => {
+    markReady = resolve
+  })
   let disposed = false
   function release() {
     if (disposed) return

@@ -1,4 +1,4 @@
-import { defineComponent, h, mergeProps } from 'vue'
+import { computed, defineComponent, h, mergeProps } from 'vue'
 import type { PropType } from 'vue'
 
 function element(tag: keyof HTMLElementTagNameMap, defaults: Record<string, string> = {}) {
@@ -11,10 +11,20 @@ function element(tag: keyof HTMLElementTagNameMap, defaults: Record<string, stri
       },
     },
     setup(props, { attrs, slots }) {
+      const elementRef = computed(() => {
+        const callback = props.elementRef
+        if (!callback) return
+        let previous: HTMLElement | null = null
+        return (value: unknown) => {
+          const element = value instanceof HTMLElement ? value : null
+          if (element === previous) return
+          previous = element
+          callback(element)
+        }
+      })
       return () => {
-        const elementRef = props.elementRef
         const bindings = mergeProps(defaults, attrs)
-        if (elementRef) bindings.ref = (value: unknown) => elementRef(value instanceof HTMLElement ? value : null)
+        if (elementRef.value) bindings.ref = elementRef.value
         return h(tag, bindings, slots.default?.())
       }
     },

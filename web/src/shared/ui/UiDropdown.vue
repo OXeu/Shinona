@@ -86,7 +86,9 @@ function syncPositioning() {
   emit('open-change', !!dropdown?.open)
   setPopover(!!dropdown?.open)
   if (!dropdown?.open) {
-    dropdown?.querySelectorAll<HTMLDetailsElement>('details[open]').forEach((child) => { child.open = false })
+    dropdown?.querySelectorAll<HTMLDetailsElement>('details[open]').forEach((child) => {
+      child.open = false
+    })
     return
   }
   positionMenu()

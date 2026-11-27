@@ -3,7 +3,14 @@ import { t } from '../../shared/i18n'
 import UiIcon from '../../shared/ui/UiIcon.vue'
 import { UiBox, UiButton, UiPre } from '../../shared/ui/elements'
 
-defineProps<{ text: string; tone?: 'error'; retryable?: boolean; retryDisabled?: boolean; showDetails?: boolean }>()
+defineProps<{
+  text: string
+  tone?: 'error'
+  retryable?: boolean
+  retryDisabled?: boolean
+  retryLabel?: string
+  showDetails?: boolean
+}>()
 const emit = defineEmits<{ retry: []; details: [] }>()
 </script>
 
@@ -18,7 +25,7 @@ const emit = defineEmits<{ retry: []; details: [] }>()
         :disabled="retryDisabled"
         @click="emit('retry')"
       >
-        {{ t('chat.retryTurn') }}
+        {{ retryLabel ?? t('chat.retryTurn') }}
       </UiButton>
       <UiButton class="system-message-action" :hidden="!showDetails" @click="emit('details')">
         {{ t('chat.failureDetails') }}

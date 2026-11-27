@@ -6,7 +6,9 @@ import { t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
 import { projectTargetId } from './projectScope'
 import { sessionApi } from './sessionApi'
-import type { ComposerAction, ComposerPayload, ComposerRunOptions, ImageAttachment, PendingAction, PendingMessage, SessionSummary } from './sessionApi'
+import type {
+  ComposerAction, ComposerPayload, ComposerRunOptions, ImageAttachment, PendingAction, PendingMessage, SessionSummary,
+} from './sessionApi'
 import { useSessionStore } from './sessionStore'
 import type { useSessionTranscript } from './useSessionTranscript'
 

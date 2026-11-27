@@ -31,12 +31,13 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
     const entry = session.value
     if (!entry) return null
     const earlier = entry.earlierTurn
-    if (!earlier) return { ...entry, turns: pageTurns.value }
-    const turns = [...pageTurns.value]
-    const found = turns.findIndex((turn) => turn.sequence >= earlier.sequence)
-    const index = found < 0 ? turns.length : found
-    turns.splice(index, turns[index]?.id === earlier.id ? 1 : 0, earlier)
-    return { ...entry, turns }
+    const turns = pageTurns.value
+    if (!earlier || !turns.some((turn) => turn.id === earlier.id)) return { ...entry, turns }
+    return {
+      ...entry,
+      turns: turns.map((turn) => turn.id === earlier.id ? earlier : turn),
+      earlierTurn: undefined,
+    }
   })
   let current: SessionUpdates | undefined
   let reading: SessionUpdates | undefined
@@ -46,13 +47,12 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
     const previousRunning = runningTurn.value?.id
     const first = entry.turns[0]
     const displayed = pageTurns.value
-    // Keep known completed turns as the live page advances. A revert can
-    // keep the same prefix while dropping its suffix.
+    // Keep the loaded prefix when the new page still overlaps it. A revert
+    // can keep the same prefix while dropping its suffix.
     const boundary = first ? displayed.findIndex((turn) => turn.id === first.id) : -1
     const earlier = entry.earlierTurn
-    const prefix = boundary > 0 ? displayed.slice(0, boundary) : []
-    if (prefix.length && prefix.every((turn) => earlier?.id === turn.id || (turn.status !== 'QUEUED' && turn.status !== 'RUNNING'))) {
-      history.value.turns = prefix.map((turn) => earlier?.id === turn.id ? earlier : turn)
+    if (boundary > 0) {
+      history.value.turns = displayed.slice(0, boundary).map((turn) => earlier?.id === turn.id ? earlier : turn)
     } else {
       history.value = { turns: [], nextBeforeSequence: entry.nextBeforeSequence ?? 0 }
     }
@@ -98,7 +98,7 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
   async function markRead(scope: SessionUpdates) {
     const entry = session.value
     if (scope.signal.aborted) return
-    if (!entry?.unread || entry.id !== scope.id || document.visibilityState !== 'visible' || reading === scope) return
+    if (!entry?.unread || entry.active || document.hidden || reading === scope) return
     const turn = entry.turns.at(-1)
     if (!turn) return
     reading = scope
@@ -152,13 +152,12 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
   }
 
   function resume() {
-    refreshPaused.value = false
-    current?.wake()
+    current?.retryNow()
   }
 
   function resumeVisible() {
-    resume()
-    if (current && !document.hidden) void markRead(current)
+    current?.wake()
+    if (current) void markRead(current)
   }
 
   watch(sessionId, (id, _, onCleanup) => {
@@ -170,7 +169,6 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
     policy.value = null
     if (!id) return
     const scope: SessionUpdates = new SessionUpdates(id, {
-      active: () => session.value?.active ?? true,
       sync: (entry, policy) => applySession(scope, entry, policy),
       progress: (update) => {
         const entry = session.value
@@ -184,9 +182,10 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
       },
       missing: navigation.missing,
       unauthorized: navigation.unauthorized,
-      failed: (retrying) => {
+      failed: (retrying, reason) => {
         refreshPaused.value = !retrying
-        navigation.loadError(t(retrying ? 'chat.loadRetry' : 'chat.loadFailed'))
+        if (reason) navigation.loadError(t(reason === 'too-large' ? 'chat.liveTooLarge' : 'chat.livePolicyViolation'))
+        else navigation.loadError(t(retrying ? 'chat.loadRetry' : 'chat.loadFailed'))
       },
     })
     current = scope

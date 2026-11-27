@@ -12,7 +12,9 @@ export function navigateToOAuth(raw: string) {
   location.assign(url.href)
 }
 
-export async function request(path: string, body?: unknown, signal?: AbortSignal, method = body === undefined ? 'GET' : 'POST'): Promise<Response> {
+export async function request(
+  path: string, body?: unknown, signal?: AbortSignal, method = body === undefined ? 'GET' : 'POST',
+): Promise<Response> {
   return checkedFetch(path, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },

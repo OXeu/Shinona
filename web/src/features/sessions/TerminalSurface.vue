@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css'
 import { t } from '../../shared/i18n'
 import { notify } from '../../shared/notifications'
 import { UiBox } from '../../shared/ui/elements'
+import { signInRequired } from '../../shared/webSocketClose'
 import { terminalApi } from './terminalApi'
 
 const props = defineProps<{ sessionId: string; terminalId: string }>()
@@ -20,6 +21,10 @@ let socket: WebSocket | undefined
 let observer: ResizeObserver | undefined
 let frame = 0
 let ready = false
+
+function setSurface(element: HTMLElement | null) {
+  surface.value = element
+}
 
 function sendSize() {
   if (!ready || socket?.readyState !== WebSocket.OPEN || !terminal) return
@@ -107,7 +112,7 @@ function connect() {
     ready = false
     if (ended || code === 1000) {
       emit('settled')
-    } else if (code === 4401) {
+    } else if (code === signInRequired) {
       emit('unauthorized')
     } else {
       emit('disconnected')
@@ -153,7 +158,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <UiBox :element-ref="element => surface = element" class="terminal-surface" />
+  <UiBox :element-ref="setSurface" class="terminal-surface" />
 </template>
 
 <style lang="less" scoped>

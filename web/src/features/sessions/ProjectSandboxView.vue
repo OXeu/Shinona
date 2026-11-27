@@ -167,7 +167,7 @@ async function perform() {
     }
   } catch (error) {
     if (!signal.aborted) {
-      const previous = snapshot.value?.config.provider
+      const previous = providerFor(selection)
       if (operation === 'save' && previous && previous !== next.value.provider &&
         error instanceof HttpError && error.code === 'PROJECT_SANDBOX_CLEANUP_FAILED') {
         skipCleanupFor.value = previous
@@ -307,7 +307,12 @@ onUnmounted(() => request.abort())
 .back-link { display: inline-flex; gap: 5px; align-items: center; margin: 0 0 12px -8px; padding: 4px 8px; }
 .project-name { margin-top: 4px; color: var(--muted); }
 .sandbox-section { margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
-.status-header, .status-body:not([hidden]), .sandbox-actions:not([hidden]) { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.status-header, .status-body:not([hidden]), .sandbox-actions:not([hidden]) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .status-header { justify-content: space-between; }
 .status-body:not([hidden]), .sandbox-actions:not([hidden]) { margin-top: 10px; }
 .sandbox-hint, .status-body { color: var(--muted); }

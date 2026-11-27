@@ -39,7 +39,9 @@ const selected = computed(() => props.hideAll ? store.draftProject : store.selec
 const selectedKey = computed(() => projectScopeKey(selected.value))
 const label = computed(() => choices.value.find((item) => item.key === selectedKey.value)?.name ??
   t(props.hideAll ? 'projects.default' : 'projects.all'))
-const dialogTitle = computed(() => t(action.value === 'add' ? 'projects.add' : action.value === 'rename' ? 'projects.rename' : 'projects.remove'))
+const dialogTitle = computed(() => t(
+  action.value === 'add' ? 'projects.add' : action.value === 'rename' ? 'projects.rename' : 'projects.remove',
+))
 
 function openDialog(next: typeof action.value, project?: Project) {
   action.value = next

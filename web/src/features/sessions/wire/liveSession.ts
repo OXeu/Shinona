@@ -1,5 +1,6 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 
+import { signInRequired } from '../../../shared/webSocketClose'
 import type { AgentSession, SandboxSettings, Turn } from '../sessionApi'
 import { decodeRunOptions, decodeSandboxSettings, decodeSessionSummary, decodeTurn, decodeTurnPart } from './sessionMessages'
 import { LiveMessageSchema, LiveRequestSchema } from './session_transfer_pb'
@@ -7,13 +8,17 @@ import type { LiveProgress, LiveSync } from './session_transfer_pb'
 
 const endpoint = '/api/v1/live'
 const maxPayload = 64 * 1024 * 1024
-const signInRequired = 4401
+const policyViolation = 1008
+const messageTooBig = 1009
+
+export type LiveCloseFailure = 'policy' | 'too-large'
 
 interface LiveCallbacks {
   sync: (session: AgentSession, settings: SandboxSettings) => void
   progress: (turn: Turn) => void
   missing: () => void
   unauthorized: () => void
+  failed: (reason: LiveCloseFailure) => void
 }
 
 class SessionState {
@@ -24,11 +29,8 @@ class SessionState {
     if (initial.earlierTurn) this.turns.set(initial.earlierTurn.id, initial.earlierTurn)
   }
 
-  sync(update: LiveSync, callbacks: LiveCallbacks) {
-    if (!update.session) {
-      callbacks.missing()
-      return
-    }
+  sync(update: LiveSync) {
+    if (!update.session) return
     if (!update.sandboxSettings) throw new Error('Live session is missing settings.')
     const changes = new Map(update.changedTurns.map((item) => [item.id, decodeTurn(item)]))
     const getTurn = (id: string) => {
@@ -40,11 +42,10 @@ class SessionState {
     const earlierTurn = update.earlierTurnId ? getTurn(update.earlierTurnId) : undefined
     this.turns = new Map(turns.map((turn) => [turn.id, turn]))
     if (earlierTurn) this.turns.set(earlierTurn.id, earlierTurn)
-    callbacks.sync({
+    return [{
       ...decodeSessionSummary(update.session), turns, earlierTurn,
       lastOptions: decodeRunOptions(update.lastOptions), nextBeforeSequence: update.nextBeforeSequence,
-    },
-      decodeSandboxSettings(update.sandboxSettings))
+    }, decodeSandboxSettings(update.sandboxSettings)] as const
   }
 
   progress(delta: LiveProgress) {
@@ -106,16 +107,26 @@ export async function watchLiveSession(initial: AgentSession, callbacks: LiveCal
       close()
       reject(new Error('Live session connection ended.'))
     }
-    signal.addEventListener('abort', () => { close(); resolve() }, options)
-    socket.addEventListener('error', fail, options)
-    socket.addEventListener('close', ({ code }) => {
-      if (code !== signInRequired) {
-        fail()
-        return
-      }
+    function finish() {
       close()
       resolve()
-      callbacks.unauthorized()
+    }
+    signal.addEventListener('abort', finish, options)
+    // The browser also emits close after a socket error. Wait for its code before deciding whether to retry.
+    socket.addEventListener('close', ({ code }) => {
+      switch (code) {
+        case signInRequired:
+          finish()
+          callbacks.unauthorized()
+          break
+        case policyViolation:
+        case messageTooBig:
+          finish()
+          callbacks.failed(code === policyViolation ? 'policy' : 'too-large')
+          break
+        default:
+          fail()
+      }
     }, options)
     socket.addEventListener('open', () => {
       try {
@@ -135,8 +146,18 @@ export async function watchLiveSession(initial: AgentSession, callbacks: LiveCal
         clearTimeout(timer)
         timer = setTimeout(fail, 35_000)
         switch (message.item.case) {
-          case 'sync': state.sync(message.item.value, callbacks); break
-          case 'progress': callbacks.progress(state.progress(message.item.value)); break
+          case 'sync': {
+            const update = state.sync(message.item.value)
+            if (update) callbacks.sync(...update)
+            else {
+              finish()
+              callbacks.missing()
+            }
+            break
+          }
+          case 'progress':
+            callbacks.progress(state.progress(message.item.value))
+            break
           case 'heartbeat': break
           default: throw new Error('Invalid live session message.')
         }

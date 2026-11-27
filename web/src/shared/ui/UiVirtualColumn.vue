@@ -18,8 +18,13 @@ const startHeight = ref(0)
 // Remove the start control's space in the same update that prepends the last page.
 const startPadding = computed(() => 30 + (props.showStart ? startHeight.value : 0))
 watch(start, (element, _, onCleanup) => {
-  if (!element) return
-  const measureStart = () => { startHeight.value = element.offsetHeight }
+  if (!element) {
+    startHeight.value = 0
+    return
+  }
+  const measureStart = () => {
+    startHeight.value = element.offsetHeight
+  }
   const observer = new ResizeObserver(measureStart)
   measureStart()
   observer.observe(element)

@@ -206,7 +206,9 @@ onUnmounted(() => request.abort())
         <UiButton class="secondary-button" :disabled="busy || readingKey || !canTest" @click="testDraft">
           {{ t(testing === draft ? 'ssh.testing' : 'ssh.test') }}
         </UiButton>
-        <UiButton type="submit" :disabled="busy || readingKey || !canSave">{{ t(submitting ? 'settings.saving' : 'settings.save') }}</UiButton>
+        <UiButton type="submit" :disabled="busy || readingKey || !canSave">
+          {{ t(submitting ? 'settings.saving' : 'settings.save') }}
+        </UiButton>
       </UiBox>
     </UiForm>
   </UiSection>

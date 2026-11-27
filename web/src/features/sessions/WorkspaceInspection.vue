@@ -20,6 +20,10 @@ const error = ref('')
 const lines = computed(() => props.inspection.diff ? diffLines(preview.value?.text ?? '') : [])
 let reading: AbortController | undefined
 
+function setPanel(element: HTMLElement | null) {
+  panel.value = element
+}
+
 async function refresh() {
   if (loading.value) return
   reading = new AbortController()
@@ -48,7 +52,7 @@ onUnmounted(() => reading?.abort())
 
 <template>
   <UiSection
-    :element-ref="element => panel = element"
+    :element-ref="setPanel"
     class="workspace-view"
     :aria-label="inspection.title"
     :aria-busy="loading"

@@ -30,17 +30,19 @@ const mountedTabs = computed(() => tabs.value.filter(({ id }) => visited.value.h
 const loading = ref(true)
 const changing = ref(false)
 
+function setTabList(element: HTMLElement | null) {
+  tabList.value = element
+}
+
 function select(id: string | null) {
-  if (settledTab.value && settledTab.value !== id) {
-    discard(settledTab.value)
-    settledTab.value = null
-  }
+  if (settledTab.value && settledTab.value !== id) discard(settledTab.value)
   if (id) visited.value.add(id)
   active.value = id
   rememberTerminalTab(auth.user?.id, props.sessionId, id)
 }
 
 function discard(id: string) {
+  if (settledTab.value === id) settledTab.value = null
   tabs.value = tabs.value.filter(tab => tab.id !== id)
   visited.value.delete(id)
 }
@@ -51,17 +53,26 @@ function settle(id: string) {
 }
 
 async function checkDisconnectedTab(id: string) {
+  const checking = checkingTabs.value.size > 0
   checkingTabs.value.add(id)
+  if (checking) return
   try {
     const entries = await terminalApi.list(props.sessionId, request.signal)
-    if (request.signal.aborted || !tabs.value.some(tab => tab.id === id)) return
-    if (entries.some(tab => tab.id === id)) notify.error(t('terminal.unavailable'))
-    else settle(id)
+    if (request.signal.aborted) return
+    const disconnected = tabs.value.filter(tab => checkingTabs.value.has(tab.id) && settledTab.value !== tab.id)
+    const available = new Set(entries.map(tab => tab.id))
+    for (const tab of disconnected) {
+      if (!available.has(tab.id)) settle(tab.id)
+    }
+    if (disconnected.some(tab => available.has(tab.id))) notify.error(t('terminal.unavailable'))
   } catch (error) {
-    if (!request.signal.aborted && error instanceof HttpError && error.status === 404) settle(id)
+    if (request.signal.aborted) return
+    if (error instanceof HttpError && error.status === 404) {
+      for (const id of checkingTabs.value) settle(id)
+    }
     report(error, 'terminal.unavailable')
   } finally {
-    checkingTabs.value.delete(id)
+    checkingTabs.value.clear()
   }
 }
 
@@ -97,12 +108,19 @@ async function add(focus: boolean) {
   }
 }
 
-async function remove(id: string, index: number) {
+async function remove(id: string) {
   if (changing.value) return
   changing.value = true
   try {
-    await terminalApi.close(props.sessionId, id, request.signal)
+    if (settledTab.value !== id) {
+      try {
+        await terminalApi.close(props.sessionId, id, request.signal)
+      } catch (error) {
+        if (settledTab.value !== id) throw error
+      }
+    }
     if (request.signal.aborted) return
+    const index = tabs.value.findIndex(tab => tab.id === id)
     discard(id)
     if (active.value === id) select(tabs.value[Math.min(index, tabs.value.length - 1)]?.id ?? null)
     if (!tabs.value.length) emit('empty')
@@ -149,7 +167,7 @@ onUnmounted(() => request.abort())
   <UiSection class="terminal-panel" :aria-label="t('terminal.heading')">
     <UiHeader class="terminal-header">
       <UiBox
-        :element-ref="element => tabList = element"
+        :element-ref="setTabList"
         class="terminal-tabs"
         role="tablist"
         :aria-label="t('terminal.heading')"
@@ -171,7 +189,7 @@ onUnmounted(() => request.abort())
             icon="close-line"
             :label="t('terminal.closeTab', { number: tab.number })"
             :disabled="changing"
-            @click="remove(tab.id, index)"
+            @click="remove(tab.id)"
           />
         </UiBox>
       </UiBox>

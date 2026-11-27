@@ -15,10 +15,20 @@ import PendingMessages from './PendingMessages.vue'
 import { resolveComposerDefaults, runningAction } from './composerPreferences'
 import type { ComposerSelection } from './composerPreferences'
 import { formatCompactTokens } from './presentation'
-import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment, PendingAction, PendingMessage } from './sessionApi'
+import type {
+  AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions,
+  ImageAttachment, PendingAction, PendingMessage,
+} from './sessionApi'
 import { useSessionStore } from './sessionStore'
 
-const props = defineProps<{ session: AgentSession | null; catalog: ComposerOptions; busy: boolean; draft?: boolean; draftLocked?: boolean; savingDefaults: boolean }>()
+const props = defineProps<{
+  session: AgentSession | null
+  catalog: ComposerOptions
+  busy: boolean
+  draft?: boolean
+  draftLocked?: boolean
+  savingDefaults: boolean
+}>()
 const emit = defineEmits<{
   send: [action: ComposerAction, payload: ComposerPayload]
   stop: [id: string]
@@ -69,8 +79,12 @@ const runOptions = computed<ComposerRunOptions>(() => ({
 }))
 defineExpose({ runOptions })
 
-const active = computed(() => props.session?.turns.find((turn) => turn.status === 'RUNNING'))
-const queued = computed(() => (props.session?.turns.filter((turn) => turn.status === 'QUEUED') ?? [])
+const turns = computed(() => {
+  const { turns = [], earlierTurn } = props.session ?? {}
+  return earlierTurn ? [earlierTurn, ...turns] : turns
+})
+const active = computed(() => turns.value.find((turn) => turn.status === 'RUNNING'))
+const queued = computed(() => turns.value.filter((turn) => turn.status === 'QUEUED')
   .sort((a, b) => a.sequence - b.sequence))
 const pending = computed<PendingMessage[]>(() => {
   const turn = active.value
@@ -93,13 +107,13 @@ const actionMenuAvailable = computed(() => primaryAction.value === 'queue' && ca
 const contextUsage = computed(() => {
   const running = active.value
   const model = running ? running.model || props.catalog.defaultModel : selectedModel.value
-  const turns = props.session?.turns.filter(turn => (turn.model || props.catalog.defaultModel) === model) ?? []
+  const matching = turns.value.filter(turn => (turn.model || props.catalog.defaultModel) === model)
   const live = running?.liveContext
   return {
     tokens: (live && !live.estimated ? live.tokens : 0) ||
-      turns.findLast(turn => turn.contextTokens > 0)?.contextTokens || 0,
+      matching.findLast(turn => turn.contextTokens > 0)?.contextTokens || 0,
     window: props.catalog.models.find(entry => entry.id === model)?.contextWindow || live?.window ||
-      turns.findLast(turn => turn.contextWindow > 0)?.contextWindow || 0,
+      matching.findLast(turn => turn.contextWindow > 0)?.contextWindow || 0,
   }
 })
 const usage = computed(() => {
@@ -222,7 +236,9 @@ function remove(index: number) {
   images.value = images.value.filter((_, position) => position !== index)
 }
 
-onUnmounted(() => { disposed = true })
+onUnmounted(() => {
+  disposed = true
+})
 </script>
 
 <template>

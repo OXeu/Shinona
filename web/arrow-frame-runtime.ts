@@ -4,7 +4,7 @@ import { HostRenderer } from 'virtual:arrow-renderer'
 import { createVmRunner } from 'virtual:arrow-vm'
 import type { VmRunner } from 'virtual:arrow-vm'
 
-import contract from '../internal/adapter/pigo/arrow-view.json'
+import { scriptFile, styleFile } from '../internal/adapter/pigo/arrow-view.json'
 import { initializeArrowWasm } from './arrow-frame-quickjs'
 
 interface FrameInput {
@@ -52,7 +52,7 @@ async function render({ source, theme, lang, wasm }: FrameInput, port: MessagePo
   const host = document.createElement('arrow-sandbox')
   const surface = host.attachShadow({ mode: 'open' })
   const style = document.createElement('style')
-  style.textContent = ':where(table) { width: 100%; }\n' + (source[contract.styleFile] ?? '')
+  style.textContent = ':where(table) { width: 100%; }\n' + (source[styleFile] ?? '')
   const mountPoint = document.createElement('div')
   surface.append(style, mountPoint)
   root.append(host)
@@ -63,29 +63,38 @@ async function render({ source, theme, lang, wasm }: FrameInput, port: MessagePo
   let runner: VmRunner | undefined
   let initialTree: SerializedNode | undefined
   const initialPatches: VmPatch[] = []
-  let failed = false
+  function dispose() {
+    if (signal.aborted) return
+    lifetime.abort()
+    renderer.destroy()
+    initialTree = undefined
+    initialPatches.length = 0
+    const vm = runner
+    runner = undefined
+    // Let QuickJS release its in-flight handles when a VM callback reports the error.
+    if (vm) setTimeout(() => vm.destroy(), 0)
+  }
   const fail = () => {
-    if (failed || signal.aborted) return
-    failed = true
+    if (signal.aborted) return
+    dispose()
     port.postMessage({ type: 'error' })
+    port.close()
   }
   const renderer = new HostRenderer({
     mountPoint,
     async onEvent(handlerId, event) {
-      if (!failed) await runner?.dispatch({ type: 'event', payload: { handlerId, event } })
+      if (!signal.aborted) await runner?.dispatch({ type: 'event', payload: { handlerId, event } })
     },
     onError: fail,
   })
 
   window.addEventListener('pagehide', () => {
-    lifetime.abort()
+    dispose()
     port.close()
-    renderer.destroy()
-    runner?.destroy()
-  }, { once: true })
+  }, { once: true, signal })
 
   function receive(message: VmToHostMessage) {
-    if (signal.aborted || failed) return
+    if (signal.aborted) return
     try {
       switch (message.type) {
         case 'render':
@@ -108,9 +117,9 @@ async function render({ source, theme, lang, wasm }: FrameInput, port: MessagePo
     }
   }
   try {
-    const script = source[contract.scriptFile]
+    const script = source[scriptFile]
     if (!script) throw new Error('Missing ArrowJS source.')
-    const entryPath = '/' + contract.scriptFile
+    const entryPath = '/' + scriptFile
     const { code, descriptors } = preprocessModule(script, entryPath)
     const boot = await createVmRunner({
       compiled: {
@@ -120,7 +129,7 @@ async function render({ source, theme, lang, wasm }: FrameInput, port: MessagePo
       },
       onMessage: receive,
     })
-    if (signal.aborted || failed) {
+    if (signal.aborted) {
       boot.destroy()
       return
     }

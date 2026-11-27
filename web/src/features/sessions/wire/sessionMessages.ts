@@ -1,5 +1,7 @@
 import type { ComposerRunOptions, Policy, RunStatus, SandboxSettings, SessionSummary, Turn, TurnPart } from '../sessionApi'
-import type { RunOptions, SandboxSettings as SettingsMessage, SessionSummary as SessionMessage, Turn as TurnMessage, TurnPart as PartMessage } from './session_transfer_pb'
+import type {
+  RunOptions, SandboxSettings as SettingsMessage, SessionSummary as SessionMessage, Turn as TurnMessage, TurnPart as PartMessage,
+} from './session_transfer_pb'
 
 export function decodeRunOptions(options: RunOptions | undefined): ComposerRunOptions | null {
   if (!options) return null
@@ -13,7 +15,9 @@ export function decodeSessionSummary(message: SessionMessage): SessionSummary {
 }
 
 export function decodeTurn(message: TurnMessage): Turn {
-  const { id, sequence, prompt, status, policy, output, createdAt, startedAt, updatedAt, model, attachments, contextTokens, contextWindow } = message
+  const {
+    id, sequence, prompt, status, policy, output, createdAt, startedAt, updatedAt, model, attachments, contextTokens, contextWindow,
+  } = message
   return {
     id, sequence, prompt, status: status as RunStatus, policy: (policy ?? null) as Policy | null,
     output, createdAt, startedAt: startedAt ?? null, updatedAt, model, attachments, contextTokens, contextWindow,

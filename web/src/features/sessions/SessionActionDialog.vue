@@ -97,10 +97,14 @@ onUnmounted(() => request.abort())
           maxlength="80"
         />
       </UiBox>
-      <UiBox class="dialog-message" :hidden="dialogAction !== 'remove'">{{ t('sessions.archiveConfirm', { title: target ? sessionTitle(target) : '' }) }}</UiBox>
+      <UiBox class="dialog-message" :hidden="dialogAction !== 'remove'">
+        {{ t('sessions.archiveConfirm', { title: target ? sessionTitle(target) : '' }) }}
+      </UiBox>
       <UiBox class="form-actions">
         <UiButton class="secondary-button" :disabled="saving" @click="dialogOpen = false">{{ t('common.cancel') }}</UiButton>
-        <UiButton type="submit" :disabled="saving">{{ t(dialogAction === 'rename' ? 'sessions.saveTitle' : 'sessions.removeTitle') }}</UiButton>
+        <UiButton type="submit" :disabled="saving">
+          {{ t(dialogAction === 'rename' ? 'sessions.saveTitle' : 'sessions.removeTitle') }}
+        </UiButton>
       </UiBox>
     </UiForm>
   </UiDialog>

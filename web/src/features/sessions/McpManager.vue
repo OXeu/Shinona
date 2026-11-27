@@ -171,7 +171,11 @@ onUnmounted(() => request.abort())
         <UiBox class="mcp-detail">
           <UiInline class="mcp-name">{{ server.name }}</UiInline>
           <UiInline>{{ server.url }}</UiInline>
-          <UiInline>{{ t(server.oauth ? (server.connected ? 'mcp.oauthConnectedLabel' : 'mcp.oauth') : server.hasToken ? 'mcp.bearer' : 'mcp.noAuth') }}</UiInline>
+          <UiInline>
+            {{ t(server.oauth
+              ? (server.connected ? 'mcp.oauthConnectedLabel' : 'mcp.oauth')
+              : server.hasToken ? 'mcp.bearer' : 'mcp.noAuth') }}
+          </UiInline>
         </UiBox>
         <UiBox class="mcp-actions">
           <UiButton

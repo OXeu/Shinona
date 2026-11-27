@@ -16,7 +16,10 @@ import ChatSystemMessage from './ChatSystemMessage.vue'
 import SessionList from './SessionList.vue'
 import SessionProjectPicker from './SessionProjectPicker.vue'
 import type { SessionAction } from './presentation'
-import type { AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions, ImageAttachment, PendingAction, PendingMessage, SessionSummary, Turn } from './sessionApi'
+import type {
+  AgentSession, ComposerAction, ComposerDefaults, ComposerOptions, ComposerPayload, ComposerRunOptions,
+  ImageAttachment, PendingAction, PendingMessage, SessionSummary, Turn,
+} from './sessionApi'
 import { attachmentURL } from './sessionApi'
 
 const props = defineProps<{
@@ -54,6 +57,7 @@ const recent = computed(() => props.recentSessions
   .slice(0, 5))
 
 type Message = { id: string } & (
+  | { kind: 'history'; gap: boolean }
   | { kind: 'user'; text: string; turnId?: string; attachments?: string[] }
   | { kind: 'agent'; turn: Turn }
   | { kind: 'system'; text: string; tone?: 'error'; failedTurn?: Turn }
@@ -70,7 +74,9 @@ const retryModels = computed(() => [
 ])
 const canRetryFromDetails = computed(() => !!failureTurnId.value &&
   props.session?.turns.at(-1)?.id === failureTurnId.value && retryModels.value.length > 1)
-watch(() => props.session?.id, () => { failureDialogOpen.value = false })
+watch(() => props.session?.id, () => {
+  failureDialogOpen.value = false
+})
 
 function failurePart(turn: Turn) {
   return turn.parts.findLast((part) => part.kind === 'failure')
@@ -117,34 +123,43 @@ async function copyMessage(text: string, attachments?: string[]) {
   }
 }
 
-const messages = computed(() => {
-  const rows: Message[] = []
-  for (const turn of props.session?.turns ?? []) {
-    if (turn.status === 'QUEUED') continue
-    rows.push({ id: turn.id + '/prompt', kind: 'user', turnId: turn.id, text: turn.prompt, attachments: turn.attachments })
-    for (const [index, steer] of turn.steering.entries()) {
-      if (!steer.delivered && turn.status === 'RUNNING') continue
-      const key = turn.id + '/steer-' + index
-      rows.push({ id: key, kind: 'user', text: steer.text })
-      if (!steer.delivered) {
-        rows.push({
-          id: key + '/state', kind: 'system',
-          text: t('composer.steerUndelivered'),
-        })
-      }
-    }
-    if (turn.output || turn.parts.some((part) => part.kind !== 'failure')) {
-      rows.push({ id: turn.id + '/reply', kind: 'agent', turn })
-    }
-    if (turn.status === 'FAILED' || turn.status === 'STOPPED') {
+function appendTurn(rows: Message[], turn: Turn) {
+  if (turn.status === 'QUEUED') return
+  rows.push({ id: turn.id + '/prompt', kind: 'user', turnId: turn.id, text: turn.prompt, attachments: turn.attachments })
+  for (const [index, steer] of turn.steering.entries()) {
+    if (!steer.delivered && turn.status === 'RUNNING') continue
+    const key = turn.id + '/steer-' + index
+    rows.push({ id: key, kind: 'user', text: steer.text })
+    if (!steer.delivered) {
       rows.push({
-        id: turn.id + '/state', kind: 'system',
-        text: turn.status === 'FAILED' ? failureMessage(turn) : t('composer.stopped'),
-        tone: turn.status === 'FAILED' ? 'error' : undefined,
-        failedTurn: turn.status === 'FAILED' ? turn : undefined,
+        id: key + '/state', kind: 'system',
+        text: t('composer.steerUndelivered'),
       })
     }
   }
+  if (turn.output || turn.parts.some((part) => part.kind !== 'failure')) {
+    rows.push({ id: turn.id + '/reply', kind: 'agent', turn })
+  }
+  if (turn.status === 'FAILED' || turn.status === 'STOPPED') {
+    rows.push({
+      id: turn.id + '/state', kind: 'system',
+      text: turn.status === 'FAILED' ? failureMessage(turn) : t('composer.stopped'),
+      tone: turn.status === 'FAILED' ? 'error' : undefined,
+      failedTurn: turn.status === 'FAILED' ? turn : undefined,
+    })
+  }
+}
+
+const messages = computed(() => {
+  const rows: Message[] = []
+  const turns = props.session?.turns ?? []
+  const earlier = props.session?.earlierTurn
+  if (earlier) appendTurn(rows, earlier)
+  if (props.hasOlder) {
+    const first = turns[0]
+    rows.push({ id: 'history', kind: 'history', gap: !!earlier && !!first && earlier.sequence + 1 < first.sequence })
+  }
+  for (const turn of turns) appendTurn(rows, turn)
   for (const [source, text] of Object.entries(props.errors)) {
     if (text) rows.push({ id: 'error/' + source, kind: 'system', tone: 'error', text })
   }
@@ -162,18 +177,15 @@ const messages = computed(() => {
         :item-key="(item) => item.id"
         :bottom-inset="inset"
         :fit-content="centered"
-        :show-start="hasOlder"
       >
-        <template #start>
-          <UiBox class="conversation-history">
-            <UiButton class="secondary-button" :disabled="loadingOlder || reverting" @click="emit('loadOlder')">
-              {{ t(loadingOlder ? 'chat.loadingOlder' : 'chat.loadOlder') }}
-            </UiButton>
-          </UiBox>
-        </template>
         <template #default="{ item }">
           <UiBox class="message-row" :data-kind="item.kind">
-            <UiBox v-if="item.kind === 'user'" class="user-message">
+            <UiBox v-if="item.kind === 'history'" class="conversation-history">
+              <UiButton class="secondary-button" :disabled="loadingOlder || reverting" @click="emit('loadOlder')">
+                {{ t(loadingOlder ? 'chat.loadingOlder' : item.gap ? 'chat.loadHistoryGap' : 'chat.loadOlder') }}
+              </UiButton>
+            </UiBox>
+            <UiBox v-else-if="item.kind === 'user'" class="user-message">
               <UiBox class="message-body">
                 <UiPre :hidden="!item.text">{{ item.text }}</UiPre>
                 <UiBox class="user-message-images" :hidden="!item.attachments?.length">
@@ -215,10 +227,11 @@ const messages = computed(() => {
               v-else
               :text="item.text"
               :tone="item.tone"
-              :retryable="!!item.failedTurn && item.failedTurn.id === session?.turns.at(-1)?.id"
-              :retry-disabled="busy || !!session?.active"
+              :retryable="item.id === 'error/load' ? refreshPaused : !!item.failedTurn && item.failedTurn.id === session?.turns.at(-1)?.id"
+              :retry-disabled="item.id !== 'error/load' && (busy || !!session?.active)"
+              :retry-label="item.id === 'error/load' ? t('common.retry') : undefined"
               :show-details="!!item.failedTurn"
-              @retry="item.failedTurn && retry(item.failedTurn.id)"
+              @retry="item.failedTurn ? retry(item.failedTurn.id) : emit('refresh')"
               @details="item.failedTurn && showFailureDetails(item.failedTurn)"
             />
           </UiBox>
@@ -232,9 +245,6 @@ const messages = computed(() => {
     </template>
 
     <template #before-composer>
-      <UiButton v-if="refreshPaused" class="secondary-button" @click="emit('refresh')">
-        {{ t('common.retry') }}
-      </UiButton>
       <UiBox class="welcome-project" :hidden="hasSelection">
         <SessionProjectPicker hide-all />
       </UiBox>
@@ -300,6 +310,7 @@ const messages = computed(() => {
   display: grid;
   justify-items: center;
   gap: 0.5rem;
+  margin-inline: auto;
   padding-block-start: 1rem;
 }
 

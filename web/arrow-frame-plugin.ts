@@ -71,8 +71,11 @@ export function arrowFrame(): Plugin {
     async load(source) {
       if (source !== '\0' + id) return
       for (const file of watchFiles) this.addWatchFile(file)
+      const contract = JSON.parse(await readFile(contractPath, 'utf8')) as typeof import('../internal/adapter/pigo/arrow-view.json')
+      // Keep the host's theme data in its lazy chunk.
+      const themeExport = 'export const themeTokens = ' + JSON.stringify(contract.themeTokens) + '\n'
       if (serve) {
-        return `export default ${JSON.stringify({
+        return themeExport + `export default ${JSON.stringify({
           runtime: devPrefix + 'runtime.js', document: devPrefix + 'document.html', wasm: devPrefix + 'quickjs.wasm.gz',
         })}`
       }
@@ -84,7 +87,7 @@ export function arrowFrame(): Plugin {
       ] as const
       const exports = files.map(([key, name, source]) =>
         `${key}: import.meta.ROLLUP_FILE_URL_${this.emitFile({ type: 'asset', name, source })}`)
-      return `export default { ${exports.join(', ')} }`
+      return themeExport + `export default { ${exports.join(', ')} }`
     },
   }
 }

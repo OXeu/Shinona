@@ -178,7 +178,9 @@ onUnmounted(() => request?.abort())
     <UiBox class="admin-users-header" :hidden="!total">
       <UiInline class="admin-user-description">{{ pageLabel }}</UiInline>
       <UiBox class="admin-user-pagination">
-        <UiButton class="secondary-button" :disabled="loading || !offset" @click="load(offset - limit)">{{ t('adminUsers.previous') }}</UiButton>
+        <UiButton class="secondary-button" :disabled="loading || !offset" @click="load(offset - limit)">
+          {{ t('adminUsers.previous') }}
+        </UiButton>
         <UiButton
           class="secondary-button"
           :disabled="loading || offset + limit >= total"

@@ -1,7 +1,7 @@
 <script setup lang="ts">
+import { themeTokens } from 'virtual:arrow-frame'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import contract from '../../../../internal/adapter/pigo/arrow-view.json'
 import { languageTag, t } from '../i18n'
 import { mountArrowFrame } from './arrowFrames'
 import { UiButton } from './elements'
@@ -50,8 +50,9 @@ function revoke() {
 }
 
 function activate() {
+  const priority = !failed.value
   failed.value = false
-  void show(true)
+  void show(priority)
 }
 
 async function show(priority = false) {
@@ -80,7 +81,7 @@ async function show(priority = false) {
     await lease.ready
     if (signal.aborted) return
     const style = getComputedStyle(lease.element)
-    const theme = Object.fromEntries(contract.themeTokens.map(name => [name, style.getPropertyValue(name)]))
+    const theme = Object.fromEntries(themeTokens.map(name => [name, style.getPropertyValue(name)]))
     theme['--widget-font'] = `0.875rem/1.5 ${style.fontFamily}`
     const channel = new MessageChannel()
     port = channel.port1

@@ -6,7 +6,9 @@ import { UiImage, UiInline } from './elements'
 const props = defineProps<{ src?: string; initials: string }>()
 const loaded = ref(false)
 
-watch(() => props.src, () => { loaded.value = false })
+watch(() => props.src, () => {
+  loaded.value = false
+})
 </script>
 
 <template>
