@@ -38,7 +38,19 @@ type Resend struct {
 }
 
 func (r Resend) SendVerification(ctx context.Context, verification auth.EmailVerification) error {
-	ctx, cancel := context.WithTimeout(ctx, r.Config.Timeout)
+	config := r.Config
+	defaults := DefaultResendConfig()
+	if config.Timeout <= 0 {
+		config.Timeout = defaults.Timeout
+	}
+	if config.Endpoint == "" {
+		config.Endpoint = defaults.Endpoint
+	}
+	client := r.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	ctx, cancel := context.WithTimeout(ctx, config.Timeout)
 	defer cancel()
 	var message strings.Builder
 	if err := verificationTemplate.Execute(&message, verification); err != nil {
@@ -53,21 +65,21 @@ func (r Resend) SendVerification(ctx context.Context, verification auth.EmailVer
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.Config.Endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, config.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+r.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "shinona/"+verification.RequestID)
-	response, err := r.Client.Do(req)
+	response, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("send verification email: %w", err)
 	}
 	defer response.Body.Close()
+	_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("verification email service: HTTP %d", response.StatusCode)
 	}
-	_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	return err
 }

@@ -29,10 +29,6 @@ func (h *Handler) startOAuthLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { <-h.passwordSlots }()
-	if err := h.cancelPreviousOAuthFlow(r); err != nil {
-		h.accountError(w, err)
-		return
-	}
 	state, flow, err := h.service.BeginOAuthLink(r.Context(), config.FlowVersion, readCookie(r, sessionCookie), input.CurrentPassword)
 	if err != nil {
 		h.accountError(w, err)
@@ -41,6 +37,10 @@ func (h *Handler) startOAuthLink(w http.ResponseWriter, r *http.Request) {
 	target, err := url.Parse(config.OAuth.AuthorizationURL(state, flow))
 	if err != nil || target.Hostname() == "" || target.User != nil || (target.Scheme != "http" && target.Scheme != "https") {
 		h.accountError(w, auth.ErrOAuthDisabled)
+		return
+	}
+	if err := h.cancelPreviousOAuthFlow(r); err != nil {
+		h.accountError(w, err)
 		return
 	}
 	h.writeOAuthFlowCookie(w, r, linkFlowPrefix+state, int(auth.FlowLifetime.Seconds()))

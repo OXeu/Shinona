@@ -8,6 +8,9 @@ import (
 
 // Decode decodes an image from a bounded request and returns its detected type.
 func Decode(encoded string, limit int) ([]byte, string) {
+	if limit <= 0 || len(encoded) > base64.StdEncoding.EncodedLen(limit) {
+		return nil, ""
+	}
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, ""
@@ -21,7 +24,7 @@ func Decode(encoded string, limit int) ([]byte, string) {
 
 // DecodeAs validates a declared media type and bounds the input before decoding.
 func DecodeAs(encoded, mediaType string, limit int) []byte {
-	if !supported(mediaType) || len(encoded) > base64.StdEncoding.EncodedLen(limit) {
+	if !supported(mediaType) {
 		return nil
 	}
 	data, detected := Decode(encoded, limit)

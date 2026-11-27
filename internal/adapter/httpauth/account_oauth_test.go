@@ -116,6 +116,8 @@ func TestLinkAndUnlinkOAuthOnExistingAccount(t *testing.T) {
 	assertAccountError(t, perform(t, mux, "POST", "/auth/oauth/link", `{"currentPassword":"wrong"}`, current),
 		http.StatusForbidden, "ACCOUNT_PASSWORD_INCORRECT")
 	state, flowCookie := beginAccountLink(t, mux, current, password)
+	assertAccountError(t, perform(t, mux, "POST", "/auth/oauth/link", `{"currentPassword":"wrong"}`, current, flowCookie),
+		http.StatusForbidden, "ACCOUNT_PASSWORD_INCORRECT")
 	callback := "/auth/oauth/callback?code=subject-linked&state=" + url.QueryEscape(state)
 	link := perform(t, mux, "GET", callback, "", flowCookie, current)
 	assertStatus(t, link, http.StatusSeeOther)

@@ -63,6 +63,13 @@ func New(service *auth.Service, oauth OAuthProvider, secure bool, logger *slog.L
 }
 
 func NewWithConfig(service *auth.Service, config func() Config, limits Limits, logger *slog.Logger) *Handler {
+	defaults := DefaultLimits()
+	if limits.PasswordConcurrency <= 0 {
+		limits.PasswordConcurrency = defaults.PasswordConcurrency
+	}
+	if limits.RateLimitEntries <= 0 {
+		limits.RateLimitEntries = defaults.RateLimitEntries
+	}
 	return &Handler{
 		service: service, config: config, logger: logger,
 		loginRate:     newRequestRate[netip.Addr](limits.RateLimitEntries),
