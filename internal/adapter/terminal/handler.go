@@ -197,9 +197,9 @@ func (h handler) connect(w http.ResponseWriter, r *http.Request) {
 	}()
 	workers.Go(func() { readInput(ctx, socket, tab, cancel) })
 	workers.Go(func() {
-		keepAlive(ctx, socket, cancel, func(check context.Context) bool {
+		keepAlive(ctx, socket, cancel, heartbeat, func(check context.Context) (bool, error) {
 			user, err := h.sessionUser(request.WithContext(check))
-			return err == nil && user != nil && user.ID == owner
+			return user != nil && user.ID == owner, err
 		})
 	})
 	if relay(ctx, socket, tab) == nil {
@@ -296,8 +296,10 @@ func write(ctx context.Context, socket *websocket.Conn, kind int, data []byte) e
 	return socket.WriteMessage(kind, data)
 }
 
-func keepAlive(ctx context.Context, socket *websocket.Conn, cancel context.CancelFunc, authorized func(context.Context) bool) {
-	ticker := time.NewTicker(heartbeat)
+func keepAlive(ctx context.Context, socket *websocket.Conn, cancel context.CancelFunc,
+	interval time.Duration, authorized func(context.Context) (bool, error),
+) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	defer cancel()
 	for {
@@ -306,8 +308,15 @@ func keepAlive(ctx context.Context, socket *websocket.Conn, cancel context.Cance
 			return
 		case <-ticker.C:
 			check, stop := context.WithTimeout(ctx, socketTimeout)
-			ok := authorized(check)
+			ok, err := authorized(check)
 			stop()
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				sendClose(socket, websocket.CloseInternalServerErr, "Could not verify terminal session")
+				return
+			}
 			if !ok {
 				sendClose(socket, signIn, "Sign in required")
 				return
