@@ -83,6 +83,50 @@ func insertRunAttachments(db *gorm.DB, turn string, images []run.Image) error {
 	return db.Create(&records).Error
 }
 
+func copyRunAttachments(db *gorm.DB, source, destination string, images []run.Image) ([][]byte, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	// Capture the original bytes for the caller. The copy itself stays in SQLite.
+	var stored []runAttachmentRow
+	if err := db.Select("position", "content").Where("turn_id = ?", source).Find(&stored).Error; err != nil {
+		return nil, err
+	}
+	contents := make([][]byte, len(images))
+	for _, attachment := range stored {
+		if attachment.Position < 0 || attachment.Position >= len(contents) {
+			return nil, fmt.Errorf("invalid attachment position for turn %s", source)
+		}
+		if len(attachment.Content) == 0 {
+			return nil, fmt.Errorf("empty image %d for turn %s", attachment.Position+1, source)
+		}
+		contents[attachment.Position] = attachment.Content
+	}
+	if len(stored) != 0 {
+		if err := db.Exec(`INSERT INTO run_attachments (turn_id, position, content)
+			SELECT ?, position, content FROM run_attachments WHERE turn_id = ?`, destination, source).Error; err != nil {
+			return nil, err
+		}
+	}
+	if len(stored) == len(images) {
+		return contents, nil
+	}
+	// Migration normally moves all bytes to run_attachments. Preserve any
+	// remaining inline bytes at positions the copy did not fill.
+	inline := slices.Clone(images)
+	for index, image := range inline {
+		if contents[index] != nil {
+			inline[index].Data = ""
+		} else if image.Data == "" {
+			return nil, fmt.Errorf("missing image %d for turn %s", index+1, source)
+		}
+	}
+	if err := insertRunAttachments(db, destination, inline); err != nil {
+		return nil, err
+	}
+	return contents, nil
+}
+
 func hydrateRunAttachments(db *gorm.DB, turns []row) error {
 	imagesByTurn := make(map[string][]run.Image)
 	var ids []string

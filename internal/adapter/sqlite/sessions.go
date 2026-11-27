@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -296,6 +297,7 @@ func (r *ConversationStore) EnqueueRetry(ctx context.Context, item run.Run, opti
 
 func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitle string, queue bool, retry *run.RetryOptions) (run.Run, error) {
 	defer timing.Start(ctx, "sqlite_enqueue")()
+	var copiedImages [][]byte
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
 		err := sessionScope(tx, item.OwnerID).First(&session, "id = ?", item.SessionID).Error
@@ -331,11 +333,7 @@ func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitl
 			if err != nil {
 				return err
 			}
-			records := [...]row{row(original)}
-			if err := hydrateRunAttachments(tx, records[:]); err != nil {
-				return err
-			}
-			item.Prompt, item.Payload = records[0].Prompt, records[0].Payload
+			item.Prompt, item.Payload = original.Prompt, original.Payload
 			item.Payload.Options = retry.Apply(item.Payload.Options)
 		}
 
@@ -348,7 +346,12 @@ func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitl
 		if err := tx.Create(&record).Error; err != nil {
 			return err
 		}
-		if err := insertRunAttachments(tx, item.ID, item.Payload.Images); err != nil {
+		if retry == nil {
+			err = insertRunAttachments(tx, item.ID, item.Payload.Images)
+		} else {
+			copiedImages, err = copyRunAttachments(tx, item.RetryOf, item.ID, item.Payload.Images)
+		}
+		if err != nil {
 			return err
 		}
 		updates := map[string]any{"turn_count": item.Sequence, "updated_at": item.UpdatedAt}
@@ -357,6 +360,13 @@ func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitl
 		}
 		return tx.Model(&session).Updates(updates).Error
 	})
+	if err == nil {
+		for index, content := range copiedImages {
+			if content != nil {
+				item.Payload.Images[index].Data = base64.StdEncoding.EncodeToString(content)
+			}
+		}
+	}
 	return item, err
 }
 

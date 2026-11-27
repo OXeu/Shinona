@@ -289,6 +289,66 @@ func TestDelayedCompletionPreservesNewerSessionActivity(t *testing.T) {
 	}
 }
 
+func TestRetryCopiesStoredAttachmentsInSQLite(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "retry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner")
+	newSession(t, repo, "owner", "session")
+	now := time.Now().UTC()
+	images := []run.Image{
+		{Name: "stored.png", MediaType: "image/png", Data: "c3RvcmVk"},
+		{Name: "legacy.png", MediaType: "image/png", Data: "bGVnYWN5"},
+	}
+	original := run.Run{
+		ID: "original", OwnerID: "owner", SessionID: "session", Prompt: "retry me", Status: run.Failed,
+		CreatedAt: now, UpdatedAt: now, Payload: run.Payload{Images: images},
+	}
+	if _, err := repo.Conversations.Enqueue(ctx, original, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.Delete(&runAttachmentRow{}, "turn_id = ? AND position = 1", original.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	err = repo.db.Callback().Create().Before("gorm:create").Register("test:retry-inline-images-only", func(db *gorm.DB) {
+		if db.Statement.Table != "run_attachments" {
+			return
+		}
+		images, ok := db.Statement.Dest.(*[]runAttachmentRow)
+		if !ok || len(*images) != 1 || (*images)[0].Position != 1 {
+			t.Error("only the inline image should be inserted through Go")
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := run.Run{ID: "retry", OwnerID: "owner", SessionID: "session", RetryOf: original.ID, Status: run.Queued, CreatedAt: now, UpdatedAt: now}
+	if _, err := repo.Conversations.EnqueueRetry(ctx, retry, run.RetryOptions{}); err == nil {
+		t.Fatal("retry accepted a missing original image")
+	}
+	state, err := repo.Conversations.TranscriptState(ctx, retry.OwnerID, retry.SessionID)
+	if err != nil || state == nil || state.HeadID != original.ID || state.Session.TurnCount != 1 || state.Session.Active {
+		t.Fatalf("failed retry changed the session: %+v, %v", state, err)
+	}
+	// Exercise an older inline image alongside one already in the BLOB table.
+	if err := repo.db.Exec(`UPDATE runs SET payload = json_set(payload, '$.images[1].data', ?) WHERE id = ?`, images[1].Data, original.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	queued, err := repo.Conversations.EnqueueRetry(ctx, retry, run.RetryOptions{Model: "another-model"})
+	if err != nil || queued.Prompt != original.Prompt || queued.Payload.Options.Model != "another-model" || !slices.Equal(queued.Payload.Images, images) {
+		t.Fatalf("retry changed the prompt, options or images: %+v, %v", queued, err)
+	}
+	for index, want := range []string{"stored", "legacy"} {
+		attachment, err := repo.Conversations.Attachment(ctx, retry.OwnerID, retry.SessionID, retry.ID, index)
+		if err != nil || attachment == nil || string(attachment.Data) != want {
+			t.Fatalf("retry image %d was not persisted: %+v, %v", index, attachment, err)
+		}
+	}
+}
+
 func TestClaimNextSkipsWriterWhenNothingCanRun(t *testing.T) {
 	ctx := t.Context()
 	repo, err := Open(ctx, filepath.Join(t.TempDir(), "queue.db"))
