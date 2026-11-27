@@ -14,6 +14,20 @@ import (
 	"github.com/OXeu/shinona/internal/sandbox"
 )
 
+const (
+	basePrompt = "You are a coding assistant. Use the provided tools for the sandbox workspace. " +
+		"Tool failures are recoverable. Use any partial results to continue or answer with the evidence you have."
+	processSyncPrompt = `
+## 过程同步
+
+调用工具前，先用一两句话说明将要执行的操作与原因。
+执行期间保持说明连续：读取文件、搜索代码和运行长命令时，说明正在收集的信息与已经得到的结论，不要让用户长时间看不到任何说明。
+修改文件前，说明要改哪些文件以及改动内容。
+需要多个步骤才能完成时，先给出简短计划，其余说明保持一两句话。
+工具失败或需要改变方向时，说明实际失败范围与接下来的做法。
+结束本轮时的答复必须完整独立，不依赖此前的过程说明。`
+)
+
 type ToolSource interface {
 	Open(ctx context.Context, owner string, names []string) ([]run.Tool, func() error, error)
 }
@@ -78,9 +92,8 @@ type toolLoadout struct {
 func (a *Agent) openTools(ctx context.Context, input run.Input, workspace sandbox.Workspace) (toolLoadout, func(), error) {
 	options := input.Payload.Options
 	loadout := toolLoadout{
-		prompt: "You are a coding assistant. Use the provided tools for the sandbox workspace. " +
-			"Tool failures are recoverable. Use any partial results to continue or answer with the evidence you have.",
-		tools: tools(workspace, options.Permission != run.ReadOnly),
+		prompt: basePrompt + processSyncPrompt,
+		tools:  tools(workspace, options.Permission != run.ReadOnly),
 	}
 	if options.ArrowJS {
 		loadout.tools = append(loadout.tools, arrowRenderTool())
