@@ -85,7 +85,17 @@ func TestWALMaintenanceReusesLogWithoutWriterAutoCheckpoint(t *testing.T) {
 	t.Fatal("the background checkpoint did not let the writer reuse the WAL")
 }
 
+func TestWALMaintenanceTruncatesIdleLogBelowWarningThreshold(t *testing.T) {
+	const pages = 1024
+	testWALMaintenanceTruncatesAfterReaderReleases(t, pages)
+}
+
 func TestWALMaintenanceTruncatesLargeLogAfterReaderReleases(t *testing.T) {
+	testWALMaintenanceTruncatesAfterReaderReleases(t, walLargeLogPages+64)
+}
+
+func testWALMaintenanceTruncatesAfterReaderReleases(t *testing.T, pages int) {
+	t.Helper()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "large-checkpoint.db")
 	repo, err := Open(ctx, path)
@@ -118,13 +128,19 @@ func TestWALMaintenanceTruncatesLargeLogAfterReaderReleases(t *testing.T) {
 		}
 		return info.Size()
 	}
-	const extraPages = 64
-	size := pageSize * (walLargeLogPages + extraPages)
+	size := pageSize * pages
 	if err := repo.db.Exec("INSERT INTO wal_fixture VALUES (zeroblob(?))", size).Error; err != nil {
 		t.Fatal(err)
 	}
-	if got := logSize(); got < int64(size) {
+	got := logSize()
+	if got < int64(size) {
 		t.Fatalf("WAL held %d bytes with an older snapshot open, expected at least %d", got, size)
+	}
+	if pages < walLargeLogPages {
+		largeLogBytes := walHeaderBytes + walLargeLogPages*(pageSize+walFrameHeaderBytes)
+		if got <= walIdleReclaimBytes || got >= int64(largeLogBytes) {
+			t.Fatalf("WAL size %d is outside the idle reclaim range (%d, %d)", got, walIdleReclaimBytes, largeLogBytes)
+		}
 	}
 	if err := reader.Rollback().Error; err != nil {
 		t.Fatal(err)

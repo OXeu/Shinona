@@ -38,7 +38,13 @@ func (r *ConversationStore) SessionListSnapshot(ctx context.Context, owner strin
 	return snapshot, err
 }
 
+const revisionOwnerExists = "EXISTS (SELECT 1 FROM users WHERE id = %s.owner_id)"
+
 func initSessionListRevisions(db *gorm.DB) error {
+	return installSessionListRevisionTriggers(db, "")
+}
+
+func installSessionListRevisionTriggers(db *gorm.DB, ownerCheck string) error {
 	for _, table := range []struct {
 		name    string
 		columns []string
@@ -75,15 +81,26 @@ func initSessionListRevisions(db *gorm.DB) error {
 			}
 			var changes string
 			for _, owner := range operation.owners {
-				// A child deleted by the account cascade must not recreate
-				// a revision for an account that has just been removed.
-				predicate := fmt.Sprintf("EXISTS (SELECT 1 FROM users WHERE id = %[1]s.owner_id)", owner)
-				if operation.name == "update" && owner == "OLD" {
-					predicate += " AND NEW.owner_id IS NOT OLD.owner_id"
+				var predicates []string
+				switch {
+				case operation.name == "delete":
+					// Account cascades must not recreate a deleted owner's revision.
+					predicates = append(predicates, fmt.Sprintf(revisionOwnerExists, owner))
+				case ownerCheck != "":
+					predicates = append(predicates, fmt.Sprintf(ownerCheck, owner))
+				case table.name == "runs":
+					// Unowned legacy runs have no session or revision.
+					predicates = append(predicates, owner+".owner_id IS NOT NULL")
 				}
-				changes += fmt.Sprintf(`INSERT INTO session_list_revisions (owner_id, revision)
-						SELECT %[1]s.owner_id, 1 WHERE %[2]s
-						ON CONFLICT(owner_id) DO UPDATE SET revision = revision + 1; `, owner, predicate)
+				if operation.name == "update" && owner == "OLD" {
+					predicates = append(predicates, "NEW.owner_id IS NOT OLD.owner_id")
+				}
+				values := "VALUES (" + owner + ".owner_id, 1)"
+				if len(predicates) != 0 {
+					values = "SELECT " + owner + ".owner_id, 1 WHERE " + strings.Join(predicates, " AND ")
+				}
+				changes += "INSERT INTO session_list_revisions (owner_id, revision) " + values +
+					" ON CONFLICT(owner_id) DO UPDATE SET revision = revision + 1; "
 			}
 			name := fmt.Sprintf("session_list_%s_%s", table.name, operation.name)
 			if err := db.Exec("DROP TRIGGER IF EXISTS " + name).Error; err != nil {

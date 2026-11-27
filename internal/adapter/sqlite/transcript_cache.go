@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"slices"
 	"time"
@@ -11,12 +12,10 @@ import (
 
 	"github.com/OXeu/shinona/internal/responsecache"
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
-const (
-	latestTranscriptEntries = 128
-	latestTranscriptPageMax = 4 << 20
-)
+const latestTranscriptEntries = 128
 
 type latestTranscriptKey struct {
 	owner, session string
@@ -34,14 +33,14 @@ type latestTranscriptPage struct {
 }
 
 type latestTranscriptCache struct {
-	entries      *responsecache.Cache[latestTranscriptKey, *latestTranscriptPage]
-	maxPageBytes int
+	entries  *responsecache.Cache[latestTranscriptKey, *latestTranscriptPage]
+	maxBytes int
 }
 
 func newLatestTranscriptCache(bytes int) latestTranscriptCache {
 	return latestTranscriptCache{
-		entries:      responsecache.New[latestTranscriptKey, *latestTranscriptPage](latestTranscriptEntries, bytes),
-		maxPageBytes: min(latestTranscriptPageMax, bytes),
+		entries:  responsecache.New[latestTranscriptKey, *latestTranscriptPage](latestTranscriptEntries, bytes),
+		maxBytes: bytes,
 	}
 }
 
@@ -51,11 +50,13 @@ func (c *latestTranscriptCache) get(key latestTranscriptKey) *latestTranscriptPa
 }
 
 func (c *latestTranscriptCache) put(key latestTranscriptKey, page *run.Transcript) {
-	if c.maxPageBytes == 0 {
+	if c.maxBytes == 0 {
 		return
 	}
+	// The query budgets stored bytes. Charge decoded turns and EarlierTurn to
+	// the total cache budget without applying the query's byte limit again.
 	size := latestTranscriptSize(page.Turns, page.EarlierTurn) + len(key.owner) + len(key.session) + len(page.HeadID)
-	if size > c.maxPageBytes {
+	if size > c.maxBytes {
 		return
 	}
 	entry := &latestTranscriptPage{
@@ -74,11 +75,11 @@ func (c *latestTranscriptCache) discard(entry *latestTranscriptPage) {
 }
 
 func (r *ConversationStore) TranscriptState(ctx context.Context, owner, id string) (*run.TranscriptState, error) {
-	return transcriptState(r.read.WithContext(ctx), owner, id)
+	return transcriptState(ctx, r.read.Statement.ConnPool, owner, id)
 }
 
 type transcriptHeadRow struct {
-	Session sessionRow `gorm:"embedded"`
+	Session sessionRow
 	HeadID  string
 }
 
@@ -86,9 +87,9 @@ func (r transcriptHeadRow) state() run.TranscriptState {
 	return run.TranscriptState{Session: describeSession(r.Session), HeadID: r.HeadID}
 }
 
-func transcriptState(db *gorm.DB, owner, id string) (*run.TranscriptState, error) {
-	current, err := readTranscriptHead(db, owner, id)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+func transcriptState(ctx context.Context, conn gorm.ConnPool, owner, id string) (*run.TranscriptState, error) {
+	current, err := readTranscriptHead(ctx, conn, owner, id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -98,18 +99,25 @@ func transcriptState(db *gorm.DB, owner, id string) (*run.TranscriptState, error
 	return &state, nil
 }
 
-func readTranscriptHead(db *gorm.DB, owner, id string) (transcriptHeadRow, error) {
-	var current transcriptHeadRow
-	// Completed turns are immutable. Revert removes a suffix, while enqueue
-	// appends a turn with a fresh ID. Validate the visible head and summary
-	// together so this works even with writes from another repository.
-	err := sessionScope(db, owner).
-		Select(sessionWithActivity+`, COALESCE((
-			SELECT id FROM runs WHERE session_id = agent_sessions.id
-			AND owner_id = agent_sessions.owner_id AND reverted_at IS NULL
-			ORDER BY sequence DESC LIMIT 1
-		), '') AS head_id`, []run.Status{run.Queued, run.Running}).
-		First(&current, "id = ?", id).Error
+// Completed turns are immutable. Validate the visible head and summary in the
+// same SQLite snapshot, including writes made by another repository.
+const transcriptHeadQuery = `SELECT project_id, title, turn_count,
+	created_at, updated_at, pinned, custom_title, read_through,
+	EXISTS (SELECT 1 FROM runs WHERE session_id = agent_sessions.id AND status IN ('QUEUED', 'RUNNING')),
+	COALESCE((SELECT id FROM runs WHERE session_id = agent_sessions.id
+		AND owner_id = agent_sessions.owner_id AND reverted_at IS NULL
+		ORDER BY sequence DESC LIMIT 1), '')
+	FROM agent_sessions WHERE owner_id = ? AND id = ? AND archived_at IS NULL`
+
+func readTranscriptHead(ctx context.Context, conn gorm.ConnPool, owner, id string) (transcriptHeadRow, error) {
+	defer timing.Start(ctx, "sqlite")()
+	current := transcriptHeadRow{Session: sessionRow{ID: id, OwnerID: owner}}
+	session := &current.Session
+	err := conn.QueryRowContext(ctx, transcriptHeadQuery, owner, id).Scan(
+		&session.ProjectID, &session.Title, &session.TurnCount,
+		&session.CreatedAt, &session.UpdatedAt, &session.Pinned, &session.CustomTitle,
+		&session.ReadThrough, &session.HasActive, &current.HeadID,
+	)
 	return current, err
 }
 

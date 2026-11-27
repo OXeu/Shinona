@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
+	"github.com/OXeu/shinona/internal/timing"
 )
 
 type row struct {
@@ -35,7 +35,7 @@ type row struct {
 	LiveContext      run.ContextUsage `gorm:"-"`
 	Status           run.Status       `gorm:"not null;index:idx_runs_queue,priority:1;index:idx_runs_session_status_sequence,priority:2"`
 	Output           string
-	CreatedAt        time.Time `gorm:"not null;index:idx_runs_queue,priority:2;index"`
+	CreatedAt        time.Time `gorm:"not null;index:idx_runs_queue,priority:2"`
 	StartedAt        *time.Time
 	UpdatedAt        time.Time `gorm:"not null"`
 	RevertedAt       *time.Time
@@ -45,14 +45,13 @@ func (row) TableName() string { return "runs" }
 
 func (r *ConversationStore) ClaimNext(ctx context.Context, now time.Time) (*run.Run, error) {
 	if r.read != r.db {
-		// Idle probes and work blocked by a running project only need a read
-		// connection. Recheck eligibility in the write to handle concurrent changes.
-		var candidate struct{ ID string }
-		err := eligibleTurns(r.read.WithContext(ctx)).Take(&candidate).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		if err != nil {
+		// An idle queue or a queue with every project busy can skip the writer.
+		// Only the atomic update selects a turn and checks its session order.
+		var available bool
+		probe := timing.Start(ctx, "sqlite")
+		err := r.read.Statement.ConnPool.QueryRowContext(ctx, queuedProjectProbe).Scan(&available)
+		probe()
+		if err != nil || !available {
 			return nil, err
 		}
 	}
@@ -73,50 +72,61 @@ func (r *ConversationStore) ClaimNext(ctx context.Context, now time.Time) (*run.
 	return &item, nil
 }
 
+// The project lookup in the probe is needed only when an executing turn
+// exists for the candidate's owner. The status predicate uses its partial index.
+const projectClaimConflict = `SELECT 1 FROM runs AS executing
+	JOIN agent_sessions AS active_session ON active_session.id = executing.session_id
+		AND active_session.owner_id = executing.owner_id
+	WHERE executing.status = 'RUNNING' AND executing.owner_id = candidate.owner_id`
+
+const queuedProjectProbe = `SELECT EXISTS (
+	SELECT 1 FROM runs AS candidate
+	WHERE candidate.status = 'QUEUED' AND candidate.owner_id <> '' AND candidate.session_id <> ''
+	AND NOT EXISTS (` + projectClaimConflict + ` AND active_session.project_id = (
+		SELECT project_id FROM agent_sessions WHERE id = candidate.session_id
+	))
+)`
+
 func eligibleTurns(db *gorm.DB) *gorm.DB {
 	return db.Table("runs AS candidate").Select("candidate.id").
-		Joins("LEFT JOIN agent_sessions AS workspace ON workspace.id = candidate.session_id AND workspace.owner_id = candidate.owner_id").
+		Joins("JOIN agent_sessions AS workspace ON workspace.id = candidate.session_id AND workspace.owner_id = candidate.owner_id").
 		Where("candidate.status = ? AND candidate.owner_id <> '' AND candidate.session_id <> ''", run.Queued).
 		Where(`NOT EXISTS (
 			SELECT 1 FROM runs AS earlier WHERE earlier.session_id = candidate.session_id
 			AND earlier.sequence < candidate.sequence AND earlier.status IN ?
 		)`, []run.Status{run.Queued, run.Running}).
-		Where(`NOT EXISTS (
-			SELECT 1 FROM runs AS executing
-			JOIN agent_sessions AS active_session ON active_session.id = executing.session_id
-				AND active_session.owner_id = executing.owner_id
-			WHERE executing.status = 'RUNNING' AND executing.owner_id = candidate.owner_id
-			AND active_session.project_id = workspace.project_id
-		)`)
+		Where("NOT EXISTS (" + projectClaimConflict + " AND active_session.project_id = workspace.project_id)")
 }
 
 func (r *ConversationStore) Complete(ctx context.Context, id string, completion run.Completion) error {
-	steering, err := json.Marshal(completion.Steering)
-	if err != nil {
-		return err
+	updates := map[string]any{
+		"status": completion.Status, "output": completion.Output, "updated_at": completion.UpdatedAt,
+		"context_tokens": completion.ContextTokens, "context_window": completion.ContextWindow,
+		"agent_messages": completion.AgentMessages, "compacted_context": completion.CompactedContext,
 	}
-	parts, err := json.Marshal(completion.Parts)
-	if err != nil {
-		return err
-	}
-	var usage any
-	if completion.TokenUsage != nil {
-		data, err := json.Marshal(completion.TokenUsage)
+	for _, field := range []struct {
+		column string
+		value  any
+		empty  bool
+	}{
+		{"steering", completion.Steering, len(completion.Steering) == 0},
+		{"parts", completion.Parts, len(completion.Parts) == 0},
+		{"token_usage", completion.TokenUsage, completion.TokenUsage == nil},
+	} {
+		if field.empty {
+			updates[field.column] = nil
+			continue
+		}
+		data, err := json.Marshal(field.value)
 		if err != nil {
 			return err
 		}
-		usage = string(data)
+		updates[field.column] = string(data)
+	}
+	if completion.Unstarted {
+		updates["started_at"] = nil
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		updates := map[string]any{
-			"status": completion.Status, "output": completion.Output, "updated_at": completion.UpdatedAt,
-			"steering": string(steering), "parts": string(parts), "context_tokens": completion.ContextTokens,
-			"context_window": completion.ContextWindow, "token_usage": usage, "agent_messages": completion.AgentMessages,
-			"compacted_context": completion.CompactedContext,
-		}
-		if completion.Unstarted {
-			updates["started_at"] = nil
-		}
 		var item row
 		result := tx.Model(&item).Clauses(clause.Returning{Columns: []clause.Column{{Name: "session_id"}}}).
 			Where("id = ? AND status = ?", id, run.Running).

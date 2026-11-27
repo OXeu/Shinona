@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -53,7 +52,11 @@ func migrateRunAttachments(db *gorm.DB) error {
 			paths = append(paths, fmt.Sprintf("$.images[%d].data", position))
 		}
 		if len(paths) > 0 {
-			if err := insertRunAttachments(db, record.ID, record.Payload.Images); err != nil {
+			attachments, err := decodeRunAttachments(record.ID, record.Payload.Images)
+			if err != nil {
+				return err
+			}
+			if err := insertRunAttachments(db, attachments); err != nil {
 				return err
 			}
 			expression := "json_remove(payload" + strings.Repeat(", ?", len(paths)) + ")"
@@ -65,7 +68,7 @@ func migrateRunAttachments(db *gorm.DB) error {
 	}
 }
 
-func insertRunAttachments(db *gorm.DB, turn string, images []run.Image) error {
+func decodeRunAttachments(turn string, images []run.Image) ([]runAttachmentRow, error) {
 	var records []runAttachmentRow
 	for position, image := range images {
 		if image.Data == "" {
@@ -73,58 +76,81 @@ func insertRunAttachments(db *gorm.DB, turn string, images []run.Image) error {
 		}
 		content, err := base64.StdEncoding.DecodeString(image.Data)
 		if err != nil {
-			return fmt.Errorf("decode turn %s attachment %d: %w", turn, position, err)
+			return nil, fmt.Errorf("decode turn %s attachment %d: %w", turn, position, err)
 		}
 		records = append(records, runAttachmentRow{TurnID: turn, Position: position, Content: content})
 	}
+	return records, nil
+}
+
+func insertRunAttachments(db *gorm.DB, records []runAttachmentRow) error {
 	if len(records) == 0 {
 		return nil
 	}
 	return db.Create(&records).Error
 }
 
-func copyRunAttachments(db *gorm.DB, source, destination string, images []run.Image) ([][]byte, error) {
+func copyRunAttachments(db *gorm.DB, source, destination string, images []run.Image, stored []runAttachmentRow) error {
 	if len(images) == 0 {
-		return nil, nil
+		return nil
 	}
-	// Capture the original bytes for the caller. The copy itself stays in SQLite.
-	var stored []runAttachmentRow
-	if err := db.Select("position", "content").Where("turn_id = ?", source).Find(&stored).Error; err != nil {
-		return nil, err
-	}
-	contents := make([][]byte, len(images))
+	// The original bytes were read before the writer transaction. Copy the
+	// immutable stored attachments within SQLite without loading them again.
 	for _, attachment := range stored {
-		if attachment.Position < 0 || attachment.Position >= len(contents) {
-			return nil, fmt.Errorf("invalid attachment position for turn %s", source)
+		if attachment.Position < 0 || attachment.Position >= len(images) {
+			return fmt.Errorf("invalid attachment position for turn %s", source)
 		}
 		if len(attachment.Content) == 0 {
-			return nil, fmt.Errorf("empty image %d for turn %s", attachment.Position+1, source)
+			return fmt.Errorf("empty image %d for turn %s", attachment.Position+1, source)
 		}
-		contents[attachment.Position] = attachment.Content
 	}
 	if len(stored) != 0 {
 		if err := db.Exec(`INSERT INTO run_attachments (turn_id, position, content)
 			SELECT ?, position, content FROM run_attachments WHERE turn_id = ?`, destination, source).Error; err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if len(stored) == len(images) {
-		return contents, nil
+		return nil
 	}
-	// Migration normally moves all bytes to run_attachments. Preserve any
-	// remaining inline bytes at positions the copy did not fill.
+	// Migration normally moved all images to run_attachments. Preserve inline
+	// bytes at any positions the copy did not fill.
 	inline := slices.Clone(images)
-	for index, image := range inline {
-		if contents[index] != nil {
-			inline[index].Data = ""
-		} else if image.Data == "" {
-			return nil, fmt.Errorf("missing image %d for turn %s", index+1, source)
+	for _, attachment := range stored {
+		inline[attachment.Position].Data = ""
+	}
+	for i, image := range images {
+		if image.Data == "" && !slices.ContainsFunc(stored, func(attachment runAttachmentRow) bool { return attachment.Position == i }) {
+			return fmt.Errorf("missing image %d for turn %s", i+1, source)
 		}
 	}
-	if err := insertRunAttachments(db, destination, inline); err != nil {
+	records, err := decodeRunAttachments(destination, inline)
+	if err != nil {
+		return err
+	}
+	return insertRunAttachments(db, records)
+}
+
+func readRunAttachments(db *gorm.DB, turnID string, images []run.Image) ([]runAttachmentRow, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	var stored []runAttachmentRow
+	if err := db.Select("position", "content").Where("turn_id = ?", turnID).Find(&stored).Error; err != nil {
 		return nil, err
 	}
-	return contents, nil
+	for _, attachment := range stored {
+		if attachment.Position < 0 || attachment.Position >= len(images) {
+			return nil, fmt.Errorf("invalid attachment position for turn %s", turnID)
+		}
+	}
+	return stored, nil
+}
+
+func encodeRunAttachments(images []run.Image, stored []runAttachmentRow) {
+	for _, attachment := range stored {
+		images[attachment.Position].Data = base64.StdEncoding.EncodeToString(attachment.Content)
+	}
 }
 
 func hydrateRunAttachments(db *gorm.DB, turns []row) error {
@@ -158,12 +184,13 @@ func hydrateRunAttachments(db *gorm.DB, turns []row) error {
 
 func (r *ConversationStore) LoadTurnImages(ctx context.Context, turn run.Run) ([]run.Image, error) {
 	images := slices.Clone(turn.Payload.Images)
-	records := []row{{ID: turn.ID, Payload: run.Payload{Images: images}}}
 	db := r.read.WithContext(ctx)
 	claimed := conversationTurns(db, turn.OwnerID, turn.SessionID).Select("id").Where("id = ? AND status = ?", turn.ID, run.Running)
-	if err := hydrateRunAttachments(db.Where("turn_id IN (?)", claimed), records); err != nil {
+	stored, err := readRunAttachments(db.Where("turn_id IN (?)", claimed), turn.ID, images)
+	if err != nil {
 		return nil, err
 	}
+	encodeRunAttachments(images, stored)
 	for index, image := range images {
 		if image.Data == "" {
 			return nil, fmt.Errorf("missing image %d for turn %s", index+1, turn.ID)
@@ -177,28 +204,22 @@ func (r *ConversationStore) Attachment(ctx context.Context, ownerID, sessionID, 
 		return nil, nil
 	}
 	db := r.read.WithContext(ctx)
-	path := fmt.Sprintf("$.images[%d]", index)
+	path := fmt.Sprintf("$.images[%d].mediaType", index)
 	var record struct {
-		Image   *string
-		Content []byte
+		MediaType *string
+		Content   []byte
 	}
 	err := attachmentTurn(db, ownerID, sessionID, turnID).
-		Select("json_extract(runs.payload, ?) AS image, attachment.content", path).
+		Select("json_extract(runs.payload, ?) AS media_type, attachment.content", path).
 		Joins("JOIN run_attachments AS attachment ON attachment.turn_id = runs.id AND attachment.position = ?", index).
 		Take(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if err != nil || record.Image == nil {
+	if err != nil || record.MediaType == nil {
 		return nil, err
 	}
-	var metadata struct {
-		MediaType string `json:"mediaType"`
-	}
-	if err := json.Unmarshal([]byte(*record.Image), &metadata); err != nil {
-		return nil, err
-	}
-	return &run.Attachment{MediaType: metadata.MediaType, Data: record.Content}, nil
+	return &run.Attachment{MediaType: *record.MediaType, Data: record.Content}, nil
 }
 
 func (r *ConversationStore) AttachmentTurnVisible(ctx context.Context, ownerID, sessionID, turnID string) (bool, error) {

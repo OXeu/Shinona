@@ -76,6 +76,71 @@ func TestMigratesIndexForEarlierStartedTurns(t *testing.T) {
 	}
 }
 
+func TestMigratesTranscriptIndexesAndRevisionTriggers(t *testing.T) {
+	const previousVersion = 14
+	path := filepath.Join(t.TempDir(), "transcript-indexes.db")
+	old := openSchemaFixture(t, path, previousVersion)
+	if err := old.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs (created_at);
+		CREATE INDEX IF NOT EXISTS idx_sessions_owner ON agent_sessions (owner_id, updated_at)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := installSessionListRevisionTriggers(old.db, revisionOwnerExists); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if db.db.Migrator().HasIndex(&row{}, "idx_runs_created_at") || db.db.Migrator().HasIndex(&sessionRow{}, "idx_sessions_owner") {
+		t.Fatal("superseded indexes are still present")
+	}
+	var triggers []string
+	if err := db.db.Raw(`SELECT sql FROM sqlite_schema WHERE name IN (
+		'session_list_agent_sessions_update', 'session_list_agent_sessions_insert', 'session_list_projects_update',
+		'session_list_projects_insert', 'session_list_runs_update', 'session_list_runs_insert'
+	)`).Scan(&triggers).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(triggers) != 6 {
+		t.Fatalf("expected six revision triggers, got %d", len(triggers))
+	}
+	for _, trigger := range triggers {
+		if strings.Contains(trigger, "FROM users") {
+			t.Errorf("revision trigger still looks up the owner: %s", trigger)
+		}
+	}
+
+	for _, plan := range []struct {
+		query, index string
+		args         []any
+	}{
+		{transcriptHeadQuery, "idx_runs_visible_transcript", []any{"owner", "session"}},
+		{queuedProjectProbe, "idx_runs_queue", nil},
+		{`SELECT session_id FROM runs WHERE owner_id = ? AND status = 'QUEUED' AND owner_id <> '' AND session_id <> ''`,
+			"idx_runs_queue", []any{"owner"}},
+	} {
+		var steps []struct{ Detail string }
+		if err := db.db.Raw("EXPLAIN QUERY PLAN "+plan.query, plan.args...).Scan(&steps).Error; err != nil {
+			t.Fatal(err)
+		}
+		var indexed bool
+		for _, step := range steps {
+			indexed = indexed || strings.Contains(step.Detail, plan.index)
+			if strings.Contains(step.Detail, "TEMP B-TREE") {
+				t.Errorf("unexpected sort in query plan: %+v", steps)
+			}
+		}
+		if !indexed {
+			t.Errorf("expected %s in query plan: %+v", plan.index, steps)
+		}
+	}
+}
+
 func TestSessionListRevisionMigrationReplacesLegacyUpdateTrigger(t *testing.T) {
 	const previousVersion = 8
 	ctx := t.Context()

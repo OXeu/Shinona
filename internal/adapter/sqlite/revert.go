@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -12,9 +13,10 @@ import (
 
 func (r *ConversationStore) RevertTurn(ctx context.Context, ownerID, sessionID, turnID, expectedHeadID string, now time.Time) (run.RevertedTurn, error) {
 	var result run.RevertedTurn
+	var attachments []runAttachmentRow
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		head, err := readTranscriptHead(tx, ownerID, sessionID)
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		head, err := readTranscriptHead(ctx, tx.Statement.ConnPool, ownerID, sessionID)
+		if errors.Is(err, sql.ErrNoRows) {
 			return run.ErrSession
 		}
 		if err != nil {
@@ -25,16 +27,16 @@ func (r *ConversationStore) RevertTurn(ctx context.Context, ownerID, sessionID, 
 		}
 		session := head.Session
 
-		var items [1]row
-		selected := &items[0]
+		var selected row
 		if err := conversationTurns(tx, ownerID, sessionID).Select("id", "sequence", "prompt", "payload").
-			Take(selected, "id = ?", turnID).Error; err != nil {
+			Take(&selected, "id = ?", turnID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return run.ErrHistoryChanged
 			}
 			return err
 		}
-		if err := hydrateRunAttachments(tx, items[:]); err != nil {
+		attachments, err = readRunAttachments(tx, selected.ID, selected.Payload.Images)
+		if err != nil {
 			return err
 		}
 		if err := conversationTurns(tx, ownerID, sessionID).
@@ -57,5 +59,8 @@ func (r *ConversationStore) RevertTurn(ctx context.Context, ownerID, sessionID, 
 		result = run.RevertedTurn{Session: describeSession(session), Prompt: selected.Prompt, Images: selected.Payload.Images}
 		return nil
 	})
+	if err == nil {
+		encodeRunAttachments(result.Images, attachments)
+	}
 	return result, err
 }

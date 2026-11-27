@@ -200,7 +200,10 @@ func (c *sqliteConnector) Driver() driver.Driver {
 func openDB(pool *sql.DB, maxConnections int) (*gorm.DB, error) {
 	pool.SetMaxOpenConns(maxConnections)
 	pool.SetMaxIdleConns(maxConnections)
-	db, err := gorm.Open(sqlite.New(sqlite.Config{Conn: pool}), &gorm.Config{Logger: timingLogger{logger.Default.LogMode(logger.Silent)}})
+	db, err := gorm.Open(sqlite.New(sqlite.Config{Conn: pool}), &gorm.Config{
+		Logger:                 timingLogger{logger.Default.LogMode(logger.Silent)},
+		SkipDefaultTransaction: true,
+	})
 	if err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}

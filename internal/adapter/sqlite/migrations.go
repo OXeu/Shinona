@@ -20,7 +20,17 @@ var migrations = [...]func(*gorm.DB) error{
 	initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime, deleteRevokedMCPGrants,
 	migrateOwnership, migrateSettingsStorage, addInstanceSettingsRevision,
 	initSessionListRevisions, migrateThinkingSignatures, migrateProjectSSHBindings, indexRecentProjectSessions,
-	indexQueuedTurnOrder, indexStartedSessionTurns,
+	indexQueuedTurnOrder, indexStartedSessionTurns, migrateTranscriptIndexesAndRevisions,
+}
+
+func migrateTranscriptIndexesAndRevisions(db *gorm.DB) error {
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_visible_transcript
+		ON runs (session_id, owner_id, sequence DESC, id) WHERE reverted_at IS NULL;
+		DROP INDEX IF EXISTS idx_runs_created_at;
+		DROP INDEX IF EXISTS idx_sessions_owner;`).Error; err != nil {
+		return err
+	}
+	return initSessionListRevisions(db)
 }
 
 func indexStartedSessionTurns(db *gorm.DB) error {
@@ -158,7 +168,7 @@ func replaceLegacyTriggers(db *gorm.DB) error {
 	) WITHOUT ROWID`).Error; err != nil {
 		return err
 	}
-	if err := initSessionListRevisions(db); err != nil {
+	if err := installSessionListRevisionTriggers(db, revisionOwnerExists); err != nil {
 		return err
 	}
 	return db.Exec(`DELETE FROM session_list_revisions

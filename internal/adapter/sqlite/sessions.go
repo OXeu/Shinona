@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,12 +21,12 @@ type ConversationStore struct {
 
 type sessionRow struct {
 	ID          string    `gorm:"primaryKey;index:idx_sessions_recent,priority:4,sort:desc"`
-	OwnerID     string    `gorm:"not null;index:idx_sessions_owner,priority:1;index:idx_sessions_recent,priority:1,where:archived_at IS NULL"`
+	OwnerID     string    `gorm:"not null;index:idx_sessions_recent,priority:1,where:archived_at IS NULL"`
 	ProjectID   string    `gorm:"not null;default:''"`
 	Title       string    `gorm:"not null"`
 	TurnCount   int       `gorm:"not null"`
 	CreatedAt   time.Time `gorm:"not null"`
-	UpdatedAt   time.Time `gorm:"not null;index:idx_sessions_owner,priority:2;index:idx_sessions_recent,priority:3,sort:desc"`
+	UpdatedAt   time.Time `gorm:"not null;index:idx_sessions_recent,priority:3,sort:desc"`
 	Pinned      bool      `gorm:"not null;default:false;index:idx_sessions_recent,priority:2,sort:desc"`
 	CustomTitle bool      `gorm:"not null;default:false"`
 	ReadThrough int       `gorm:"not null;default:0"`
@@ -182,41 +181,26 @@ func (r *ConversationStore) transcript(ctx context.Context, ownerID, sessionID s
 	var turns []transcriptRow
 	var earlier transcriptRow
 	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		state, err := transcriptState(tx, ownerID, sessionID)
+		state, err := transcriptState(ctx, tx.Statement.ConnPool, ownerID, sessionID)
 		if err != nil || state == nil {
 			return err
 		}
 		result = &run.Transcript{TranscriptState: *state}
-		scope := func() *gorm.DB {
-			query := conversationTurns(tx, ownerID, sessionID)
+		query := conversationTurns(tx, ownerID, sessionID)
+		if window.paged {
 			if window.before != 0 {
 				query = query.Where("sequence < ?", window.before)
 			}
-			return query
-		}
-		query := scope()
-		if window.paged {
-			versions, cursor, err := readTranscriptVersions(scope(), run.LiveLatestPage)
-			if err != nil {
+			turns, result.NextBeforeSequence, err = readTranscriptPage(query)
+			if err != nil || window.before != 0 || result.NextBeforeSequence == 0 {
 				return err
 			}
-			if len(versions) == 0 {
+			if slices.ContainsFunc(turns, func(turn transcriptRow) bool { return turn.Run.StartedAt != nil }) {
 				return nil
 			}
-			result.NextBeforeSequence = cursor
-			query = query.Where("sequence >= ?", versions[len(versions)-1].Sequence)
-			if window.before == 0 {
-				version, err := readEarlierTurnVersion(scope(), versions, cursor)
-				if err != nil {
-					return err
-				}
-				if version != nil {
-					if err := transcriptQuery(scope()).Where("id = ?", version.ID).Take(&earlier).Error; err != nil {
-						return err
-					}
-				}
-			}
-		} else if window.limit > 0 {
+			return readEarlierTranscriptTurn(conversationTurns(tx, ownerID, sessionID), result.NextBeforeSequence, &earlier)
+		}
+		if window.limit > 0 {
 			query = query.Limit(window.limit)
 		}
 		return transcriptQuery(query).Order("sequence DESC").Find(&turns).Error
@@ -317,7 +301,20 @@ func (r *ConversationStore) EnqueueRetry(ctx context.Context, item run.Run, opti
 
 func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitle string, queue bool, retry *run.RetryOptions) (run.Run, error) {
 	defer timing.Start(ctx, "sqlite_enqueue")()
-	var copiedImages [][]byte
+	var attachments, copied []runAttachmentRow
+	if retry == nil {
+		var err error
+		attachments, err = decodeRunAttachments(item.ID, item.Payload.Images)
+		if err != nil {
+			return item, err
+		}
+	} else {
+		db := r.read.WithContext(ctx)
+		source := conversationTurns(db, item.OwnerID, item.SessionID).Select("id").Where("id = ?", item.RetryOf)
+		if err := db.Select("position", "content").Where("turn_id IN (?)", source).Find(&copied).Error; err != nil {
+			return item, err
+		}
+	}
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
 		err := sessionScope(tx, item.OwnerID).First(&session, "id = ?", item.SessionID).Error
@@ -370,9 +367,9 @@ func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitl
 			return err
 		}
 		if retry == nil {
-			err = insertRunAttachments(tx, item.ID, item.Payload.Images)
+			err = insertRunAttachments(tx, attachments)
 		} else {
-			copiedImages, err = copyRunAttachments(tx, item.RetryOf, item.ID, item.Payload.Images)
+			err = copyRunAttachments(tx, item.RetryOf, item.ID, item.Payload.Images, copied)
 		}
 		if err != nil {
 			return err
@@ -384,10 +381,8 @@ func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitl
 		return tx.Model(&session).Updates(updates).Error
 	})
 	if err == nil {
-		for index, content := range copiedImages {
-			if content != nil {
-				item.Payload.Images[index].Data = base64.StdEncoding.EncodeToString(content)
-			}
+		if len(item.Payload.Images) != 0 {
+			encodeRunAttachments(item.Payload.Images, copied)
 		}
 	}
 	return item, err
@@ -421,6 +416,7 @@ func (r *ConversationStore) StopQueued(ctx context.Context, owner, sessionID, id
 
 func (r *ConversationStore) TakeQueued(ctx context.Context, owner, sessionID, id string, textOnly bool, now time.Time) (run.PendingDraft, error) {
 	var draft run.PendingDraft
+	var attachments []runAttachmentRow
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var session sessionRow
 		if err := sessionScope(tx, owner).Take(&session, "id = ?", sessionID).Error; err != nil {
@@ -432,9 +428,8 @@ func (r *ConversationStore) TakeQueued(ctx context.Context, owner, sessionID, id
 		queued := func() *gorm.DB {
 			return conversationTurns(tx, owner, sessionID).Where("id = ? AND status = ?", id, run.Queued)
 		}
-		var items [1]row
-		item := &items[0]
-		if err := queued().Select("id", "sequence", "prompt", "payload").Take(item).Error; err != nil {
+		var item row
+		if err := queued().Select("id", "sequence", "prompt", "payload").Take(&item).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return run.ErrNotRunning
 			}
@@ -443,7 +438,9 @@ func (r *ConversationStore) TakeQueued(ctx context.Context, owner, sessionID, id
 		if textOnly && len(item.Payload.Images) > 0 {
 			return run.ErrImages
 		}
-		if err := hydrateRunAttachments(tx, items[:]); err != nil {
+		var err error
+		attachments, err = readRunAttachments(tx, item.ID, item.Payload.Images)
+		if err != nil {
 			return err
 		}
 		result := queued().Delete(&row{})
@@ -468,6 +465,9 @@ func (r *ConversationStore) TakeQueued(ctx context.Context, owner, sessionID, id
 		draft = run.PendingDraft{Prompt: item.Prompt, Images: item.Payload.Images}
 		return sessionScope(tx, owner).Where("id = ?", sessionID).UpdateColumns(updates).Error
 	})
+	if err == nil {
+		encodeRunAttachments(draft.Images, attachments)
+	}
 	return draft, err
 }
 

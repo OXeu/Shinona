@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/timing"
 )
 
@@ -18,6 +20,60 @@ const transcriptBatchBytes = 4 << 20
 const transcriptStoredBytes = `coalesce(octet_length(prompt), 0) + coalesce(octet_length(output), 0)
 	+ coalesce(octet_length(parts), 0) + coalesce(octet_length(steering), 0)
 	+ coalesce(octet_length(payload), 0) + coalesce(octet_length(token_usage), 0)`
+
+// readTranscriptPage reads bodies in descending order and stops after the first
+// row outside the page. JSON decoding happens after the snapshot is released.
+func readTranscriptPage(query *gorm.DB) (_ []transcriptRow, _ int, err error) {
+	limit := run.LiveLatestPage.Limit()
+	rows, err := transcriptQuery(query).Order("sequence DESC").Limit(limit + 1).Rows()
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	remaining := transcriptBatchBytes
+	var page []transcriptRow
+	for rows.Next() {
+		if len(page) == limit {
+			return page, page[len(page)-1].Run.Sequence, nil
+		}
+		var record transcriptRow
+		if err := record.scan(rows); err != nil {
+			return nil, 0, err
+		}
+		size := len(record.Run.Prompt) + len(record.Run.Output) + len(record.Payload) +
+			len(record.Steering) + len(record.Parts) + len(record.TokenUsage)
+		// An oversized first turn still gets a page of its own.
+		if len(page) != 0 && size > remaining {
+			return page, page[len(page)-1].Run.Sequence, nil
+		}
+		remaining -= size
+		page = append(page, record)
+	}
+	return page, 0, rows.Err()
+}
+
+func (record *transcriptRow) scan(rows *sql.Rows) error {
+	turn := &record.Run
+	var policy, backend, output sql.NullString
+	var sequence, tokens, window sql.NullInt64
+	err := rows.Scan(
+		&turn.ID, &turn.OwnerID, &turn.SessionID, &sequence, &policy, &backend, &turn.Prompt,
+		&turn.Status, &output, &record.Steering, &record.Parts, &tokens, &window, &record.TokenUsage,
+		&turn.CreatedAt, &turn.StartedAt, &turn.UpdatedAt, &record.Payload,
+	)
+	turn.Policy, turn.Backend, turn.Output = sandbox.Policy(policy.String), backend.String, output.String
+	turn.Sequence, turn.ContextTokens, turn.ContextWindow = int(sequence.Int64), int(tokens.Int64), int(window.Int64)
+	return err
+}
+
+func readEarlierTranscriptTurn(query *gorm.DB, before int, earlier *transcriptRow) error {
+	err := transcriptQuery(query).Where("started_at IS NOT NULL AND sequence < ?", before).
+		Order("sequence DESC").Take(earlier).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	return err
+}
 
 type transcriptVersion struct {
 	run.TurnVersion
@@ -137,7 +193,7 @@ func (r *ConversationStore) readTranscriptUpdate(ctx context.Context, owner, id 
 	var options []byte
 	// Keep the versions, cursor, and required bodies in the same read snapshot.
 	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		state, err := transcriptState(tx, owner, id)
+		state, err := transcriptState(ctx, tx.Statement.ConnPool, owner, id)
 		if err != nil || state == nil {
 			return err
 		}

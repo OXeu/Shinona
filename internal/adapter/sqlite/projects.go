@@ -103,7 +103,7 @@ func (r *ProjectStore) RemoveProject(ctx context.Context, ownerID, id string) er
 			return tx.Model(&sessionRow{}).Where("owner_id = ? AND project_id = ?", ownerID, id)
 		}
 		queued := func() *gorm.DB {
-			return tx.Model(&row{}).Where("owner_id = ? AND status = ?", ownerID, run.Queued)
+			return tx.Model(&row{}).Where("owner_id = ? AND status = 'QUEUED' AND owner_id <> '' AND session_id <> ''", ownerID)
 		}
 		// Stop turns submitted for this workspace before their sessions move.
 		if err := sessions().Where("updated_at < ? AND id IN (?)", now, queued().Select("session_id")).

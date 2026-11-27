@@ -17,6 +17,7 @@ const (
 	walCheckpointInterval = 250 * time.Millisecond
 	walCheckpointWarn     = 30 * time.Second
 	walLargeLogPages      = 4096
+	walIdleReclaimBytes   = 1 << 20
 	walHeaderBytes        = 32
 	walFrameHeaderBytes   = 24
 )
@@ -79,21 +80,20 @@ func startWALCheckpoint(ctx context.Context, dsn string) (func() error, error) {
 				} else if errors.Is(statErr, os.ErrNotExist) {
 					statErr = nil
 				}
+				large := err == nil && (pages >= walLargeLogPages || fileBytes >= largeLogBytes)
+				var reclaimed bool
+				if err == nil && busy == 0 && pages >= 0 && checkpointed >= pages && (large || fileBytes > walIdleReclaimBytes) {
+					err = pool.QueryRowContext(lifetime, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &pages, &checkpointed)
+					reclaimed = err == nil && busy == 0
+				}
 				checkErr := errors.Join(err, statErr)
 				if checkErr != nil && previousErr == nil && lifetime.Err() == nil {
 					slog.Warn("SQLite WAL maintenance check failed", "error", checkErr)
 				}
 				previousErr = checkErr
-				if err != nil || (pages < walLargeLogPages && fileBytes < largeLogBytes) {
+				if !large || reclaimed {
 					stalledSince = time.Time{}
 					continue
-				}
-				if busy == 0 && checkpointed >= pages {
-					err = pool.QueryRowContext(lifetime, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &pages, &checkpointed)
-					if err == nil && busy == 0 {
-						stalledSince = time.Time{}
-						continue
-					}
 				}
 				if stalledSince.IsZero() {
 					stalledSince = now
