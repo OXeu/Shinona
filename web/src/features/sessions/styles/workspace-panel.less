@@ -95,7 +95,7 @@
   color: var(--foreground);
   background: var(--selection-bg);
 }
-.workspace-changes { overflow: auto; }
+.workspace-changes { overflow: hidden; }
 
 .workspace-scroll {
   flex: 1 1 auto;
@@ -104,7 +104,12 @@
   padding: 3px 5px;
 }
 
-.workspace-changes > .workspace-scroll { min-height: 52px; }
+.workspace-changes > .workspace-changes-split {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.workspace-changes-split .workspace-scroll { height: 100%; }
 
 .workspace-empty,
 .workspace-note {
@@ -166,9 +171,9 @@
 .workspace-status:is([data-status='??'], [data-status*='A']) { color: var(--success); }
 
 .workspace-commit {
-  flex: none;
+  height: 100%;
+  overflow: auto;
   padding: 8px;
-  border-top: 1px solid var(--border);
 }
 
 .workspace-commit .field label { font-size: 0.76rem; }

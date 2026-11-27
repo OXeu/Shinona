@@ -174,6 +174,7 @@
   "repository.files": "檔案",
   "repository.changedFiles": "變更清單",
   "repository.changeCount": "變更數：{count}",
+  "repository.resizeChanges": "調整變更清單與提交區塊的大小",
   "repository.commit": "提交",
   "repository.commitMessage": "提交訊息",
   "repository.selected": "已選取 {count}/{total}",
