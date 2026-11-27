@@ -176,7 +176,7 @@ Shinona applies resource limits to existing containers when they next run. Their
 
 ## Session transfer
 
-The session list uses `GET /api/v1/sessions`. Clients can send `If-None-Match` for an unchanged `304` response. Add `delta=true` with a previously received ETag in that header to request changes. When the requested base has left the cache, the server returns the current full list. The browser pauses polling when the tab is hidden. Visible tabs showing the same account and project filter share requests when the browser supports Shared Workers.
+The session list uses `GET /api/v1/sessions`. Clients can send `If-None-Match` for an unchanged `304` response. Add `delta=true` with a previously received ETag in that header to request changes. When the requested base has left the cache, the server returns the current full list. The browser pauses polling when the tab is hidden. Visible tabs showing the same account and project filter share requests when the browser supports Shared Workers. When the last waiting tab cancels its refresh, the worker cancels the shared request.
 
 `GET /api/v1/sessions/{id}/transcript` returns a Protobuf `TranscriptPage` with media type `application/protobuf`. It returns the latest 30 turns and a cursor for fetching earlier turns with `beforeSequence`.
 

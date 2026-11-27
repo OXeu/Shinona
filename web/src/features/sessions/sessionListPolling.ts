@@ -42,9 +42,12 @@ export class SessionListPolling {
   }
 
   private releaseWorker(error?: unknown) {
+    for (const [id, request] of this.pending) {
+      this.send({ type: 'cancel', id })
+      request.settle(error)
+    }
     this.port?.close()
     this.port = undefined
-    for (const request of this.pending.values()) request.settle(error)
   }
 
   async refresh(base: SessionListSnapshot | undefined, signal: AbortSignal): Promise<SessionListSnapshot> {
@@ -69,6 +72,7 @@ export class SessionListPolling {
         this.pending.delete(id)
       }
       const abort = () => {
+        this.send({ type: 'cancel', id })
         finish()
         reject(signal.reason)
       }

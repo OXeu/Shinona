@@ -11,6 +11,7 @@ export interface SessionListScope {
 
 export type SessionListWorkerRequest =
   | { type: 'refresh'; id: number; scope: SessionListScope; etag?: string }
+  | { type: 'cancel'; id: number }
   | { type: 'invalidate' }
 
 export type SessionListWorkerReply =

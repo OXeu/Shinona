@@ -29,11 +29,15 @@ export const useSessionStore = defineStore('sessions', () => {
   let serverSnapshot: SessionListSnapshot | undefined
   let polling: SessionListPolling | undefined
 
+  function closePolling() {
+    polling?.close()
+    polling = undefined
+  }
+
   function resetPolling() {
     refreshID++
     serverSnapshot = undefined
-    polling?.close()
-    polling = undefined
+    closePolling()
   }
 
   function useAccount(owner: string | undefined) {
@@ -185,7 +189,7 @@ export const useSessionStore = defineStore('sessions', () => {
   return {
     recent, projects, projectNames, selectedProject, draftProject,
     composerSelection, chooseComposerOptions, moveDraftComposerOptions,
-    useAccount, refresh, selectProject, selectDraftProject,
+    useAccount, refresh, closePolling, selectProject, selectDraftProject,
     openSession, resolveSessionProject, leaveSession,
     createProject, renameProject, removeProject, upsert, remove, markRead,
   }

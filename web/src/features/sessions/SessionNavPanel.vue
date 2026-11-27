@@ -120,6 +120,7 @@ onUnmounted(() => {
   window.removeEventListener('online', restart)
   window.removeEventListener('focus', resumeOnFocus)
   listing?.abort()
+  store.closePolling()
   clearTimeout(timer)
 })
 </script>
