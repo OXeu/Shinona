@@ -1,6 +1,7 @@
 package pigo
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,19 @@ import (
 )
 
 const maxJSONCompletionBytes = 8 << 20
+
+type jsonCompletionReader struct {
+	io.Reader
+	progress func()
+}
+
+func (body jsonCompletionReader) Read(data []byte) (int, error) {
+	n, err := body.Reader.Read(data)
+	if len(bytes.Trim(data[:n], " \t\r\n")) > 0 {
+		body.progress()
+	}
+	return n, err
+}
 
 type jsonCompletionChoice struct {
 	FinishReason string                 `json:"finish_reason"`

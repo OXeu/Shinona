@@ -83,7 +83,8 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 		if transport.completedBody == nil {
 			return nil
 		}
-		reply, err := decodeJSONCompletion(transport.completedBody, model)
+		body := jsonCompletionReader{Reader: transport.completedBody, progress: resetIdle}
+		reply, err := decodeJSONCompletion(body, model)
 		if err != nil {
 			return err
 		}

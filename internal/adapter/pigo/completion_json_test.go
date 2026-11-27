@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sky-valley/pi/ai"
@@ -143,5 +145,56 @@ func TestJSONCompletionStillReportsInactivity(t *testing.T) {
 	result, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Explain."}, &recordingWorkspace{})
 	if !errors.Is(err, run.ErrModelIdle) || result.Output != "" {
 		t.Fatalf("incomplete JSON should time out cleanly: %q, %v", result.Output, err)
+	}
+}
+
+func TestJSONCompletionInactivityTracksResponseData(t *testing.T) {
+	const start = `{"choices":[{"message":{`
+	const finish = `"content":"Answer."},"finish_reason":"stop"}]}`
+	for _, tc := range []struct {
+		name   string
+		chunks []string
+		output string
+		err    error
+	}{
+		{"response data", []string{start, `"role":"assistant",`, finish}, "Answer.", nil},
+		{"whitespace only", []string{start, " \t", "\r\n ", finish}, "", run.ErrModelIdle},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				client := &http.Client{Transport: completionTransport(func(request *http.Request) (*http.Response, error) {
+					_ = request.Body.Close()
+					body, writer := io.Pipe()
+					ctx := request.Context()
+					stop := context.AfterFunc(ctx, func() { _ = writer.CloseWithError(ctx.Err()) })
+					go func() {
+						defer stop()
+						defer func() { _ = writer.Close() }()
+						for _, chunk := range tc.chunks {
+							select {
+							case <-ctx.Done():
+								return
+							case <-time.After(3 * time.Second):
+							}
+							if _, err := io.WriteString(writer, chunk); err != nil {
+								return
+							}
+						}
+					}()
+					return &http.Response{
+						StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: body,
+					}, nil
+				})}
+				endpoint, err := NewEndpoint("https://fixture.example/v1", "fixture", client)
+				if err != nil {
+					t.Fatal(err)
+				}
+				endpoint.completionIdle = 5 * time.Second
+				result, err := New(endpoint, "fixture", nil).Run(t.Context(), run.Input{Prompt: "Explain."}, &recordingWorkspace{})
+				if !errors.Is(err, tc.err) || result.Output != tc.output {
+					t.Fatalf("got output %q and error %v, want %q and %v", result.Output, err, tc.output, tc.err)
+				}
+			})
+		})
 	}
 }
