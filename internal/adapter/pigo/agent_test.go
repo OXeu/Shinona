@@ -211,6 +211,51 @@ func TestLoadsStoredConversationHistory(t *testing.T) {
 	}
 }
 
+func TestAgentPersistsNewCompactionWithinTheSameMillisecond(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const firstSummary = "First snapshot."
+		const latestSummary = "Snapshot after more work."
+		const finalAnswer = "Inspection complete."
+		fixture := scriptedAgent(t,
+			ai.AssistantMessage{Content: ai.ContentList{ai.TextContent{Text: firstSummary}}},
+			ai.AssistantMessage{
+				StopReason: ai.StopToolUse,
+				Usage:      ai.Usage{Input: 41_000, Output: 21_000},
+				Content: ai.ContentList{
+					ai.TextContent{Text: strings.Repeat("More evidence. ", 6_000)},
+					ai.ToolCall{ID: "read-file", Name: "read", Arguments: map[string]any{"path": "answer.txt"}},
+				},
+			},
+			ai.AssistantMessage{Content: ai.ContentList{ai.TextContent{Text: latestSummary}}},
+			ai.AssistantMessage{Content: ai.ContentList{ai.TextContent{Text: "The current request still needs the answer."}}},
+			ai.AssistantMessage{Content: ai.ContentList{ai.TextContent{Text: finalAnswer}}},
+		)
+		fixture.model.ContextWindow = 50_000
+		started := time.Now()
+		result, err := fixture.Run(t.Context(), run.Input{
+			Prompt: "Read answer.txt.",
+			History: []run.Exchange{
+				{Prompt: strings.Repeat("Past requirements. ", 8_000), Output: "Previous answer."},
+				{Prompt: strings.Repeat("Recent instructions. ", 4_000), Output: "Ready."},
+			},
+		}, &recordingWorkspace{path: "answer.txt", text: "The answer."})
+		if err != nil || result.Output != finalAnswer || time.Since(started) != 0 {
+			t.Fatalf("Pi did not finish two compactions at the same instant: %q, %v, elapsed %v", result.Output, err, time.Since(started))
+		}
+		messages, boundary, err := decodeCompactedContext(result.CompactedContext)
+		if err != nil || boundary == 0 || boundary >= len(messages) {
+			t.Fatalf("missing compaction snapshot or model response: %d / %d, %v", boundary, len(messages), err)
+		}
+		summary, ok := savedPiSummary(messages[0])
+		if !ok || !strings.Contains(summary, latestSummary) || strings.Contains(summary, firstSummary) {
+			t.Fatalf("saved the wrong Pi compaction: %q", summary)
+		}
+		if reply := assistantMessage(messages[boundary]); reply == nil || ai.ContentText(reply.Content) != finalAnswer {
+			t.Fatalf("the final reply did not stay after the latest boundary: %+v", reply)
+		}
+	})
+}
+
 type recordingWorkspace struct {
 	path, text     string
 	read, executed bool

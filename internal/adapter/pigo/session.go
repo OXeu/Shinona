@@ -57,16 +57,18 @@ func (a *Agent) runSession(ctx context.Context, input run.Input, model ai.Model,
 	prompt, _ := ai.CreateInitialSystemMessage(loadout.prompt, declarations)
 	initial := history.load(session, prompt)
 
-	// Pi reapplies each checkpoint to subsequent requests. Record its stamped
-	// system message once so later model responses stay after the boundary.
+	// Pi reapplies the same checkpoint until it prunes a larger prefix or
+	// stamps the initial compaction. Two compactions can share a timestamp.
 	transform := engine.TransformContext
 	checkpointTime := prompt.Timestamp
+	prunedMessages := 0
 	var projection []agent.AgentMessage
 	var projectedThrough int
 	engine.TransformContext = func(ctx context.Context, messages []agent.AgentMessage) []agent.AgentMessage {
 		projected := transform(ctx, messages)
-		if head, ok := ai.GetInitialSystemMessage(projected); ok && head.Timestamp != checkpointTime {
-			checkpointTime = head.Timestamp
+		pruned := len(messages) - len(projected)
+		if head, ok := ai.GetInitialSystemMessage(projected); ok && (head.Timestamp != checkpointTime || pruned > prunedMessages) {
+			checkpointTime, prunedMessages = head.Timestamp, pruned
 			projection, projectedThrough = projected, len(messages)
 		}
 		return projected
