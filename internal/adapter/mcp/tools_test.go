@@ -123,6 +123,97 @@ func TestMCPToolReleasesStreamWhenItsResultArrives(t *testing.T) {
 	}
 }
 
+func TestMCPToolDiscoveryReleasesOnePageBeforeTheNext(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, &sdk.ServerOptions{PageSize: 1})
+	for _, name := range []string{"first", "second"} {
+		sdk.AddTool(server, &sdk.Tool{Name: name}, func(_ context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, any, error) {
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: name}}}, nil, nil
+		})
+	}
+	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil)
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		data, err := io.ReadAll(r.Body)
+		var request struct{ Method string }
+		if err != nil || json.Unmarshal(data, &request) != nil {
+			t.Error("could not read the MCP request")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(data))
+		handler.ServeHTTP(w, r)
+		if request.Method == "tools/list" {
+			// The next page needs the same connection slot. Leave this SSE
+			// response open after sending its complete page.
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}
+	}))
+	t.Cleanup(fixture.Close)
+	client := *fixture.Client()
+	transport := client.Transport.(*http.Transport).Clone()
+	transport.MaxConnsPerHost = 1
+	client.Transport = transport
+	t.Cleanup(transport.CloseIdleConnections)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	servers := NewServers(settings.MCPConfig{{Name: "fixture", URL: fixture.URL}}, &client, nil)
+	tools, closeTools, err := servers.Open(ctx, "owner", []string{"fixture"})
+	if err != nil || len(tools) != 2 {
+		t.Fatalf("opening a catalog with two pages: %d tools, %v", len(tools), err)
+	}
+	defer func() { _ = closeTools() }()
+	for i, name := range []string{"first", "second"} {
+		output, err := tools[i].Execute(ctx, nil)
+		if err != nil || output.Text != name {
+			t.Fatalf("tool %d after paginated discovery: %+v, %v", i, output, err)
+		}
+	}
+}
+
+func TestMCPToolDiscoveryStopsInvalidPagination(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		cursor     func(int) string
+		pages      int
+	}{
+		{"repeated cursor", "repeated pagination cursor", func(int) string { return "second-page" }, 2},
+		{"page budget", "page limit", strconv.Itoa, maxToolCatalogPages},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+			var pages atomic.Int32
+			server.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+				return func(ctx context.Context, method string, request sdk.Request) (sdk.Result, error) {
+					if method != "tools/list" {
+						return next(ctx, method, request)
+					}
+					n := int(pages.Add(1))
+					if n > tc.pages {
+						return nil, errors.New("unexpected page request after the fixture ended")
+					}
+					return &sdk.ListToolsResult{NextCursor: tc.cursor(n), Tools: []*sdk.Tool{}}, nil
+				}
+			})
+			fixture := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server {
+				return server
+			}, &sdk.StreamableHTTPOptions{JSONResponse: true}))
+			t.Cleanup(fixture.Close)
+			servers := NewServers(settings.MCPConfig{{Name: "fixture", URL: fixture.URL}}, fixture.Client(), nil)
+			tools, closeTools, err := servers.Open(t.Context(), "owner", []string{"fixture"})
+			if closeTools != nil {
+				defer func() { _ = closeTools() }()
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) || len(tools) != 0 || int(pages.Load()) != tc.pages {
+				t.Fatalf("catalog discovery: %d pages, %d tools, %v", pages.Load(), len(tools), err)
+			}
+		})
+	}
+}
+
 func TestMCPIncompleteJSONResponseKeepsSessionUsable(t *testing.T) {
 	t.Run("truncated", func(t *testing.T) {
 		testMCPIncompleteJSONResponse(t, 0)

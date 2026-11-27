@@ -184,6 +184,11 @@ func (t tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 var toolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,60}$`)
 
+const (
+	maxToolsPerServer   = 64
+	maxToolCatalogPages = maxToolsPerServer
+)
+
 func qualifiedToolName(server, name string) string {
 	const maxName = 64
 	id := sha256.Sum256([]byte(server))
@@ -202,29 +207,47 @@ func listTools(ctx context.Context, connection *sdk.ClientSession, server string
 	defer cancel()
 	tools := make([]run.Tool, 0)
 	seen := make(map[string]bool)
-	for entry, err := range connection.Tools(ctx, nil) {
+	cursors := make(map[[sha256.Size]byte]struct{})
+	var cursor string
+	for range maxToolCatalogPages {
+		// A server can leave an SSE response open after sending a complete
+		// page. Release that response before requiring another connection.
+		pageCtx, finishPage := context.WithCancel(ctx)
+		page, err := connection.ListTools(pageCtx, &sdk.ListToolsParams{Cursor: cursor})
+		finishPage()
 		if err != nil {
 			return nil, err
 		}
-		schema, ok := entry.InputSchema.(map[string]any)
-		if !ok || !toolName.MatchString(entry.Name) || seen[entry.Name] {
-			continue
+		for _, entry := range page.Tools {
+			schema, ok := entry.InputSchema.(map[string]any)
+			if !ok || !toolName.MatchString(entry.Name) || seen[entry.Name] {
+				continue
+			}
+			seen[entry.Name] = true
+			raw, err := json.Marshal(schema)
+			if err != nil {
+				return nil, fmt.Errorf("encode MCP tool %q schema: %w", entry.Name, err)
+			}
+			tools = append(tools, run.Tool{
+				Name: qualifiedToolName(server, entry.Name), Label: server + ": " + entry.Name,
+				Description: fmt.Sprintf("MCP server %s. %s", server, entry.Description),
+				Schema:      raw, Execute: executeTool(connection, entry.Name),
+			})
+			if len(tools) == maxToolsPerServer {
+				return tools, nil
+			}
 		}
-		seen[entry.Name] = true
-		raw, err := json.Marshal(schema)
-		if err != nil {
-			return nil, fmt.Errorf("encode MCP tool %q schema: %w", entry.Name, err)
+		cursor = page.NextCursor
+		if cursor == "" {
+			return tools, nil
 		}
-		tools = append(tools, run.Tool{
-			Name: qualifiedToolName(server, entry.Name), Label: server + ": " + entry.Name,
-			Description: fmt.Sprintf("MCP server %s. %s", server, entry.Description),
-			Schema:      raw, Execute: executeTool(connection, entry.Name),
-		})
-		if len(tools) == 64 {
-			break
+		fingerprint := sha256.Sum256([]byte(cursor))
+		if _, repeated := cursors[fingerprint]; repeated {
+			return nil, errors.New("the MCP tool catalog returned a repeated pagination cursor")
 		}
+		cursors[fingerprint] = struct{}{}
 	}
-	return tools, nil
+	return nil, fmt.Errorf("the MCP tool catalog exceeds the %d-page limit", maxToolCatalogPages)
 }
 
 func executeTool(session *sdk.ClientSession, name string) func(context.Context, map[string]any) (run.ToolResult, error) {

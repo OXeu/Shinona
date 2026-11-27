@@ -139,7 +139,7 @@ For OAuth, save the server and select **Sign in**. Shinona discovers the authori
 
 Shinona saves each account's grant in SQLite and refreshes it when the provider issues a refresh token. **Disconnect** removes Shinona's saved grant. [MCP authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
 
-Each account can configure up to 16 MCP servers. Server URLs must omit embedded credentials, queries, and fragments. **Remove all** clears the current account's server list and its saved grants. MCP responses can contain up to 4 MiB per JSON response or server-sent event, and up to 16 MiB per event stream.
+Each account can configure up to 16 MCP servers. Server URLs must omit embedded credentials, queries, and fragments. **Remove all** clears the current account's server list and its saved grants. MCP responses can contain up to 4 MiB per JSON response or server-sent event, and up to 16 MiB per event stream. Tool discovery accepts up to 64 tools per server and reports an error if listing would require more than 64 pages.
 
 ### E2B Cloud and self-hosted E2B
 
