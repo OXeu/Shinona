@@ -188,6 +188,7 @@
   "repository.refresh": "Refresh workspace",
   "repository.closePreview": "Back to list",
   "repository.refreshPreview": "Refresh preview",
+  "repository.wrapLines": "Wrap long lines",
   "repository.emptyPreview": "Nothing to display.",
   "repository.fileStatus": "Git status: {status}",
   "repository.truncated": "Only the first part is shown.",

@@ -4,11 +4,12 @@ import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { messageFor } from '../../shared/errors'
 import { HttpError } from '../../shared/http'
 import { t } from '../../shared/i18n'
+import UiCodePreview from '../../shared/ui/UiCodePreview.vue'
 import UiIconButton from '../../shared/ui/UiIconButton.vue'
-import { UiBox, UiInline, UiPre, UiSection, UiSubheading } from '../../shared/ui/elements'
+import { UiBox, UiInline, UiSection, UiSubheading } from '../../shared/ui/elements'
 import { workspaceApi } from './workspaceApi'
 import type { WorkspacePreview } from './workspaceApi'
-import { diffLines } from './workspaceInspection'
+import { workspacePatchFiles } from './workspaceInspection'
 import type { WorkspaceInspection } from './workspaceInspection'
 
 const props = defineProps<{ sessionId: string; inspection: WorkspaceInspection }>()
@@ -17,7 +18,8 @@ const panel = shallowRef<HTMLElement | null>(null)
 const preview = ref<WorkspacePreview | null>(null)
 const loading = ref(false)
 const error = ref('')
-const lines = computed(() => props.inspection.diff ? diffLines(preview.value?.text ?? '') : [])
+const wrap = ref(false)
+const patchFiles = computed(() => props.inspection.diff && preview.value ? workspacePatchFiles(preview.value.text) : [])
 let reading: AbortController | undefined
 
 function setPanel(element: HTMLElement | null) {
@@ -71,6 +73,12 @@ onUnmounted(() => reading?.abort())
         {{ inspection.status }}
       </UiInline>
       <UiIconButton
+        icon="text-wrap"
+        :label="t('repository.wrapLines')"
+        :aria-pressed="wrap"
+        @click="wrap = !wrap"
+      />
+      <UiIconButton
         icon="refresh-line"
         :label="t('repository.refreshPreview')"
         :aria-disabled="loading"
@@ -80,16 +88,18 @@ onUnmounted(() => reading?.abort())
     <UiInline v-if="error || (loading && !preview)" class="workspace-note">{{ error || t('repository.loading') }}</UiInline>
     <UiInline v-if="preview?.truncated" class="workspace-note">{{ t('repository.truncated') }}</UiInline>
     <UiInline v-if="preview && !preview.text" class="workspace-note">{{ t('repository.emptyPreview') }}</UiInline>
-    <UiPre v-if="lines.length" class="workspace-code" tabindex="0">
-      <UiInline
-        v-for="({ line, kind }, index) in lines"
-        :key="index"
-        class="workspace-diff-line"
-        :data-kind="kind"
-      >
-        {{ line }}
-      </UiInline>
-    </UiPre>
-    <UiPre v-else-if="preview?.text" class="workspace-code" tabindex="0">{{ preview.text }}</UiPre>
+    <UiBox
+      v-if="preview?.text"
+      class="workspace-code-scroll"
+      tabindex="0"
+    >
+      <UiCodePreview
+        :name="inspection.path || inspection.title"
+        :text="preview.text"
+        :diffs="patchFiles"
+        :plain="inspection.diff && !patchFiles.length"
+        :wrap="wrap"
+      />
+    </UiBox>
   </UiSection>
 </template>

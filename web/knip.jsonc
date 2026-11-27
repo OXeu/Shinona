@@ -1,5 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6.48.0/schema.json",
   "entry": ["lint/*.test.js", "bench/*.js"],
+  // Selected through @pierre/diffs' preferredHighlighter option.
+  "ignoreDependencies": ["@pierre/highlights"],
   "project": ["*.{js,ts}", "src/**/*.{js,ts,vue,less}", "lint/*.js", "bench/*.js", "!src/features/sessions/wire/*_pb.ts"]
 }

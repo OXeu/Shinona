@@ -90,6 +90,11 @@
   opacity: 0.55;
   cursor: default;
 }
+
+.workspace-controls .icon-button[aria-pressed='true'] {
+  color: var(--foreground);
+  background: var(--selection-bg);
+}
 .workspace-changes { overflow: auto; }
 
 .workspace-scroll {
@@ -194,24 +199,13 @@
   font-size: 0.73rem;
 }
 
-.workspace-code {
+.workspace-code-scroll {
   flex: 1 1 0;
   min-height: 0;
-  margin: 0;
-  padding: 8px;
   overflow: auto;
   border-top: 1px solid var(--border);
   background: var(--surface);
-  font: 0.78rem/1.5 ui-monospace, monospace;
+  overscroll-behavior: contain;
 }
 
-.workspace-code:focus-visible { outline: 2px solid var(--accent); }
-.workspace-diff-line {
-  display: block;
-  min-width: 100%;
-  min-height: 1.5em;
-  width: max-content;
-}
-.workspace-diff-line[data-kind='addition'] { background: color-mix(in srgb, var(--success) 16%, transparent); }
-.workspace-diff-line[data-kind='deletion'] { background: color-mix(in srgb, var(--danger) 16%, transparent); }
-.workspace-diff-line[data-kind='hunk'] { color: var(--link); }
+.workspace-code-scroll:focus-visible { outline: 2px solid var(--accent); }
