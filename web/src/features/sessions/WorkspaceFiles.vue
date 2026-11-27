@@ -43,7 +43,6 @@ function openEntry(entry: WorkspaceEntry) {
       </UiButton>
     </UiBox>
     <UiBox class="workspace-scroll">
-      <UiInline class="workspace-note" :title="rootLabel">{{ rootLabel }}</UiInline>
       <UiInline v-if="files && !files.entries.length" class="workspace-note">{{ t('repository.noFiles') }}</UiInline>
       <UiInline v-if="files?.truncated" class="workspace-note">{{ t('repository.truncated') }}</UiInline>
       <UiList class="workspace-rows">

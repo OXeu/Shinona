@@ -69,12 +69,6 @@ function signOut(close: () => void) {
         :aria-controls="sessionsId"
         @click="toggleSessions"
       />
-      <UiIconButton
-        v-else
-        icon="arrow-left-line"
-        :label="t('nav.back')"
-        @click="goBack"
-      />
     </UiBox>
     <UiBox class="app-header-center">
       <UiHeading v-if="workbenchPage" class="app-header-title" :title="title">{{ title }}</UiHeading>

@@ -258,15 +258,8 @@ const messages = computed(() => {
     </template>
 
     <template #before-composer>
-      <UiBox class="welcome-bar" :hidden="!centered">
-        <UiImage
-          class="welcome-peek"
-          src="/shinona-logo.webp"
-          alt=""
-          width="38"
-          height="38"
-        />
-        <SessionProjectPicker v-if="!hasSelection" hide-all />
+      <UiBox class="welcome-project" :hidden="hasSelection">
+        <SessionProjectPicker hide-all />
       </UiBox>
     </template>
     <template #composer>

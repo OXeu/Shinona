@@ -127,17 +127,6 @@ onUnmounted(() => {
 
 <template>
   <UiNav class="session-nav" :aria-label="t('sessions.heading')">
-    <UiBox class="session-nav-header">
-      <UiButton
-        class="session-nav-new"
-        :disabled="!selectedId"
-        :aria-current="!selectedId ? 'page' : undefined"
-        @click="startNewSession"
-      >
-        <UiIcon name="add-line" />
-        <UiInline>{{ t('sessions.new') }}</UiInline>
-      </UiButton>
-    </UiBox>
     <UiBox class="session-nav-tools">
       <UiBox class="session-nav-controls" :inert="searchOpen">
         <SessionProjectPicker compact />
@@ -172,6 +161,18 @@ onUnmounted(() => {
           @click="closeSearch"
         />
       </UiBox>
+    </UiBox>
+
+    <UiBox class="session-nav-header">
+      <UiButton
+        class="session-nav-new"
+        :disabled="!selectedId"
+        :aria-current="!selectedId ? 'page' : undefined"
+        @click="startNewSession"
+      >
+        <UiIcon name="add-line" />
+        <UiInline>{{ t('sessions.new') }}</UiInline>
+      </UiButton>
     </UiBox>
 
     <UiSplitPanel
