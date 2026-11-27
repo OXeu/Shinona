@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sky-valley/pi/ai"
@@ -16,41 +17,41 @@ import (
 )
 
 func TestAgentContinuesAfterToolTimeout(t *testing.T) {
-	fixture := scriptedAgent(t,
-		ai.AssistantMessage{StopReason: ai.StopToolUse, Content: ai.ContentList{
-			ai.ToolCall{ID: "tool-1", Name: "bash", Arguments: map[string]any{"command": "inspect"}},
-		}},
-		ai.AssistantMessage{Content: ai.ContentList{ai.TextContent{Text: "I can answer from the partial output."}}},
-	)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	workspace := &timedWorkspace{}
-	result, err := fixture.Run(ctx, run.Input{Prompt: "Inspect the workspace."}, workspace)
-	if err != nil || result.Output != "I can answer from the partial output." {
-		t.Fatalf("expected a final answer after the tool timeout: %q, %v", result.Output, err)
-	}
-	if deadline, _ := ctx.Deadline(); !workspace.deadline.Equal(deadline) {
-		t.Fatalf("tool received deadline %v, want caller deadline %v", workspace.deadline, deadline)
-	}
-	if len(result.Parts) != 1 || result.Parts[0].Status != string(run.Failed) {
-		t.Fatalf("expected a failed tool part: %+v", result.Parts)
-	}
-	output := result.Parts[0].Output
-	for _, detail := range []string{"context deadline exceeded", "partial stdout", "partial stderr"} {
-		if !strings.Contains(output, detail) {
-			t.Fatalf("tool output omitted %q: %q", detail, output)
+	synctest.Test(t, func(t *testing.T) {
+		fixture := scriptedAgent(t,
+			ai.AssistantMessage{StopReason: ai.StopToolUse, Content: ai.ContentList{
+				ai.ToolCall{ID: "tool-1", Name: "bash", Arguments: map[string]any{"command": "inspect", "timeout": float64(1)}},
+			}},
+			ai.AssistantMessage{Content: ai.ContentList{ai.TextContent{Text: "I can answer from the partial output."}}},
+		)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		workspace := &timedWorkspace{}
+		started := time.Now()
+		result, err := fixture.Run(ctx, run.Input{Prompt: "Inspect the workspace."}, workspace)
+		if err != nil || result.Output != "I can answer from the partial output." {
+			t.Fatalf("expected a final answer after the tool timeout: %q, %v", result.Output, err)
 		}
-	}
+		if elapsed := time.Since(started); elapsed != time.Second || ctx.Err() != nil {
+			t.Fatalf("tool timeout ended the turn after %v, caller context: %v", elapsed, ctx.Err())
+		}
+		if len(result.Parts) != 1 || result.Parts[0].Status != string(run.Failed) {
+			t.Fatalf("expected a failed tool part: %+v", result.Parts)
+		}
+		output := result.Parts[0].Output
+		for _, detail := range []string{"context deadline exceeded", "partial stdout", "partial stderr"} {
+			if !strings.Contains(output, detail) {
+				t.Fatalf("tool output omitted %q: %q", detail, output)
+			}
+		}
+	})
 }
 
-type timedWorkspace struct {
-	sandbox.Workspace
-	deadline time.Time
-}
+type timedWorkspace struct{ sandbox.Workspace }
 
-func (w *timedWorkspace) Exec(ctx context.Context, _ sandbox.Command) (sandbox.Result, error) {
-	w.deadline, _ = ctx.Deadline()
-	return sandbox.Result{Stdout: "partial stdout", Stderr: "partial stderr"}, context.DeadlineExceeded
+func (*timedWorkspace) Exec(ctx context.Context, _ sandbox.Command) (sandbox.Result, error) {
+	<-ctx.Done()
+	return sandbox.Result{Stdout: "partial stdout", Stderr: "partial stderr"}, ctx.Err()
 }
 
 func TestAgentToolsUseProvidedWorkspace(t *testing.T) {
