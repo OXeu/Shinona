@@ -188,6 +188,7 @@
   "repository.refresh": "刷新工作区",
   "repository.closePreview": "返回列表",
   "repository.refreshPreview": "刷新预览",
+  "repository.wrapLines": "长行自动换行",
   "repository.emptyPreview": "没有可显示的内容。",
   "repository.fileStatus": "Git 状态：{status}",
   "repository.truncated": "仅显示部分内容。",

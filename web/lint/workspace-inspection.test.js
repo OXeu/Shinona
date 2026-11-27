@@ -1,55 +1,47 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { diffLines } from '../src/features/sessions/workspaceInspection.ts'
+import { workspacePatchFiles } from '../src/features/sessions/workspaceInspection.ts'
 
-test('workspace diffs highlight edits inside hunks and preserve file headers and whitespace', () => {
-  const diff = [
-    'diff --git a/example b/example',
-    '--- a/example',
-    '+++ b/example',
-    '@@ -1,2 +1,3 @@',
-    '   indented context',
-    '--- removed content',
-    '+++ added content',
-    '+',
-    'diff --git a/second b/second',
-    '--- a/second',
-    '+++ b/second',
-  ]
-  const lines = diffLines(diff.join('\n') + '\n')
-  assert.deepEqual(lines.map(({ line }) => line), diff)
-  assert.deepEqual(
-    lines.map(({ kind }) => kind),
-    ['', '', '', 'hunk', '', 'deletion', 'addition', 'addition', '', '', ''],
-  )
+const diff = [
+  'diff --git a/example b/example',
+  '--- a/example',
+  '+++ b/example',
+  '@@ -1,2 +1,3 @@',
+  '   indented context',
+  '--- removed content',
+  '+++ added content',
+  '+',
+  'diff --git a/second b/second',
+  '--- a/second',
+  '+++ b/second',
+  '',
+].join('\n')
+
+test('workspace diffs parse into one file diff per changed file', () => {
+  const files = workspacePatchFiles(diff)
+  assert.deepEqual(files.map(({ name }) => name), ['example', 'second'])
+  assert.deepEqual(files.map(({ type }) => type), ['change', 'change'])
+  assert.deepEqual(files.map(({ hunks }) => hunks.length), [1, 0])
+  assert.deepEqual(files[0]?.hunks[0]?.hunkContent, [
+    { type: 'context', lines: 1, additionLineIndex: 0, deletionLineIndex: 0 },
+    { type: 'change', deletions: 1, additions: 2, deletionLineIndex: 1, additionLineIndex: 1 },
+  ])
 })
 
-test('merge previews highlight changes from each parent and reset at the next file', () => {
-  const diff = [
+test('plain file previews do not get diff parsing', () => {
+  assert.deepEqual(workspacePatchFiles('plain file\n@@ -1 +1 @@\n+literal plus'), [])
+})
+
+test('combined merge diffs fall back to the plain text viewer', () => {
+  const combined = [
     'diff --cc settings.ts',
     '--- a/settings.ts',
     '+++ b/settings.ts',
     '@@@ -1,3 -1,3 +1,3 @@@',
     '- first parent',
-    ' -second parent',
-    ' +added against second parent',
-    '+ added against first parent',
-    '  +context beginning with a plus',
-    'diff --combined defaults.ts',
-    '--- a/defaults.ts',
-    '+++ b/defaults.ts',
-    '@@@@ -1 -1 -1 +1 @@@@',
-    '  +added against third parent',
-  ]
-  const lines = diffLines(diff.join('\n'))
-  assert.deepEqual(lines.map(({ line }) => line), diff)
-  assert.deepEqual(
-    lines.map(({ kind }) => kind),
-    ['', '', '', 'hunk', 'deletion', 'deletion', 'addition', 'addition', '', '', '', '', 'hunk', 'addition'],
-  )
-})
-
-test('plain file previews do not get diff highlighting', () => {
-  assert.deepEqual(diffLines('plain file\n@@ -1 +1 @@\n+literal plus'), [])
+    ' + added against second parent',
+    '',
+  ].join('\n')
+  assert.deepEqual(workspacePatchFiles(combined), [])
 })

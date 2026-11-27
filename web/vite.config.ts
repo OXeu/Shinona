@@ -13,6 +13,15 @@ export default defineConfig(({ mode }) => {
   }
   return {
     plugins: [vue(), arrowFrame()],
+    resolve: {
+      alias: {
+        // The package exports the element definition as a side effect only from
+        // its bundled module path, not from a public entry point.
+        '@pierre/diffs/web-components': fileURLToPath(
+          new URL('./node_modules/@pierre/diffs/dist/components/web-components.js', import.meta.url),
+        ),
+      },
+    },
     server: {
       host: '127.0.0.1',
       strictPort: true,

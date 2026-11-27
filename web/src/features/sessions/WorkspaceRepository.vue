@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 
 import { messageFor } from '../../shared/errors'
 import { HttpError } from '../../shared/http'
@@ -10,11 +10,12 @@ import { UiBox } from '../../shared/ui/elements'
 import WorkspaceChangesPanel from './WorkspaceChanges.vue'
 import WorkspaceFiles from './WorkspaceFiles.vue'
 import WorkspaceHistory from './WorkspaceHistory.vue'
-import WorkspaceInspectionPanel from './WorkspaceInspection.vue'
 import type { RepositoryView } from './workbench'
 import { workspaceApi } from './workspaceApi'
 import type { GitCommit, WorkspaceChanges, WorkspaceEntry, WorkspaceList } from './workspaceApi'
 import type { WorkspaceInspection } from './workspaceInspection'
+
+const WorkspaceInspectionPanel = defineAsyncComponent(() => import('./WorkspaceInspection.vue'))
 
 const props = defineProps<{
   sessionId: string
