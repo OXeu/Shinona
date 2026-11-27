@@ -18,23 +18,45 @@ import (
 )
 
 const (
-	modelResponseIdle   = 3 * time.Minute
-	modelIdleDiagnostic = "model_idle"
-	maxModelStreamBytes = 32 << 20
-	maxModelErrorBytes  = 64 << 10
+	modelResponseIdle    = 3 * time.Minute
+	modelCompletionDrain = 2 * time.Second
+	modelIdleDiagnostic  = "model_idle"
+	maxModelStreamBytes  = 32 << 20
+	maxModelErrorBytes   = 64 << 10
 )
 
 func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.TranscriptContext,
 	options *ai.SimpleStreamOptions, report func(run.ContextUsage),
 ) *ai.AssistantMessageEventStream {
 	request, cancel := context.WithCancelCause(ctx)
-	timer := time.AfterFunc(e.completionIdle, func() { cancel(run.ErrModelIdle) })
+	httpContext, cancelHTTP := context.WithCancel(request)
 	var idleMu sync.Mutex
+	var draining bool
+	timer := time.AfterFunc(e.completionIdle, func() {
+		idleMu.Lock()
+		finished := draining
+		idleMu.Unlock()
+		if finished {
+			// Pi treats a canceled body read as the end of the SSE stream.
+			// Keep its own context alive so it can finish the declared response.
+			cancelHTTP()
+			return
+		}
+		cancel(run.ErrModelIdle)
+	})
 	resetIdle := func() {
 		idleMu.Lock()
 		defer idleMu.Unlock()
-		if timer.Stop() {
+		if !draining && timer.Stop() {
 			timer.Reset(e.completionIdle)
+		}
+	}
+	startDrain := func() {
+		idleMu.Lock()
+		defer idleMu.Unlock()
+		if !draining && timer.Stop() {
+			draining = true
+			timer.Reset(min(modelCompletionDrain, e.completionIdle))
 		}
 	}
 	stopIdle := func() {
@@ -48,7 +70,7 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 	opts.Identity = &ai.ClientIdentity{Attribution: ai.NoAttribution}
 	client := *e.client
 	client.Timeout = 0
-	transport := &completionClient{Client: &client, streamLimit: e.streamLimit}
+	transport := &completionClient{Client: &client, httpContext: httpContext, streamLimit: e.streamLimit}
 	opts.HTTPClient = transport
 	var completed *ai.AssistantMessage
 	onResponse := opts.OnResponse
@@ -86,14 +108,28 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 			return
 		}
 		lastTokens = tokens
-		resetIdle()
 		if report != nil && request.Err() == nil {
 			report(run.ContextUsage{Tokens: int32(tokens), Window: int32(model.ContextWindow)})
 		}
 	}
+	var generatedHighWater int
 	opts.OnProviderStreamEvent = func(data any, _ *ai.Model) error {
 		chunk, _ := data.(ai.OrderedObject)
-		reportUsage(completionUsage(chunk))
+		var choice ai.OrderedObject
+		value, _ := chunk.Get("choices")
+		if choices, _ := value.([]any); len(choices) > 0 {
+			choice, _ = choices[0].(ai.OrderedObject)
+		}
+		finish, _ := choice.Get("finish_reason")
+		if reason, _ := finish.(string); reason != "" {
+			startDrain()
+		}
+		total, generated := completionUsage(chunk, choice)
+		if generated > generatedHighWater {
+			generatedHighWater = generated
+			resetIdle()
+		}
+		reportUsage(total)
 		return nil
 	}
 
@@ -101,6 +137,7 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 	output := ai.NewAssistantMessageEventStream()
 	go func() {
 		defer cancel(nil)
+		defer cancelHTTP()
 		defer stopIdle()
 		defer output.End()
 		for event := range source.Events() {
@@ -150,9 +187,14 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 	return output
 }
 
-func completionUsage(chunk ai.OrderedObject) int {
+func completionUsage(chunk, choice ai.OrderedObject) (int, int) {
 	value, _ := chunk.Get("usage")
-	usage, _ := value.(ai.OrderedObject)
+	usage, ok := value.(ai.OrderedObject)
+	if !ok {
+		// Pi also accepts providers that report usage on the first choice.
+		value, _ := choice.Get("usage")
+		usage, _ = value.(ai.OrderedObject)
+	}
 	number := func(field string) int {
 		value, _ := usage.Get(field)
 		switch count := value.(type) {
@@ -165,10 +207,12 @@ func completionUsage(chunk ai.OrderedObject) int {
 			return 0
 		}
 	}
-	if total := number("total_tokens"); total > 0 {
-		return total
+	generated := number("completion_tokens")
+	total := number("total_tokens")
+	if total <= 0 {
+		total = number("prompt_tokens") + generated
 	}
-	return number("prompt_tokens") + number("completion_tokens")
+	return total, generated
 }
 
 var (
@@ -178,13 +222,14 @@ var (
 
 type completionClient struct {
 	*http.Client
+	httpContext   context.Context
 	streamLimit   int64
 	completedBody io.Reader
 }
 
 // Some compatible endpoints return a JSON completion even when streaming is requested.
 func (c *completionClient) Do(req *http.Request) (*http.Response, error) {
-	response, err := c.Client.Do(req)
+	response, err := c.Client.Do(req.WithContext(c.httpContext))
 	c.completedBody = nil
 	if err != nil {
 		return response, err

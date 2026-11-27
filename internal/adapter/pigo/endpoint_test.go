@@ -252,12 +252,17 @@ func TestAgentReportsModelInactivityWithPartialOutput(t *testing.T) {
 		}
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
+		updates := 0
 		for {
 			select {
 			case <-r.Context().Done():
 				return
 			case <-ticker.C:
-				_, _ = fmt.Fprint(w, ": keepalive\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"}}]}\n\n")
+				// Repeated or corrected counts must not keep an idle response alive.
+				updates++
+				generated := 2 + updates%2
+				_, _ = fmt.Fprintf(w, ": keepalive\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"}}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":%d,\"total_tokens\":%d}}\n\n",
+					generated, 10+generated)
 				if err := controller.Flush(); err != nil {
 					return
 				}
@@ -273,6 +278,118 @@ func TestAgentReportsModelInactivityWithPartialOutput(t *testing.T) {
 	result, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Explain."}, &recordingWorkspace{})
 	if !errors.Is(err, run.ErrModelIdle) || len(result.Parts) != 1 || result.Parts[0].Text != "Partial answer." {
 		t.Fatalf("model idle timeout should preserve the partial response: %+v, %v", result.Parts, err)
+	}
+}
+
+func TestAgentAllowsGenerationReportedBeforeVisibleOutput(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		controller := http.NewResponseController(w)
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for tokens := 1; tokens <= 12; tokens++ {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+			}
+			_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":%d}}]}\n\n", tokens)
+			if err := controller.Flush(); err != nil {
+				return
+			}
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Answer.\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+	endpoint, err := NewEndpoint(server.URL, "fixture", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint.completionIdle = 150 * time.Millisecond
+	result, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Explain."}, &recordingWorkspace{})
+	if err != nil || result.Output != "Answer." || result.ContextTokens != 22 {
+		t.Fatalf("model generating before its first visible answer: %q, context tokens=%d, %v", result.Output, result.ContextTokens, err)
+	}
+}
+
+func TestAgentFinishesAfterDeclaredStopWithoutDoneFrame(t *testing.T) {
+	t.Run("HTTP1", func(t *testing.T) { assertModelFinishesWithoutDoneFrame(t, false) })
+	t.Run("HTTP2", func(t *testing.T) { assertModelFinishesWithoutDoneFrame(t, true) })
+}
+
+func assertModelFinishesWithoutDoneFrame(t *testing.T, http2 bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	closed := make(chan struct{})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(closed)
+		w.Header().Set("Content-Type", "text/event-stream")
+		controller := http.NewResponseController(w)
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Finished answer.\"},\"finish_reason\":\"stop\"}]}\n\n")
+		if err := controller.Flush(); err != nil {
+			return
+		}
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":5}}\n\n")
+		for {
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			if err := controller.Flush(); err != nil {
+				return
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}))
+	if http2 {
+		server.EnableHTTP2 = true
+		server.StartTLS()
+	} else {
+		server.Start()
+	}
+	defer server.Close()
+	endpoint, err := NewEndpoint(server.URL, "fixture", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint.completionIdle = 180 * time.Millisecond
+	result, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Explain."}, &recordingWorkspace{})
+	if err != nil || result.Output != "Finished answer." || result.ContextTokens != 25 {
+		t.Fatalf("declared completion lost its answer or trailing usage: %q, context tokens=%d, %v", result.Output, result.ContextTokens, err)
+	}
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		t.Fatal("completed stream left the HTTP response open")
+	}
+}
+
+func TestAgentPreservesStreamErrorsAfterDeclaredStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Answer.\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "event: error\ndata: {\"error\":{\"message\":\"provider could not finalize the response\"}}\n\n")
+	}))
+	defer server.Close()
+	endpoint, err := NewEndpoint(server.URL, "fixture", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := New(endpoint, "fixture", nil).Run(t.Context(), run.Input{Prompt: "Explain."}, &recordingWorkspace{})
+	if !errors.Is(err, run.ErrModelResponse) || !strings.Contains(err.Error(), "provider could not finalize the response") ||
+		len(result.Parts) != 1 || result.Parts[0].Text != "Answer." {
+		t.Fatalf("stream error after a declared stop: %+v, %v", result.Parts, err)
 	}
 }
 

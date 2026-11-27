@@ -227,7 +227,7 @@
   "chat.failedDeadline": "本轮已达到时限，助手未能完成回复。",
   "chat.failedInterrupted": "服务停止，本轮处理已中断。",
   "chat.failedModel": "模型接口未返回完整回复。",
-  "chat.failedModelIdle": "模型接口长时间未返回新数据，本轮等待回复超时。",
+  "chat.failedModelIdle": "模型长时间没有报告生成进展，本轮等待回复超时。",
   "chat.retryModel": "重试模型",
   "chat.retryCurrentModel": "输入区当前模型",
   "chat.retryTurn": "重试",
