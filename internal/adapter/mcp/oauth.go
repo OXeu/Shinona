@@ -21,12 +21,13 @@ import (
 )
 
 const (
-	OAuthCallback       = "/auth/mcp/callback"
-	OAuthMetadata       = "/auth/mcp/client.json"
-	OAuthFlowLifetime   = 10 * time.Minute
-	maxOAuthFlows       = 256
-	maxFlowsPerOwner    = 8
-	oauthRefreshTimeout = 12 * time.Second
+	OAuthCallback          = "/auth/mcp/callback"
+	OAuthMetadata          = "/auth/mcp/client.json"
+	OAuthFlowLifetime      = 10 * time.Minute
+	maxOAuthFlows          = 256
+	maxFlowsPerOwner       = 8
+	oauthRefreshTimeout    = 12 * time.Second
+	oauthGrantWriteTimeout = 5 * time.Second
 )
 
 var (
@@ -379,12 +380,16 @@ func (o *OAuth) refresh(ctx context.Context, owner string, server settings.MCPSe
 	if err != nil {
 		return nil, err
 	}
-	saved, err := o.store.ReplaceMCPGrant(ctx, owner, server.Name, previous, data)
+	// The issuer may already have invalidated the old refresh token. Give
+	// the conditional write its own deadline after the exchange completes.
+	save, cancel := context.WithTimeout(context.WithoutCancel(ctx), oauthGrantWriteTimeout)
+	defer cancel()
+	saved, err := o.store.ReplaceMCPGrant(save, owner, server.Name, previous, data)
 	if err != nil {
 		return nil, err
 	}
 	if !saved {
-		return o.currentToken(ctx, owner, server)
+		return o.currentToken(save, owner, server)
 	}
 	return token, nil
 }

@@ -348,6 +348,64 @@ func TestOAuthRefreshDuringCallerOrGrantChanges(t *testing.T) {
 	}
 }
 
+func TestMCPRefreshPersistsRotatedTokenAfterRequestEnds(t *testing.T) {
+	ctx := t.Context()
+	store, err := sqlite.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	const owner = "owner"
+	if err := store.Accounts.CreatePasswordUser(ctx, auth.User{ID: owner, Email: "owner@example.test"}, []byte("test-hash")); err != nil {
+		t.Fatal(err)
+	}
+	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil || r.Form.Get("refresh_token") != "initial-refresh" {
+			t.Error("issuer did not receive the original refresh token")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		writeOAuthJSON(w, map[string]any{"access_token": "rotated-access", "refresh_token": "rotated-refresh", "expires_in": 3600})
+	}))
+	t.Cleanup(issuer.Close)
+
+	request, stopRequest := context.WithTimeout(ctx, 5*time.Second)
+	defer stopRequest()
+	write := beforeGrantReplace{OAuthStore: store.Settings, before: stopRequest}
+	oauth := NewOAuth(write, "http://127.0.0.1:5174")
+	server := settings.MCPServer{Name: "fixture", URL: issuer.URL + "/mcp", OAuth: &settings.MCPOAuthConfig{}}
+	grant := oauthGrant{
+		Fingerprint: fingerprint(server), Resource: server.URL,
+		Config: oauth2.Config{ClientID: "fixture", RedirectURL: oauth.redirect, Endpoint: oauth2.Endpoint{TokenURL: issuer.URL}},
+		Token:  &oauth2.Token{AccessToken: "initial-access", RefreshToken: "initial-refresh", Expiry: time.Now().Add(-time.Minute)},
+	}
+	data, err := json.Marshal(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Settings.SaveMCPGrant(ctx, owner, server.Name, data); err != nil {
+		t.Fatal(err)
+	}
+	token, err := oauth.refresh(request, owner, server)
+	if !errors.Is(request.Err(), context.Canceled) || err != nil || token == nil || token.RefreshToken != "rotated-refresh" {
+		t.Fatalf("the refresh did not survive the request ending at the write boundary: %v", err)
+	}
+	saved, _, err := oauth.grant(ctx, owner, server)
+	if err != nil || saved.Token.AccessToken != "rotated-access" || saved.Token.RefreshToken != "rotated-refresh" {
+		t.Fatalf("the rotated grant did not reach SQLite: %v", err)
+	}
+}
+
+type beforeGrantReplace struct {
+	OAuthStore
+	before func()
+}
+
+func (s beforeGrantReplace) ReplaceMCPGrant(ctx context.Context, owner, server string, previous, next []byte) (bool, error) {
+	s.before()
+	return s.OAuthStore.ReplaceMCPGrant(ctx, owner, server, previous, next)
+}
+
 func TestOAuthStartWaitsForServerChanges(t *testing.T) {
 	const owner = "owner"
 	var discoveryRequests atomic.Int32
