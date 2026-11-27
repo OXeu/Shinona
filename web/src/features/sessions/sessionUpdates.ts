@@ -20,8 +20,8 @@ export class SessionUpdates {
   private readonly controller = new AbortController()
   private revision = 0
   private timer?: ReturnType<typeof setTimeout>
-  private fetching = false
-  private live = false
+  private fetching?: AbortController
+  private live?: AbortController
   private liveRetryAt = 0
   private readonly retry = new RetryBackoff()
 
@@ -36,8 +36,16 @@ export class SessionUpdates {
   }
 
   close() {
-    clearTimeout(this.timer)
+    this.pause()
     this.controller.abort()
+  }
+
+  private pause() {
+    clearTimeout(this.timer)
+    this.fetching?.abort()
+    this.fetching = undefined
+    this.live?.abort()
+    this.live = undefined
   }
 
   private signInRequired() {
@@ -46,8 +54,11 @@ export class SessionUpdates {
   }
 
   wake() {
+    if (document.hidden) {
+      this.pause()
+      return
+    }
     clearTimeout(this.timer)
-    if (document.hidden) return
     this.retry.reset()
     void this.refresh()
   }
@@ -68,9 +79,8 @@ export class SessionUpdates {
   }
 
   private startLive(entry: AgentSession) {
-    if (document.hidden || Date.now() < this.liveRetryAt) return
-    this.live = true
-    const { signal } = this
+    if (document.hidden || this.signal.aborted || Date.now() < this.liveRetryAt) return
+    const { signal } = this.live = new AbortController()
     void watchLiveSession(entry, {
       sync: (updated, settings) => this.callbacks.sync(updated, settings.selected),
       progress: this.callbacks.progress,
@@ -82,21 +92,21 @@ export class SessionUpdates {
       },
     }, signal).catch(() => {
       if (signal.aborted) return
-      this.live = false
+      this.live = undefined
       this.liveRetryAt = Date.now() + liveReconnectInterval
       this.schedule()
     })
   }
 
   async refresh() {
-    const { signal } = this
-    if (this.fetching || this.live || document.hidden || signal.aborted) return
+    if (this.fetching || this.live || document.hidden || this.signal.aborted) return
     clearTimeout(this.timer)
-    this.fetching = true
+    const request = this.fetching = new AbortController()
+    const { signal } = request
     const revision = this.revision
     try {
       const result = await sessionApi.detail(this.id, signal)
-      if (signal.aborted) return
+      if (signal.aborted || document.hidden) return
       this.retry.reset()
       if (revision !== this.revision) {
         this.schedule()
@@ -110,7 +120,7 @@ export class SessionUpdates {
       this.startLive(result.session)
       this.schedule()
     } catch (error) {
-      if (signal.aborted) return
+      if (signal.aborted || document.hidden) return
       if (error instanceof HttpError && error.status === 401) {
         this.signInRequired()
         return
@@ -119,7 +129,7 @@ export class SessionUpdates {
       this.callbacks.failed(delay !== undefined)
       if (delay !== undefined) this.scheduleAfter(delay)
     } finally {
-      this.fetching = false
+      if (this.fetching === request) this.fetching = undefined
     }
   }
 }
