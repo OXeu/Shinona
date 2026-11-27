@@ -211,7 +211,7 @@ func turnFailureReason(ctx context.Context, err error) string {
 	}
 }
 
-func (w *Worker) run(ctx context.Context, active *activeTurn) (_ Result, err error) {
+func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
@@ -268,9 +268,8 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (_ Result, err err
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %w", errWorkspaceSetup, errors.Join(err, startupErr))
 	}
-	defer func() {
-		err = errors.Join(err, w.workspace.closeResource(ctx, workspace.Close))
-	}()
+	// closeResource logs cleanup failures independently of the turn's outcome.
+	defer func() { _ = w.workspace.closeResource(ctx, workspace.Close) }()
 	if startupErr != nil {
 		return Result{}, startupErr
 	}

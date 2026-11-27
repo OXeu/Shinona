@@ -342,6 +342,59 @@ func TestWorkerKeepsAcquiredLeasePastStartupDeadline(t *testing.T) {
 	})
 }
 
+func TestWorkerPreservesTurnOutcomeAfterWorkspaceCleanupTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		agentError error
+		status     Status
+		failure    string
+	}{
+		{name: "answered", status: Succeeded},
+		{name: "model idle", agentError: ErrModelIdle, status: Failed, failure: "model_idle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := t.Context()
+				writes := make(chan Completion, 1)
+				repo := workerWorkspaceRepository{completed: writes}
+				active := &activeTurn{item: Run{ID: "turn", OwnerID: "owner", SessionID: "session", Policy: sandbox.Shared}}
+				active.ctx, active.cancel = context.WithCancel(ctx)
+				defer active.cancel()
+				controls := &Controls{active: map[sessionKey]*activeTurn{active.key(): active}}
+				var cleanupError error
+				workspace := timedWorkspace{close: func(cleanup context.Context) error {
+					<-cleanup.Done()
+					cleanupError = cleanup.Err()
+					return cleanupError
+				}}
+				provider := workerWorkspaceProvider(func(context.Context) (sandbox.Workspace, error) { return workspace, nil })
+				resolve := func(context.Context, string, string) (Target, error) {
+					return Target{Provider: provider, ResolveAgent: func(context.Context, string) (Agent, error) {
+						return workerTestAgent(func(context.Context) (Result, error) {
+							return Result{Output: "model output"}, tc.agentError
+						}), nil
+					}}, nil
+				}
+				worker := NewWorker(repo, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), controls, 1, DefaultWorkspaceTimeouts())
+				worker.execute(ctx, ctx, active, func() {})
+				completion := <-writes
+				if !errors.Is(cleanupError, context.DeadlineExceeded) || completion.Status != tc.status || completion.Output != "model output" {
+					t.Fatalf("workspace cleanup returned %v; persisted completion: %+v", cleanupError, completion)
+				}
+				var failure string
+				for _, part := range completion.Parts {
+					if part.Kind == "failure" {
+						failure = part.Text
+					}
+				}
+				if failure != tc.failure {
+					t.Fatalf("persisted failure reason %q, want %q", failure, tc.failure)
+				}
+			})
+		})
+	}
+}
+
 func TestWorkerUsesConfiguredCleanupForCanceledTurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		limits := DefaultWorkspaceTimeouts()
@@ -369,7 +422,7 @@ func TestWorkerUsesConfiguredCleanupForCanceledTurn(t *testing.T) {
 		worker := NewWorker(workerWorkspaceRepository{}, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), &Controls{}, 1, limits)
 		active := &activeTurn{item: Run{OwnerID: "owner", SessionID: "session", Policy: sandbox.Shared}, ctx: ctx}
 		_, err := worker.run(ctx, active)
-		if !errors.Is(err, context.Canceled) || !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != limits.Cleanup {
+		if !errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) != limits.Cleanup {
 			t.Fatalf("worker cleanup finished after %v, error = %v", time.Since(start), err)
 		}
 	})
