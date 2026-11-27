@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -65,6 +66,62 @@ func sshFixtureProvider(t *testing.T, cleanup time.Duration, handle func(ssh.Cha
 	return &Provider{address: listener.Addr().String(), cleanup: cleanup, dial: (&net.Dialer{}).DialContext, projects: connections, client: &ssh.ClientConfig{
 		User: "fixture", Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: ssh.FixedHostKey(signer.PublicKey()),
 	}}
+}
+
+func TestAcquireRecoversWhenDockerStartedBeforeColdSSHDisconnect(t *testing.T) {
+	var dials, checks, starts atomic.Int32
+	var transport atomic.Pointer[net.TCPConn]
+	provider := sshFixtureProvider(t, 100*time.Millisecond, func(channel ssh.Channel, requests <-chan *ssh.Request) {
+		request, ok := <-requests
+		if !ok || request.Type != "exec" {
+			t.Error("expected a Docker command")
+			return
+		}
+		var exec struct{ Command string }
+		if err := ssh.Unmarshal(request.Payload, &exec); err != nil {
+			t.Error(err)
+			return
+		}
+		_ = request.Reply(true, nil)
+		switch {
+		case strings.HasPrefix(exec.Command, "exec docker 'ps' "):
+			checks.Add(1)
+			state := "exited"
+			if starts.Load() != 0 {
+				state = "running"
+			}
+			_, _ = fmt.Fprintf(channel, "fixture-container %s hardened\n", state)
+			_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{}))
+		case strings.HasPrefix(exec.Command, "exec docker 'start' "):
+			starts.Add(1)
+			// Docker has applied the operation, but SSH cannot return the status.
+			_ = transport.Load().Close()
+		default:
+			t.Errorf("unexpected Docker command %q", exec.Command)
+		}
+	})
+	provider.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		dials.Add(1)
+		transport.Store(conn.(*net.TCPConn))
+		return conn, nil
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	spec := sandbox.Spec{OwnerID: "owner", ProjectID: "project", Policy: sandbox.Shared}
+	ws, err := provider.Acquire(ctx, spec)
+	if err != nil {
+		t.Fatalf("resume the started container after SSH disconnect: %v", err)
+	}
+	if err := ws.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if dials.Load() != 2 || checks.Load() != 2 || starts.Load() != 1 {
+		t.Fatalf("acquire performed %d dials, %d status checks and %d starts", dials.Load(), checks.Load(), starts.Load())
+	}
 }
 
 func TestDestroyProjectVerifiesRemovalAfterSSHDisconnect(t *testing.T) {

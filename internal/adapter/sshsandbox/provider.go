@@ -276,16 +276,15 @@ func (p *Provider) openProject(ctx context.Context, spec sandbox.Spec, prepare f
 	key := projectConnectionKey{owner: spec.OwnerID, identity: p.identity}
 	ws, retry, err := p.tryProject(ctx, spec, key, p.projects.take(key), prepare)
 	if retry {
-		// Preparation can be a read or a provisioning step that checks current
-		// state before changing the deterministically named container.
+		// A transport can fail after Docker acted, including on its first use.
+		// Provisioning checks the same container again before making changes.
 		ws, _, err = p.tryProject(ctx, spec, key, nil, prepare)
 	}
 	return ws, err
 }
 
 func (p *Provider) tryProject(ctx context.Context, spec sandbox.Spec, key projectConnectionKey, conn *projectConnection, prepare func(*workspace) error) (lease *workspace, retry bool, err error) {
-	reused := conn != nil
-	if !reused {
+	if conn == nil {
 		client, err := p.connectClient(ctx)
 		if err != nil {
 			return nil, false, err
@@ -300,7 +299,7 @@ func (p *Provider) tryProject(ctx context.Context, spec sandbox.Spec, key projec
 		}
 	}()
 	if err := prepare(ws); err != nil {
-		return nil, reused && ws.discard.Load() && ctx.Err() == nil, err
+		return nil, ws.discard.Load() && ctx.Err() == nil, err
 	}
 	return ws, false, nil
 }
