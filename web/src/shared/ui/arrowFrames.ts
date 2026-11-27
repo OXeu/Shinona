@@ -3,7 +3,14 @@ import { request } from '../http'
 import { ArrowFrameSlots } from './arrowFrameSlots'
 
 const slots = new ArrowFrameSlots()
-let sources: Promise<[string, ArrayBuffer]> | undefined
+interface SourceLoad {
+  controller: AbortController
+  promise: Promise<[string, ArrayBuffer]>
+  pending: boolean
+  waiters: number
+}
+
+let sources: SourceLoad | undefined
 
 async function loadDocument(signal: AbortSignal) {
   const response = await request(assets.document, undefined, signal)
@@ -20,7 +27,7 @@ async function loadWasm(signal: AbortSignal) {
   const header = new Uint8Array(bytes, 0, Math.min(2, bytes.byteLength))
   // Static servers may send the file as raw gzip or decode it at fetch.
   if (header[0] === 0x1f && header[1] === 0x8b) {
-    const body = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))
+    const body = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'), { signal })
     bytes = await new Response(body).arrayBuffer()
   }
   const magic = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength))
@@ -30,16 +37,44 @@ async function loadWasm(signal: AbortSignal) {
   return bytes
 }
 
-function loadSources() {
-  if (sources) return sources
-  const attempt = new AbortController()
-  const signal = AbortSignal.any([attempt.signal, AbortSignal.timeout(10_000)])
-  sources = Promise.all([loadDocument(signal), loadWasm(signal)]).catch((error: unknown) => {
-    attempt.abort()
-    sources = undefined
-    throw error
-  })
-  return sources
+function startSourceLoad(): SourceLoad {
+  const controller = new AbortController()
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)])
+  const load: SourceLoad = {
+    controller, pending: true, waiters: 0,
+    promise: Promise.all([loadDocument(signal), loadWasm(signal)]).then(result => {
+      load.pending = false
+      return result
+    }, (error: unknown) => {
+      if (sources === load) sources = undefined
+      controller.abort()
+      throw error
+    }),
+  }
+  return load
+}
+
+async function loadSources(signal: AbortSignal) {
+  signal.throwIfAborted()
+  const load = sources ??= startSourceLoad()
+  if (!load.pending) return load.promise
+
+  load.waiters++
+  let cancel = () => {}
+  try {
+    return await new Promise<[string, ArrayBuffer]>((resolve, reject) => {
+      cancel = () => reject(signal.reason)
+      signal.addEventListener('abort', cancel, { once: true })
+      void load.promise.then(resolve, reject)
+    })
+  } finally {
+    signal.removeEventListener('abort', cancel)
+    load.waiters--
+    if (load.waiters === 0 && load.pending && sources === load) {
+      sources = undefined
+      load.controller.abort()
+    }
+  }
 }
 
 interface FrameRequest {
@@ -52,7 +87,7 @@ interface FrameRequest {
 }
 
 export async function mountArrowFrame({ slot, title, signal, onWait, onRevoke, priority }: FrameRequest) {
-  const [source, wasm] = await loadSources()
+  const [source, wasm] = await loadSources(signal)
   const releaseSlot = await slots.reserve(signal, onWait, onRevoke, priority)
   if (!releaseSlot || signal.aborted) {
     releaseSlot?.()
