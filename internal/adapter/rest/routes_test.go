@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/OXeu/shinona/internal/adapter/demo"
@@ -264,10 +265,31 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 		}
 	}
 	const path = "/sessions/history/transcript"
-	latest := decodeTranscript(t, perform(t, router, "alice", "GET", path, nil, 200))
+	latestResponse := perform(t, router, "alice", "GET", path, nil, 200)
+	latest := decodeTranscript(t, latestResponse)
 	if latest.GetSession().GetTurnCount() != run.TranscriptPageSize+1 || len(latest.Turns) != run.TranscriptPageSize ||
 		latest.Turns[0].Sequence != 2 || latest.NextBeforeSequence != 2 {
 		t.Fatalf("latest page: %+v", latest)
+	}
+	rawPage := latestResponse.Body.Bytes()
+	if got := latestResponse.Header().Get("Content-Length"); got != fmt.Sprint(len(rawPage)) {
+		t.Fatalf("unexpected uncompressed page length: %s, body has %d bytes", got, len(rawPage))
+	}
+	for offset := 0; offset < len(rawPage); {
+		_, _, size := protowire.ConsumeField(rawPage[offset:])
+		if size <= 0 {
+			t.Fatalf("invalid transcript field at byte %d: %v", offset, protowire.ParseError(size))
+		}
+		offset += size
+		if offset == len(rawPage) {
+			break
+		}
+		// A response cut at a field boundary can still decode as valid
+		// Protobuf. It must never be advertised as a complete page.
+		var partial sessionpb.TranscriptPage
+		if err := proto.Unmarshal(rawPage[:offset], &partial); err != nil || partial.GetComplete() {
+			t.Fatalf("transcript prefix at byte %d was accepted as complete: %v", offset, err)
+		}
 	}
 	ctx, recorder := timing.WithRecorder(auth.WithUser(t.Context(), auth.User{ID: "alice"}))
 	request := httptest.NewRequestWithContext(ctx, http.MethodGet, Prefix+path, nil)

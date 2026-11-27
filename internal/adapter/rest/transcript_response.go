@@ -28,8 +28,11 @@ const (
 	transcriptErrorWriteTime    = 2 * time.Second
 )
 
-// Field 5 of sessionpb.TranscriptPage holds the embedded Turn messages.
-const pageTurnField = 5
+// Fields of sessionpb.TranscriptPage written around the cached Turn messages.
+const (
+	pageTurnField     = 5
+	pageCompleteField = 6
+)
 
 type transcriptPageKey struct {
 	owner, session, policies string
@@ -109,7 +112,7 @@ func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey,
 	if err != nil {
 		return err
 	}
-	meta := &sessionpb.TranscriptPage{SandboxSettings: sessiontransfer.SandboxSettings(settings), Complete: true}
+	meta := &sessionpb.TranscriptPage{SandboxSettings: sessiontransfer.SandboxSettings(settings)}
 	var capture *boundedCapture
 	var turns [][]byte
 	if page != nil {
@@ -138,7 +141,9 @@ func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey,
 	if err != nil {
 		return err
 	}
-	size := len(header)
+	var completion [16]byte
+	end := protowire.AppendVarint(protowire.AppendTag(completion[:0], pageCompleteField, protowire.VarintType), 1)
+	size := len(header) + len(end)
 	for _, turn := range turns {
 		size += protowire.SizeTag(pageTurnField) + protowire.SizeBytes(len(turn))
 	}
@@ -160,7 +165,10 @@ func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey,
 				return err
 			}
 		}
-		return nil
+		// A valid Protobuf field prefix may omit turns. Mark completion
+		// only after the last turn has been written.
+		_, err := w.Write(end)
+		return err
 	})
 	if err == nil && capture != nil {
 		r.saveTranscriptResponse(c, key, page.TranscriptState, capture)
