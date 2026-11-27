@@ -92,13 +92,13 @@ func TestJSONCompletionRejectsTrailingOrOversizedResponses(t *testing.T) {
 	for _, test := range []struct {
 		name, body, expected string
 	}{
-		{"trailing value", before + "answer" + after + " null", "more than one JSON value"},
+		{"trailing value", before + "answer" + after + " null", "unexpected data after the JSON completion"},
 		{"truncated value", before + "partial", "unexpected EOF"},
 		{"too large", before + strings.Repeat("x", maxJSONCompletionBytes) + after, "response size limit"},
 		{"null tool call", `{"choices":[{"message":{"tool_calls":[null]},"finish_reason":"tool_calls"}]}`, "null tool call"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if completion, err := decodeJSONCompletion(strings.NewReader(test.body), &ai.Model{}); completion != nil ||
+			if completion, err := decodeJSONCompletion(strings.NewReader(test.body), &ai.Model{}, nil); completion != nil ||
 				err == nil || !strings.Contains(err.Error(), test.expected) {
 				t.Fatalf("invalid JSON completion was accepted: %v", err)
 			}
@@ -112,7 +112,7 @@ func TestJSONCompletionKeepsValidReasoningAndProviderBilling(t *testing.T) {
 		"reasoning_details":[null,{"type":"reasoning.summary","summary":false},` + detail + `]},"finish_reason":"stop",
 		"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.125,"is_byok":true,
 			"cost_details":{"upstream_inference_cost":null,"upstream_inference_prompt_cost":0.25,"upstream_inference_completions_cost":0.125}}}]}`
-	reply, err := decodeJSONCompletion(strings.NewReader(body), &ai.Model{BaseURL: "https://openrouter.ai/api/v1"})
+	reply, err := decodeJSONCompletion(strings.NewReader(body), &ai.Model{BaseURL: "https://openrouter.ai/api/v1"}, nil)
 	if err != nil || len(reply.Content) != 2 {
 		t.Fatalf("optional provider metadata prevented completion: %+v, %v", reply, err)
 	}
@@ -145,6 +145,53 @@ func TestJSONCompletionStillReportsInactivity(t *testing.T) {
 	result, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Explain."}, &recordingWorkspace{})
 	if !errors.Is(err, run.ErrModelIdle) || result.Output != "" {
 		t.Fatalf("incomplete JSON should time out cleanly: %q, %v", result.Output, err)
+	}
+}
+
+func TestJSONCompletionFinishesWhenEndpointLeavesResponseOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name, trailing, wantError string
+	}{
+		{name: "complete response", trailing: " \r\n"},
+		{name: "incomplete trailing value", trailing: " {", wantError: "unexpected data after the JSON completion"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+			defer cancel()
+			closed := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(closed)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"Answer."},"finish_reason":"stop"}]}`)
+				if err := http.NewResponseController(w).Flush(); err != nil {
+					return
+				}
+				_, _ = io.WriteString(w, tc.trailing)
+				if err := http.NewResponseController(w).Flush(); err != nil {
+					return
+				}
+				<-r.Context().Done()
+			}))
+			t.Cleanup(server.Close)
+			endpoint, err := NewEndpoint(server.URL, "fixture", server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint.completionIdle = 200 * time.Millisecond
+			result, err := New(endpoint, "fixture", nil).Run(ctx, run.Input{Prompt: "Explain."}, &recordingWorkspace{})
+			if tc.wantError == "" {
+				if err != nil || result.Output != "Answer." {
+					t.Errorf("complete JSON response lost its answer: %q, %v", result.Output, err)
+				}
+			} else if !errors.Is(err, run.ErrModelResponse) || !strings.Contains(err.Error(), tc.wantError) || result.Output != "" {
+				t.Errorf("trailing data lost its protocol error: %q, %v", result.Output, err)
+			}
+			select {
+			case <-closed:
+			case <-ctx.Done():
+				t.Fatal("the endpoint connection was left open")
+			}
+		})
 	}
 }
 

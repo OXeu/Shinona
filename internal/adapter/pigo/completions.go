@@ -37,8 +37,8 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 		finished := draining
 		idleMu.Unlock()
 		if finished {
-			// Pi treats a canceled body read as the end of the SSE stream.
-			// Keep its own context alive so it can finish the declared response.
+			// Leave Pi's request context alive so the body reader can finish
+			// the response already declared complete by the endpoint.
 			cancelHTTP()
 			return
 		}
@@ -83,8 +83,11 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 		if transport.completedBody == nil {
 			return nil
 		}
-		body := jsonCompletionReader{Reader: transport.completedBody, progress: resetIdle}
-		reply, err := decodeJSONCompletion(body, model)
+		body := jsonCompletionReader{
+			Reader: transport.completedBody, progress: resetIdle,
+			drained: func() bool { return httpContext.Err() != nil && request.Err() == nil },
+		}
+		reply, err := decodeJSONCompletion(body, model, startDrain)
 		if err != nil {
 			return err
 		}

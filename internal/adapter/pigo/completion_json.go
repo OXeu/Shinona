@@ -2,6 +2,7 @@ package pigo
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,16 +14,21 @@ import (
 )
 
 const maxJSONCompletionBytes = 8 << 20
+const jsonWhitespace = " \t\r\n"
 
 type jsonCompletionReader struct {
 	io.Reader
 	progress func()
+	drained  func() bool
 }
 
 func (body jsonCompletionReader) Read(data []byte) (int, error) {
 	n, err := body.Reader.Read(data)
-	if len(bytes.Trim(data[:n], " \t\r\n")) > 0 {
+	if len(bytes.Trim(data[:n], jsonWhitespace)) > 0 {
 		body.progress()
+	}
+	if errors.Is(err, context.Canceled) && body.drained() {
+		return n, io.EOF
 	}
 	return n, err
 }
@@ -48,7 +54,7 @@ type jsonCompletionMessage struct {
 	} `json:"tool_calls"`
 }
 
-func decodeJSONCompletion(body io.Reader, model *ai.Model) (*ai.AssistantMessage, error) {
+func decodeJSONCompletion(body io.Reader, model *ai.Model, startDrain func()) (*ai.AssistantMessage, error) {
 	var content struct {
 		ID      string                 `json:"id"`
 		Model   string                 `json:"model"`
@@ -59,12 +65,10 @@ func decodeJSONCompletion(body io.Reader, model *ai.Model) (*ai.AssistantMessage
 	decoder := json.NewDecoder(limited)
 	err := decoder.Decode(&content)
 	if err == nil {
-		err = decoder.Decode(new(json.RawMessage))
-		if err == nil {
-			err = errors.New("more than one JSON value")
-		} else if errors.Is(err, io.EOF) {
-			err = nil
+		if startDrain != nil {
+			startDrain()
 		}
+		err = checkJSONCompletionEnd(io.MultiReader(decoder.Buffered(), limited))
 	}
 	if limited.N == 0 {
 		return nil, errModelResponseTooLarge
@@ -95,6 +99,22 @@ func decodeJSONCompletion(body io.Reader, model *ai.Model) (*ai.AssistantMessage
 	}
 	reply.StopReason, reply.ErrorMessage = jsonCompletionStop(model, choice)
 	return reply, nil
+}
+
+func checkJSONCompletionEnd(remaining io.Reader) error {
+	var buffer [4096]byte
+	for {
+		n, err := remaining.Read(buffer[:])
+		if len(bytes.Trim(buffer[:n], jsonWhitespace)) != 0 {
+			return errors.New("unexpected data after the JSON completion")
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
 
 func (m jsonCompletionMessage) blocks() (ai.ContentList, error) {
