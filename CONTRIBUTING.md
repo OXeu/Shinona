@@ -124,9 +124,9 @@ go test -p 1 -cpu 2 -run '^$' -bench '^BenchmarkSandboxAPI$/^e2b$' \
   -benchmem -benchtime=5x -count=1 ./cmd/shinona
 ```
 
-Set the `BENCHER_API_KEY` repository secret to a project key for [Shinona](https://bencher.dev/console/projects/shinona). CI registers custom measures with units and publishes core, SSH, and web results to `github-ubuntu-24.04-x64`. Same-repository PR reports use `pr-<number>` with the target branch as their start point. Fork PRs and runs without a key still produce the artifacts. Bencher alerts on increases of 5% for wire bytes, 15% for allocated bytes, 10% for allocation counts, and 3% for gzip size after five samples. Mean latency alerts use a t-test. Tail latency and CPU are observational on shared runners. The Arrow gzip budget and report validation are enforced by CI.
+Set the `BENCHER_API_KEY` repository secret to a project key for [Shinona](https://bencher.dev/console/projects/shinona). CI registers custom measures with units and publishes core, SSH, and web results to a testbed named after the runner CPU, such as `github-ubuntu-24.04-x64-amd-epyc-7763`, because hosted runners mix CPU models with different speeds. Same-repository PR reports use `pr-<number>` with the target branch as their start point. Fork PRs and runs without a key still produce the artifacts. Bencher alerts on increases of 5% for wire bytes, 15% for allocated bytes, 10% for allocation counts, and 3% for gzip size after five samples. Mean latency alerts use a t-test. Tail latency and CPU are observational on shared runners. The Arrow gzip budget and report validation are enforced by CI.
 
-To run E2B in Actions, configure the `SHINONA_BENCH_E2B_API_KEY` repository secret and the `SHINONA_BENCH_E2B_TEMPLATE` repository variable, then dispatch the workflow on `main` with `e2b` enabled. It produces a `go-bench-e2b` artifact and publishes to the separate `github-ubuntu-24.04-x64-e2b` testbed.
+To run E2B in Actions, configure the `SHINONA_BENCH_E2B_API_KEY` repository secret and the `SHINONA_BENCH_E2B_TEMPLATE` repository variable, then dispatch the workflow on `main` with `e2b` enabled. It produces a `go-bench-e2b` artifact and publishes to the same CPU testbed name with an `-e2b` suffix.
 
 ## Session transfer schema
 

@@ -36,6 +36,18 @@ jobs:
           for name in TMPDIR TMP TEMP GOTMPDIR; do
             printf '%s=%s/.tmp\n' "$name" "$GITHUB_WORKSPACE"
           done >> "$GITHUB_ENV"
+      - name: Select Bencher testbed for the runner CPU
+        run: |
+          # Hosted runners mix CPU generations; keep each model on its own baseline.
+          model=$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
+          cpu=$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/\((r|tm)\)//g; s/ cpu @.*$//; s/[0-9]+-core|processor//g; s/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+          if [[ -z "$cpu" ]]; then
+            echo "::error::Cannot identify the runner CPU model."
+            exit 1
+          fi
+          echo "Runner CPU: $model"
+          echo "BENCHER_TESTBED=github-ubuntu-24.04-x64-$cpu" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -148,7 +160,7 @@ jobs:
 
           # The CLI's json adapter follows the project's BMF version.
           bencher run --project shinona --branch "$branch" --hash "$BENCHMARK_SHA" \
-            --testbed github-ubuntu-24.04-x64 --adapter json --file .tmp/benchmarks.json \
+            --testbed "$BENCHER_TESTBED" --adapter json --file .tmp/benchmarks.json \
             --github-actions "$GITHUB_TOKEN" "${thresholds[@]}" "${options[@]}"
       - name: Publish core load variants to Bencher
         if: github.repository == 'OXeu/Shinona' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
@@ -174,8 +186,9 @@ jobs:
 
           # Select BMF v1 explicitly so the report preserves named percentiles.
           if ! jq -n --arg branch "$branch" --arg base "$base" --arg hash "$BENCHMARK_SHA" \
+            --arg testbed "$BENCHER_TESTBED" \
             --arg start "$STARTED_AT" --arg end "$ENDED_AT" --rawfile results .tmp/core-read-load.json '
-              {bmf_version: 1, branch: $branch, hash: $hash, testbed: "github-ubuntu-24.04-x64",
+              {bmf_version: 1, branch: $branch, hash: $hash, testbed: $testbed,
                start_time: $start, end_time: $end, settings: {adapter: "json_v1"}, results: [$results]}
               + (if $base == "" then {} else {start_point: {branch: $base}} end)
             ' | curl --silent --show-error --fail-with-body --max-time 60 \
@@ -220,4 +233,4 @@ jobs:
             exit 0
           fi
           bencher run --project shinona --branch "$GITHUB_REF_NAME" --hash "$GITHUB_SHA" \
-            --testbed github-ubuntu-24.04-x64-e2b --adapter json --file .tmp/go-bench-e2b.json
+            --testbed "$BENCHER_TESTBED-e2b" --adapter json --file .tmp/go-bench-e2b.json
