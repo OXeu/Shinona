@@ -186,7 +186,7 @@ The full export allows up to 5,000 turns, 128 MiB before compression, and 45 sec
 
 Set `SHINONA_TRANSCRIPT_EXPORT_CONCURRENCY` (1–32) and `SHINONA_TRANSCRIPT_PAGE_CONCURRENCY` (1–128) to tune the two request limits independently. The CPU-scaled defaults range from 1–4 full exports and 8–32 paginated requests. Restart Shinona after changing either value.
 
-`SHINONA_SQLITE_READ_CONNECTIONS` controls the read-only connection pool for file-backed SQLite databases independently of the HTTP concurrency limits. It accepts 1–64 and defaults to the Go process's CPU concurrency, bounded to 2–16. The file database has a separate single writer. In-memory databases share one connection for reads and writes. Restart Shinona to apply the change.
+`SHINONA_SQLITE_READ_CONNECTIONS` controls the read-only connection pool for file-backed SQLite databases independently of the HTTP concurrency limits. It accepts 1–64 and defaults to the Go process's CPU concurrency, bounded to 2–16. The file database has a separate single writer. In-memory databases serialize reads and writes through one query connection. A separate connection keeps their data alive when the query connection is replaced. Restart Shinona to apply the change.
 
 These startup settings control retained session list and transcript data. Each accepts 0–512 MiB, with 0 disabling that cache. The byte budgets account for cached payloads. Entry-count and per-entry limits still apply, and process memory also includes indexing and in-flight responses.
 

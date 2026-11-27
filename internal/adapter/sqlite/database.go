@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/mattn/go-sqlite3"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -30,6 +31,7 @@ type Database struct {
 	Settings       *SettingsStore
 	E2B            *E2BStore
 	stopCheckpoint func() error
+	memoryKeeper   *sql.DB
 }
 
 type pools struct {
@@ -81,7 +83,7 @@ func Open(ctx context.Context, filename string) (*Database, error) {
 }
 
 // OpenWithConfig sets the read-only pool size and decoded transcript cache budget.
-// In-memory databases use a single connection for both reads and writes.
+// In-memory databases serialize queries through one connection.
 func OpenWithConfig(ctx context.Context, filename string, config Config) (*Database, error) {
 	if config.ReadConnections < 1 || config.ReadConnections > MaxReadConnections {
 		return nil, fmt.Errorf("SQLite read connections must be between 1 and %d", MaxReadConnections)
@@ -94,28 +96,24 @@ func OpenWithConfig(ctx context.Context, filename string, config Config) (*Datab
 		return nil, err
 	}
 	writer := &sqliteConnector{dsn: writeDSN}
-	if readDSN != "" {
-		writer.driver.ConnectHook = disableWALAutoCheckpoint
+	if readDSN == "" {
+		return openMemoryDatabase(ctx, writer, config.TranscriptCacheBytes)
 	}
+	writer.driver.ConnectHook = disableWALAutoCheckpoint
 	pool := sql.OpenDB(writer)
 	db, err := openDB(pool, 1)
 	if err != nil {
 		return nil, err
 	}
-	if readDSN != "" {
-		var journal string
-		if err := db.WithContext(ctx).Raw("PRAGMA journal_mode").Row().Scan(&journal); err != nil {
-			return nil, errors.Join(err, pool.Close())
-		}
-		if journal != "wal" {
-			return nil, errors.Join(fmt.Errorf("SQLite journal mode is %q, expected WAL", journal), pool.Close())
-		}
+	var journal string
+	if err := db.WithContext(ctx).Raw("PRAGMA journal_mode").Row().Scan(&journal); err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
+	if journal != "wal" {
+		return nil, errors.Join(fmt.Errorf("SQLite journal mode is %q, expected WAL", journal), pool.Close())
 	}
 	if err := migrate(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, pool.Close())
-	}
-	if readDSN == "" {
-		return newDatabase(db, db, config.TranscriptCacheBytes), nil
 	}
 	read, err := openDB(sql.OpenDB(&sqliteConnector{dsn: readDSN}), config.ReadConnections)
 	if err != nil {
@@ -124,6 +122,26 @@ func OpenWithConfig(ctx context.Context, filename string, config Config) (*Datab
 	database := newDatabase(db, read, config.TranscriptCacheBytes)
 	database.stopCheckpoint, err = startWALCheckpoint(ctx, readDSN)
 	if err != nil {
+		return nil, errors.Join(err, database.Close())
+	}
+	return database, nil
+}
+
+func openMemoryDatabase(ctx context.Context, connector *sqliteConnector, transcriptCacheBytes int) (*Database, error) {
+	// A canceled transaction can cause database/sql to discard its connection.
+	// Keep the shared in-memory database alive independently of the query pool.
+	keeper := sql.OpenDB(connector)
+	if err := keeper.PingContext(ctx); err != nil {
+		return nil, errors.Join(err, keeper.Close())
+	}
+	pool := sql.OpenDB(connector)
+	db, err := openDB(pool, 1)
+	if err != nil {
+		return nil, errors.Join(err, keeper.Close())
+	}
+	database := newDatabase(db, db, transcriptCacheBytes)
+	database.memoryKeeper = keeper
+	if err := migrate(db.WithContext(ctx)); err != nil {
 		return nil, errors.Join(err, database.Close())
 	}
 	return database, nil
@@ -140,6 +158,13 @@ func databaseDSNs(filename string) (write, read string, err error) {
 	options.Set("_foreign_keys", "1")
 	options.Set("_ignore_check_constraints", "0")
 	if path == "" || path == ":memory:" || path == "file::memory:" || options.Get("mode") == "memory" {
+		// Preserve explicit shared URI names. Otherwise isolate each Open while
+		// allowing the keeper and replacement query connections to see its data.
+		if !strings.HasPrefix(path, "file:") || options.Get("cache") != "shared" {
+			path = "file:shinona-memory-" + uuid.NewString()
+		}
+		options.Set("mode", "memory")
+		options.Set("cache", "shared")
 		return path + "?" + options.Encode(), "", nil
 	}
 
@@ -183,14 +208,18 @@ func openDB(pool *sql.DB, maxConnections int) (*gorm.DB, error) {
 }
 
 func (r *Database) Close() error {
-	var checkpointErr, readErr error
+	var checkpointErr, readErr, keeperErr error
 	if r.stopCheckpoint != nil {
 		checkpointErr = r.stopCheckpoint()
 	}
 	if r.read != r.db {
 		readErr = closeDB(r.read)
 	}
-	return errors.Join(checkpointErr, readErr, closeDB(r.db))
+	writeErr := closeDB(r.db)
+	if r.memoryKeeper != nil {
+		keeperErr = r.memoryKeeper.Close()
+	}
+	return errors.Join(checkpointErr, readErr, writeErr, keeperErr)
 }
 
 func closeDB(db *gorm.DB) error {

@@ -125,6 +125,94 @@ func TestMemoryDatabaseKeepsOneSharedConnection(t *testing.T) {
 	}
 }
 
+func TestMemoryDatabaseSurvivesCanceledTransaction(t *testing.T) {
+	for _, dsn := range []string{":memory:", "file::memory:", "file:configured-memory?mode=memory"} {
+		t.Run(dsn, func(t *testing.T) {
+			ctx, stop := context.WithTimeout(t.Context(), 2*time.Second)
+			defer stop()
+			repo, err := Open(ctx, dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = repo.Close() })
+			seedAccounts(t, repo, "owner")
+			if err := repo.Conversations.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner", Title: "committed"}); err != nil {
+				t.Fatal(err)
+			}
+			pool, err := repo.db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			txCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			tx, err := pool.BeginTx(txCtx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			if _, err := tx.ExecContext(txCtx, "UPDATE agent_sessions SET title = 'canceled' WHERE id = 'session'"); err != nil {
+				t.Fatal(err)
+			}
+			// Leave rollback to database/sql, as when a client disconnects.
+			cancel()
+			list, err := repo.Conversations.SessionListSnapshot(ctx, "owner", nil, 1)
+			if err != nil || len(list.Sessions) != 1 || list.Sessions[0].Title != "committed" {
+				t.Fatalf("committed session after automatic rollback: %+v, %v", list.Sessions, err)
+			}
+		})
+	}
+}
+
+func TestMemoryDatabaseLifetimeAndIsolation(t *testing.T) {
+	for _, fixture := range []struct {
+		dsn    string
+		shared bool
+	}{
+		{dsn: ""},
+		{dsn: ":memory:?cache=shared"},
+		{dsn: "file::memory:"},
+		{dsn: "file::memory:?cache=shared", shared: true},
+		{dsn: "file:private-memory?mode=memory&cache=private"},
+		{dsn: "file:shared-memory?mode=memory&cache=shared", shared: true},
+	} {
+		t.Run(fixture.dsn, func(t *testing.T) {
+			ctx := t.Context()
+			open := func() *Database {
+				t.Helper()
+				db, err := Open(ctx, fixture.dsn)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = db.Close() })
+				return db
+			}
+			assertSession := func(db *Database, want bool) {
+				t.Helper()
+				list, err := db.Conversations.SessionListSnapshot(ctx, "owner", nil, 1)
+				if err != nil || (len(list.Sessions) == 1) != want {
+					t.Fatalf("shared session present = %t, want %t, error = %v", len(list.Sessions) == 1, want, err)
+				}
+			}
+			first := open()
+			seedAccounts(t, first, "owner")
+			if err := first.Conversations.CreateSession(ctx, run.Session{ID: "session", OwnerID: "owner"}); err != nil {
+				t.Fatal(err)
+			}
+			second := open()
+			assertSession(second, fixture.shared)
+			if err := first.Close(); err != nil {
+				t.Fatal(err)
+			}
+			assertSession(second, fixture.shared)
+			if err := second.Close(); err != nil {
+				t.Fatal(err)
+			}
+			assertSession(open(), false)
+		})
+	}
+}
+
 func TestSessionCacheObservesOtherRepositoryWrites(t *testing.T) {
 	ctx := t.Context()
 	filename := filepath.Join(t.TempDir(), "shinona.db")
