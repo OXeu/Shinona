@@ -323,6 +323,15 @@ func (w *workspace) requireRunningProject(ctx context.Context) error {
 }
 
 func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbox.ProjectStatus, error) {
+	ws, status, err := p.openProjectStatus(ctx, spec)
+	if err != nil {
+		return status, err
+	}
+	_ = ws.Close(ctx)
+	return status, nil
+}
+
+func (p *Provider) openProjectStatus(ctx context.Context, spec sandbox.Spec) (*workspace, sandbox.ProjectStatus, error) {
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 	var status sandbox.ProjectStatus
@@ -331,11 +340,7 @@ func (p *Provider) ProjectStatus(ctx context.Context, spec sandbox.Spec) (sandbo
 		status, err = ws.status(ctx)
 		return err
 	})
-	if err != nil {
-		return status, err
-	}
-	_ = ws.Close(ctx)
-	return status, nil
+	return ws, status, err
 }
 
 func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expectedID *string) error {
@@ -344,17 +349,13 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expect
 		return err
 	}
 	defer release()
-	ws, err := p.connect(ctx, spec)
+	ws, status, err := p.openProjectStatus(ctx, spec)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = ws.Close(ctx) }()
 	stop := context.AfterFunc(ctx, func() { _ = ws.Close(ctx) })
 	defer stop()
-	status, err := ws.status(ctx)
-	if err != nil {
-		return err
-	}
 	if expectedID != nil && status.ID != *expectedID {
 		return sandbox.ErrProjectChanged
 	}
@@ -364,7 +365,17 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expect
 	removeErr := ws.docker(ctx, "rm", "--force", "--volumes", "--", status.ID)
 	remaining, checkErr := ws.status(ctx)
 	if checkErr != nil {
-		return errors.Join(removeErr, checkErr)
+		if !ws.discard.Load() || ctx.Err() != nil {
+			return errors.Join(removeErr, checkErr)
+		}
+		// Docker may have removed the container before SSH lost its reply.
+		// Recheck on a healthy transport before reporting the outcome.
+		_ = ws.Close(ctx)
+		observed, err := p.ProjectStatus(ctx, spec)
+		if err != nil {
+			return errors.Join(removeErr, checkErr, err)
+		}
+		remaining = observed
 	}
 	if remaining.State == sandbox.ProjectNone {
 		return nil

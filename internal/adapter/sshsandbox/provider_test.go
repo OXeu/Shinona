@@ -35,30 +35,105 @@ func sshFixtureProvider(t *testing.T, cleanup time.Duration, handle func(ssh.Cha
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		_, channels, requests, err := ssh.NewServerConn(conn, server)
-		if err != nil {
-			return
-		}
-		go ssh.DiscardRequests(requests)
-		for incoming := range channels {
-			channel, requests, err := incoming.Accept()
+		for {
+			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
 			go func() {
-				defer func() { _ = channel.Close() }()
-				handle(channel, requests)
+				defer func() { _ = conn.Close() }()
+				_, channels, requests, err := ssh.NewServerConn(conn, server)
+				if err != nil {
+					return
+				}
+				go ssh.DiscardRequests(requests)
+				for incoming := range channels {
+					channel, requests, err := incoming.Accept()
+					if err != nil {
+						return
+					}
+					go func() {
+						defer func() { _ = channel.Close() }()
+						handle(channel, requests)
+					}()
+				}
 			}()
 		}
 	}()
-	return &Provider{address: listener.Addr().String(), cleanup: cleanup, dial: (&net.Dialer{}).DialContext, client: &ssh.ClientConfig{
+	connections := &ProjectConnections{}
+	t.Cleanup(func() { _ = connections.Close() })
+	return &Provider{address: listener.Addr().String(), cleanup: cleanup, dial: (&net.Dialer{}).DialContext, projects: connections, client: &ssh.ClientConfig{
 		User: "fixture", Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: ssh.FixedHostKey(signer.PublicKey()),
 	}}
+}
+
+func TestDestroyProjectVerifiesRemovalAfterSSHDisconnect(t *testing.T) {
+	const original = "container-before-disconnect"
+	destroy, err := dockerCommand([]string{"rm", "--force", "--volumes", "--", original})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		removed bool
+	}{
+		{name: "container removed", removed: true},
+		{name: "container still present"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var dials, checks, removals atomic.Int32
+			var removed atomic.Bool
+			var transport atomic.Pointer[net.TCPConn]
+			provider := sshFixtureProvider(t, 100*time.Millisecond, func(channel ssh.Channel, requests <-chan *ssh.Request) {
+				request, ok := <-requests
+				if !ok || request.Type != "exec" {
+					t.Error("expected a Docker command")
+					return
+				}
+				var exec struct{ Command string }
+				if err := ssh.Unmarshal(request.Payload, &exec); err != nil {
+					t.Error(err)
+					return
+				}
+				_ = request.Reply(true, nil)
+				switch {
+				case strings.HasPrefix(exec.Command, "exec docker 'ps' "):
+					checks.Add(1)
+					if !removed.Load() {
+						_, _ = io.WriteString(channel, original+" running hardened\n")
+					}
+					_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{}))
+				case exec.Command == destroy:
+					removals.Add(1)
+					removed.Store(tc.removed)
+					_ = transport.Load().Close()
+				default:
+					t.Errorf("unexpected Docker command %q", exec.Command)
+				}
+			})
+			provider.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+				conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+				if err != nil {
+					return nil, err
+				}
+				dials.Add(1)
+				transport.Store(conn.(*net.TCPConn))
+				return conn, nil
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			spec := sandbox.Spec{OwnerID: "owner", ProjectID: "project"}
+			status, err := provider.ProjectStatus(ctx, spec)
+			if err != nil || status.ID != original {
+				t.Fatalf("initial project status: %+v, %v", status, err)
+			}
+			err = provider.DestroyProject(ctx, spec, new(original))
+			if (err == nil) != tc.removed || dials.Load() != 2 || checks.Load() != 3 || removals.Load() != 1 {
+				t.Fatalf("destroy returned %v after %d dials, %d status checks, and %d removals",
+					err, dials.Load(), checks.Load(), removals.Load())
+			}
+		})
+	}
 }
 
 func TestDestroyProjectTargetsTheInspectedContainer(t *testing.T) {
