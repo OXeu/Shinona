@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -73,6 +75,40 @@ func (f failingMCPGrantRead) MCPGrants(context.Context, string, []string) (map[s
 	return nil, f.err
 }
 
+func TestMCPOAuthLookupFailureReturnsServerError(t *testing.T) {
+	app, repo, _ := settingsTestApp(t, nil)
+	routes := http.NewServeMux()
+	requireUser := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{ID: "alice"})))
+		})
+	}
+	app.registerOAuth(routes, requireUser, false, slog.New(slog.DiscardHandler))
+	for _, path := range []string{"/auth/mcp/start", "/auth/mcp/disconnect"} {
+		app.mcpRuntime.repo = repo.Settings
+		request := func() *httptest.ResponseRecorder {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(`{"name":"missing"}`))
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			routes.ServeHTTP(resp, req)
+			return resp
+		}
+		if resp := request(); resp.Code != http.StatusNotFound {
+			t.Fatalf("%s missing server: %d %s", path, resp.Code, resp.Body.String())
+		}
+		app.mcpRuntime.repo = failingMCPConfigRead{MCPRepository: repo.Settings}
+		if resp := request(); resp.Code != http.StatusInternalServerError || strings.Contains(resp.Body.String(), "fixture DB failure") {
+			t.Fatalf("%s lookup failure: %d %s", path, resp.Code, resp.Body.String())
+		}
+	}
+}
+
+type failingMCPConfigRead struct{ settings.MCPRepository }
+
+func (failingMCPConfigRead) MCPConfig(context.Context, string) (settings.MCPConfig, error) {
+	return nil, errors.New("fixture DB failure")
+}
+
 func TestMCPSettingsUseRegisteredOAuthClient(t *testing.T) {
 	app, repo, query := settingsTestApp(t, nil)
 	ctx := t.Context()
@@ -90,8 +126,8 @@ func TestMCPSettingsUseRegisteredOAuthClient(t *testing.T) {
 		if !info.OAuth || info.OAuthClientID != id || info.HasOAuthClientSecret != (storedSecret != "") {
 			t.Fatalf("unexpected public OAuth client metadata: %+v", info)
 		}
-		server, ok := app.lookupMCP(ctx, owner, name)
-		if !ok || server.OAuth == nil || server.OAuth.ClientID != id || server.OAuth.ClientSecret != storedSecret {
+		server, ok, err := app.lookupMCP(ctx, owner, name)
+		if err != nil || !ok || server.OAuth == nil || server.OAuth.ClientID != id || server.OAuth.ClientSecret != storedSecret {
 			t.Fatal("OAuth discovery did not receive the saved client configuration")
 		}
 	}
@@ -174,7 +210,7 @@ func TestMCPSettingsBelongToTheAccount(t *testing.T) {
 	if err != nil || len(stored) != 1 || stored[0].Name != "renamed" || stored[0].Token != "alice-secret" {
 		t.Fatalf("account's MCP settings did not survive reload: %v", err)
 	}
-	if server, ok := app.lookupMCP(ctx, "bob", "renamed"); ok || server.URL != "" {
+	if server, ok, err := app.lookupMCP(ctx, "bob", "renamed"); err != nil || ok || server.URL != "" {
 		t.Fatal("MCP OAuth could resolve another account's server")
 	}
 	input["previousName"], input["url"] = "renamed", "https://another.example.test/mcp"

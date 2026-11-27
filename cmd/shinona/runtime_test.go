@@ -93,8 +93,8 @@ func TestDotEnvFallbackAndSavedOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SHINONA_E2B_DOMAIN", "process.example")
-	t.Setenv("SHINONA_E2B_TEMPLATE", "")
-	t.Setenv("SHINONA_WEB_ORIGIN", "")
+	unsetTestEnv(t, "SHINONA_E2B_TEMPLATE")
+	unsetTestEnv(t, "SHINONA_WEB_ORIGIN")
 	environment, err := readEnvironment(path)
 	if err != nil {
 		t.Fatal(err)

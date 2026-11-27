@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 )
 
 func TestSteeringRemainsReadableWhileReceivingQueuedMessage(t *testing.T) {
@@ -121,7 +122,7 @@ func TestSteeringCompletionIncludesInFlightMessageAfterCancellation(t *testing.T
 			t.Fatalf("canceled checkpoint delivered messages: %v", delivered)
 		}
 		completed := make(chan []SteeringMessage, 1)
-		go func() { completed <- mailbox.close() }()
+		go func() { completed <- mailbox.close(t.Context()) }()
 		synctest.Wait()
 		select {
 		case messages := <-completed:
@@ -134,6 +135,28 @@ func TestSteeringCompletionIncludesInFlightMessageAfterCancellation(t *testing.T
 		}
 		if messages := <-completed; len(messages) != 1 || messages[0].ID != "queued" || messages[0].Delivered {
 			t.Fatalf("completion lost the queued message or marked it delivered: %+v", messages)
+		}
+	})
+}
+
+func TestSteeringCloseStopsWaitingAtDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var mailbox Steering
+		addSteering(t, &mailbox, "ready")
+		unblock := make(chan struct{})
+		defer close(unblock)
+		go func() {
+			_ = mailbox.enqueue(func() (SteeringMessage, error) {
+				<-unblock
+				return SteeringMessage{}, context.Canceled
+			})
+		}()
+		synctest.Wait()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		messages := mailbox.close(ctx)
+		if ctx.Err() != context.DeadlineExceeded || len(messages) != 1 || messages[0].Text != "ready" {
+			t.Fatalf("close returned %+v, context error %v", messages, ctx.Err())
 		}
 	})
 }

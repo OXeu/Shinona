@@ -41,7 +41,7 @@ func readEnvironment(path string) (environment, error) {
 }
 
 func (e environment) lookup(key string) (string, bool) {
-	if value := os.Getenv(key); value != "" {
+	if value, ok := os.LookupEnv(key); ok {
 		return value, true
 	}
 	value := e[key]

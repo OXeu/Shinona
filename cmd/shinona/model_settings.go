@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -49,28 +51,50 @@ func (m *modelRuntime) settings(ctx context.Context, owner string) (settings.Val
 }
 
 func (m *modelRuntime) load(ctx context.Context, owner string) (settings.Values, *pigo.Endpoint, error) {
-	release, err := m.owners.Acquire(ctx, owner, false)
+	release, err := m.owners.Acquire(ctx, owner, true)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer release()
-	values, err := m.settings(ctx, owner)
+	values, endpoint, found, err := m.loadCached(ctx, owner)
+	if err != nil || found {
+		return values, endpoint, err
+	}
+	release()
+
+	release, err = m.owners.Acquire(ctx, owner, false)
 	if err != nil {
 		return nil, nil, err
 	}
+	defer release()
+	// Settings or the cache may have changed while acquiring the write lock.
+	values, endpoint, found, err = m.loadCached(ctx, owner)
+	if err != nil || found {
+		return values, endpoint, err
+	}
 	base, key := values[settings.ModelBaseURL], values[settings.ModelAPIKey]
-	if base == "" {
-		return values, nil, nil
-	}
-	if cached, ok := m.cache.Get(owner); ok && cached.base == base && cached.key == key {
-		return values, cached.endpoint, nil
-	}
-	endpoint, err := m.endpoint(base, key)
+	endpoint, err = m.endpoint(base, key)
 	if err != nil {
 		return nil, nil, err
 	}
 	m.cache.Put(owner, modelEndpoint{base: base, key: key, endpoint: endpoint}, 1)
 	return values, endpoint, nil
+}
+
+func (m *modelRuntime) loadCached(ctx context.Context, owner string) (settings.Values, *pigo.Endpoint, bool, error) {
+	values, err := m.settings(ctx, owner)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	base, key := values[settings.ModelBaseURL], values[settings.ModelAPIKey]
+	if base == "" {
+		return values, nil, true, nil
+	}
+	cached, ok := m.cache.Get(owner)
+	if ok && cached.base == base && cached.key == key {
+		return values, cached.endpoint, true, nil
+	}
+	return values, nil, false, nil
 }
 
 func (m *modelRuntime) endpoint(base, key string) (*pigo.Endpoint, error) {
@@ -167,7 +191,7 @@ func (m *modelRuntime) ComposerOptions(ctx context.Context) (rest.ComposerOption
 	id := values[settings.ModelID]
 	options.DefaultModel = id
 	if id != "" {
-		window := int32(endpoint.Model(id).ContextWindow)
+		window := int32(min(math.MaxInt32, max(0, endpoint.Model(id).ContextWindow)))
 		for i, model := range options.Models {
 			if model.ID == id {
 				options.Models[i].ContextWindow = window
@@ -203,7 +227,10 @@ func (m *modelRuntime) FetchModels(ctx context.Context, base, key *string) ([]re
 	}
 	models, err := endpoint.Catalog(ctx, true)
 	if err != nil {
-		return nil, settings.Invalid("MODEL_FETCH_FAILED", "could not fetch models from the configured endpoint")
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("fetch model catalog: %w", err)
 	}
 	return modelInfos(models), nil
 }

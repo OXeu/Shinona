@@ -178,7 +178,7 @@ func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly 
 	}
 	defer func() {
 		release := timing.Start(ctx, "workspace_release")
-		closeErr := s.workspace.closeResource(ctx, ws.Close)
+		closeErr := s.workspace.closeResource(context.WithoutCancel(ctx), s.log(), ws.Close)
 		release()
 		// Keep an acknowledged operation successful even if lease cleanup fails.
 		if err != nil {
@@ -188,12 +188,12 @@ func (s *Service) withWorkspace(ctx context.Context, owner, id string, readOnly 
 	return use(ctx, ws)
 }
 
-func (limits WorkspaceTimeouts) closeResource(ctx context.Context, close func(context.Context) error) error {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), limits.Cleanup)
+func (limits WorkspaceTimeouts) closeResource(ctx context.Context, logger *slog.Logger, close func(context.Context) error) error {
+	cleanup, cancel := context.WithTimeout(ctx, limits.Cleanup)
 	defer cancel()
 	err := close(cleanup)
 	if err != nil {
-		slog.Warn("close workspace resource", "error", err)
+		logger.Warn("close workspace resource", "error", err)
 	}
 	return err
 }

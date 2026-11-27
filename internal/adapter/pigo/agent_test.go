@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -15,6 +17,100 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
 )
+
+func TestWorkerRecordsPiTurnInterruptedDuringShutdown(t *testing.T) {
+	ctx, timeout := context.WithTimeout(t.Context(), 5*time.Second)
+	defer timeout()
+	lifetime, shutdown := context.WithCancel(ctx)
+	defer shutdown()
+	started := make(chan struct{}, 1)
+	client := &http.Client{Transport: completionTransport(func(request *http.Request) (*http.Response, error) {
+		defer request.Body.Close()
+		started <- struct{}{}
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	endpoint, err := NewEndpoint("https://models.example.test/v1", "fixture", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &interruptedTurnRepository{completed: make(chan run.Completion, 1)}
+	resolve := func(context.Context, string, string) (run.Target, error) {
+		return run.Target{
+			Provider: interruptedTurnProvider{},
+			ResolveAgent: func(context.Context, string) (run.Agent, error) {
+				return New(endpoint, "fixture", nil), nil
+			},
+		}, nil
+	}
+	worker := run.NewWorker(repo, repo, resolve, slog.New(slog.DiscardHandler), &run.Controls{}, 1, run.DefaultWorkspaceTimeouts())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Serve(lifetime)
+	}()
+	select {
+	case <-started:
+		shutdown()
+	case <-ctx.Done():
+		t.Fatal("Pi never started the model request")
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("worker did not stop after canceling Pi")
+	}
+	select {
+	case completion := <-repo.completed:
+		if completion.Status != run.Failed || len(completion.Parts) != 1 || completion.Parts[0].Text != run.FailureInterrupted {
+			t.Fatalf("Pi turn completed with %+v", completion)
+		}
+	default:
+		t.Fatal("worker did not persist the interrupted turn")
+	}
+}
+
+type interruptedTurnRepository struct {
+	run.WorkerRepository
+	run.ProjectSandboxRepository
+	claimed   bool
+	completed chan run.Completion
+}
+
+func (r *interruptedTurnRepository) ClaimNext(context.Context, time.Time) (*run.Run, error) {
+	if r.claimed {
+		return nil, nil
+	}
+	r.claimed = true
+	return &run.Run{ID: "turn", OwnerID: "owner", SessionID: "session", Policy: sandbox.Shared, Prompt: "Start."}, nil
+}
+
+func (*interruptedTurnRepository) SessionProject(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (*interruptedTurnRepository) ProjectSandboxConfig(context.Context, string, string) (*run.ProjectSandboxConfig, error) {
+	return nil, nil
+}
+
+func (*interruptedTurnRepository) History(context.Context, run.Run, int) ([]run.Exchange, error) {
+	return nil, nil
+}
+
+func (r *interruptedTurnRepository) Complete(_ context.Context, _ string, completion run.Completion) error {
+	r.completed <- completion
+	return nil
+}
+
+type interruptedTurnProvider struct{}
+
+func (interruptedTurnProvider) Policies(string) []sandbox.Policy {
+	return []sandbox.Policy{sandbox.Shared}
+}
+
+func (interruptedTurnProvider) Acquire(context.Context, sandbox.Spec) (sandbox.Workspace, error) {
+	return &recordingWorkspace{}, nil
+}
 
 func TestAgentContinuesAfterToolTimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

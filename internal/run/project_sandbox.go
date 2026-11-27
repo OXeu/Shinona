@@ -3,7 +3,6 @@ package run
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -72,6 +71,11 @@ func projectTarget(ctx context.Context, repo ProjectSandboxRepository, resolve R
 	return spec, target, err
 }
 
+// ValidTemplateName reports whether name is a valid sandbox template or image name.
+func ValidTemplateName(name string) bool {
+	return templateName.MatchString(name)
+}
+
 func (c ProjectSandboxConfig) configureIdleTimeout(provider sandbox.Provider) (sandbox.Provider, error) {
 	if c.TimeoutSeconds == 0 && c.OnTimeout == "" {
 		return provider, nil
@@ -125,7 +129,7 @@ func (s *Service) ProjectSandbox(ctx context.Context, owner, id string) (Project
 		if err == nil {
 			result.Status = status
 		} else {
-			slog.Warn("check project sandbox status", "provider", target.Name, "error", err)
+			s.log().Warn("check project sandbox status", "provider", target.Name, "error", err)
 			result.Status.ID = status.ID
 		}
 	}
@@ -136,7 +140,7 @@ func (s *Service) SaveProjectSandbox(ctx context.Context, owner, id string, next
 	skipCleanupFor string, expected *ProjectSandboxExpectation,
 ) error {
 	next.Template = strings.TrimSpace(next.Template)
-	if len(next.Provider) > 64 || next.Template != "" && !templateName.MatchString(next.Template) ||
+	if len(next.Provider) > 64 || next.Template != "" && !ValidTemplateName(next.Template) ||
 		next.TimeoutSeconds < 0 || next.TimeoutSeconds > sandbox.MaxTimeoutSeconds ||
 		next.OnTimeout != "" && next.OnTimeout != sandbox.TimeoutPause && next.OnTimeout != sandbox.TimeoutKill {
 		return ErrProjectSandboxConfig
@@ -206,7 +210,7 @@ func (s *Service) cleanPreviousSandbox(ctx context.Context, name string, spec sa
 	if err == nil || errors.Is(err, sandbox.ErrProjectChanged) || ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 		return err
 	}
-	slog.Warn("clean up previous project sandbox", "provider", name, "error", err)
+	s.log().Warn("clean up previous project sandbox", "provider", name, "error", err)
 	return ErrProjectSandboxCleanup
 }
 
@@ -273,7 +277,7 @@ func (s *Service) provisionProjectSandbox(ctx context.Context, name string, prov
 	if err != nil {
 		return err
 	}
-	_ = s.workspace.closeResource(ctx, ws.Close)
+	_ = s.workspace.closeResource(context.WithoutCancel(ctx), s.log(), ws.Close)
 	return nil
 }
 

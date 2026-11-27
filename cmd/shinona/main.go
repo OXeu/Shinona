@@ -106,6 +106,7 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	defer stop()
 	controls := &run.Controls{}
 	service := run.NewService(repository.RunStores(), config.ResolveForAccount, uuid.NewString, controls, config.ProjectTargets, workspace)
+	service.SetLogger(logger)
 
 	authConfig := func() httpauth.Config {
 		current := config.Auth()
@@ -115,8 +116,8 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	}
 	authHandler := httpauth.NewWithConfig(auth.New(repository.Accounts, hasher, uuid.NewString), authConfig, authenticationLimits, logger)
 	router := newAPIRouter(lifetime, config.origin.String(), service, config, authHandler, logger, routesConfig)
-	config.oauth.Routes(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser, sameOriginJSON,
-		config.lookupMCP, config.origin.Scheme == "https", logger)
+	config.registerOAuth(httpserver.GinRoutes{IRoutes: router}, authHandler.RequireUser,
+		config.origin.Scheme == "https", logger)
 	// Keep other routes' write deadline when workspace limits are lowered.
 	writeWindow := max(run.DefaultWorkspaceTimeouts().Lifecycle, max(workspace.Operation, workspace.Lifecycle)+workspace.Cleanup)
 	server := &http.Server{
@@ -144,9 +145,13 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 		serving = true
 	}
 	stop()
-	shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	const httpGrace = 5 * time.Second
+	// A terminal closes its PTY and workspace sequentially. Workers clean up
+	// concurrently with HTTP shutdown and have a separate completion grace.
+	shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx),
+		httpGrace+max(2*workspace.Cleanup, workspace.WorkerShutdownTimeout()))
 	defer cancel()
-	httpShutdown, cancelHTTP := context.WithTimeout(shutdown, 5*time.Second)
+	httpShutdown, cancelHTTP := context.WithTimeout(shutdown, httpGrace)
 	defer cancelHTTP()
 	httpErr := server.Shutdown(httpShutdown)
 	if httpErr != nil {
@@ -162,8 +167,15 @@ func serve(ctx context.Context, logger *slog.Logger, environment environment) er
 	terminalErr := service.CloseTerminals(shutdown)
 	if terminalErr != nil {
 		terminalErr = fmt.Errorf("close workspace terminals: %w", terminalErr)
+		logger.Warn("waiting for workspace terminals before closing resources", "error", terminalErr)
+		_ = service.CloseTerminals(context.WithoutCancel(shutdown))
 	}
-	return errors.Join(ignoreServerClosed(serveErr), httpErr, terminalErr, waitForWorker(shutdown, workerDone))
+	workerErr := waitForWorker(shutdown, workerDone)
+	if workerErr != nil {
+		logger.Warn("waiting for agent workers before closing resources", "error", workerErr)
+		<-workerDone
+	}
+	return errors.Join(ignoreServerClosed(serveErr), httpErr, terminalErr, workerErr)
 }
 
 func waitForWorker(ctx context.Context, done <-chan struct{}) error {

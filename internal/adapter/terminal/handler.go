@@ -2,6 +2,7 @@
 package terminal
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -197,7 +198,7 @@ func (h handler) connect(w http.ResponseWriter, r *http.Request) {
 	}()
 	workers.Go(func() { readInput(ctx, socket, tab, cancel) })
 	workers.Go(func() {
-		keepAlive(ctx, socket, cancel, heartbeat, func(check context.Context) (bool, error) {
+		keepAlive(ctx, socket, cancel, h.logger, heartbeat, func(check context.Context) (bool, error) {
 			user, err := h.sessionUser(request.WithContext(check))
 			return user != nil && user.ID == owner, err
 		})
@@ -209,24 +210,28 @@ func (h handler) connect(w http.ResponseWriter, r *http.Request) {
 
 func readInput(ctx context.Context, socket *websocket.Conn, tab *run.TerminalSession, cancel context.CancelFunc) {
 	defer cancel()
+	var payload bytes.Buffer
 	for {
-		kind, payload, err := socket.ReadMessage()
+		kind, reader, err := socket.NextReader()
 		if err != nil {
+			return
+		}
+		payload.Reset()
+		if _, err := payload.ReadFrom(reader); err != nil {
+			return
+		}
+		var size sandbox.TerminalSize
+		if kind == websocket.TextMessage && (json.Unmarshal(payload.Bytes(), &size) != nil || !size.Valid()) {
+			sendClose(socket, websocket.CloseUnsupportedData, "Invalid terminal resize")
 			return
 		}
 		request, stop := context.WithTimeout(ctx, socketTimeout)
 		switch kind {
 		case websocket.BinaryMessage:
 			input := timing.Start(request, "pty_input")
-			err = tab.Input(request, payload)
+			err = tab.Input(request, payload.Bytes())
 			input()
 		case websocket.TextMessage:
-			var size sandbox.TerminalSize
-			if json.Unmarshal(payload, &size) != nil || !size.Valid() {
-				stop()
-				sendClose(socket, websocket.CloseUnsupportedData, "Invalid terminal resize")
-				return
-			}
 			resize := timing.Start(request, "pty_resize")
 			err = tab.Resize(request, size)
 			resize()
@@ -297,7 +302,7 @@ func write(ctx context.Context, socket *websocket.Conn, kind int, data []byte) e
 }
 
 func keepAlive(ctx context.Context, socket *websocket.Conn, cancel context.CancelFunc,
-	interval time.Duration, authorized func(context.Context) (bool, error),
+	logger *slog.Logger, interval time.Duration, authorized func(context.Context) (bool, error),
 ) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -314,6 +319,7 @@ func keepAlive(ctx context.Context, socket *websocket.Conn, cancel context.Cance
 				return
 			}
 			if err != nil {
+				logger.Warn("verify terminal session", "error", err)
 				sendClose(socket, websocket.CloseInternalServerErr, "Could not verify terminal session")
 				return
 			}

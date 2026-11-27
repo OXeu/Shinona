@@ -150,7 +150,7 @@ func (s *Steering) Finish(ctx context.Context) []string {
 	return nil
 }
 
-func (s *Steering) close() []SteeringMessage {
+func (s *Steering) close(ctx context.Context) []SteeringMessage {
 	s.mu.Lock()
 	s.sealed = true
 	var moving []<-chan struct{}
@@ -161,7 +161,11 @@ func (s *Steering) close() []SteeringMessage {
 	}
 	s.mu.Unlock()
 	for _, done := range moving {
-		<-done
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return s.snapshot()
+		}
 	}
 	return s.snapshot()
 }

@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/OXeu/shinona/internal/adapter/httpclient"
+	"github.com/OXeu/shinona/internal/adapter/httpserver"
 	"github.com/OXeu/shinona/internal/adapter/mcp"
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/settings"
@@ -33,17 +36,68 @@ func (r *mcpRuntime) accountMCP(ctx context.Context, owner string) (settings.MCP
 	return r.repo.MCPConfig(ctx, owner)
 }
 
-func (r *mcpRuntime) lookupMCP(ctx context.Context, owner, name string) (settings.MCPServer, bool) {
+func (r *mcpRuntime) lookupMCP(ctx context.Context, owner, name string) (settings.MCPServer, bool, error) {
 	servers, err := r.accountMCP(ctx, owner)
-	if err == nil {
-		for _, server := range servers {
-			if server.Name == name {
-				// User OAuth discovery must not opt into loopback network access.
-				return server, httpclient.CheckEndpoint(server.URL) == nil
-			}
+	if err != nil {
+		return settings.MCPServer{}, false, fmt.Errorf("load MCP server settings: %w", err)
+	}
+	for _, server := range servers {
+		if server.Name == name {
+			// User OAuth discovery must not opt into loopback network access.
+			return server, httpclient.CheckEndpoint(server.URL) == nil, nil
 		}
 	}
-	return settings.MCPServer{}, false
+	return settings.MCPServer{}, false, nil
+}
+
+func (r *mcpRuntime) registerOAuth(routes httpserver.Routes, requireUser func(http.Handler) http.Handler, secure bool, logger *slog.Logger) {
+	r.oauth.Routes(routes, requireUser, mcpOAuthJSON, func(ctx context.Context, owner, name string) (settings.MCPServer, bool) {
+		server, found, err := r.lookupMCP(ctx, owner, name)
+		if err != nil {
+			logger.ErrorContext(ctx, "look up MCP OAuth server", "error", err)
+			if response, ok := ctx.Value(mcpOAuthResponseKey{}).(*mcpOAuthResponse); ok {
+				response.lookupFailed = true
+			}
+		}
+		return server, found
+	}, secure, logger)
+}
+
+type mcpOAuthResponseKey struct{}
+
+// The OAuth lookup callback returns a boolean. Preserve lookup failures at
+// the HTTP boundary so the JSON routes can report them as server errors.
+type mcpOAuthResponse struct {
+	http.ResponseWriter
+	lookupFailed bool
+	wroteFailure bool
+}
+
+func mcpOAuthJSON(next http.Handler) http.Handler {
+	return sameOriginJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := &mcpOAuthResponse{ResponseWriter: w}
+		ctx := context.WithValue(r.Context(), mcpOAuthResponseKey{}, response)
+		next.ServeHTTP(response, r.WithContext(ctx))
+	}))
+}
+
+func (w *mcpOAuthResponse) WriteHeader(status int) {
+	if !w.lookupFailed {
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
+	if !w.wroteFailure {
+		w.wroteFailure = true
+		httpserver.WriteError(w.ResponseWriter, http.StatusInternalServerError, "SERVICE_UNAVAILABLE", "Could not load MCP server settings.")
+	}
+}
+
+func (w *mcpOAuthResponse) Write(body []byte) (int, error) {
+	if w.lookupFailed {
+		w.WriteHeader(http.StatusInternalServerError)
+		return len(body), nil
+	}
+	return w.ResponseWriter.Write(body)
 }
 
 func (r *mcpRuntime) MCPSettings(ctx context.Context) (settings.MCPSettings, error) {

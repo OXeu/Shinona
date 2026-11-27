@@ -154,6 +154,27 @@ func TestCachedCatalogDoesNotWaitForModelDiscovery(t *testing.T) {
 	}
 }
 
+func TestCatalogReturnsCachedFailureForEmptyCatalog(t *testing.T) {
+	var requests atomic.Int32
+	failure := errors.New("catalog is unavailable")
+	client := &http.Client{Transport: completionTransport(func(request *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return nil, failure
+	})}
+	endpoint, err := NewEndpoint("https://models.example.test/v1", "fixture", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if models, err := endpoint.Catalog(t.Context(), false); len(models) != 0 || !errors.Is(err, failure) {
+			t.Fatalf("empty catalog returned %v, %v", models, err)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected one request during the negative cache window, got %d", got)
+	}
+}
+
 func TestCompatibleEndpointCatalogAndComposerPayload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()

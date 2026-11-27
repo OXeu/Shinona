@@ -113,7 +113,7 @@ func (e *Endpoint) stream(ctx context.Context, model *ai.Model, input ai.Transcr
 		}
 		lastTokens = tokens
 		if report != nil && request.Err() == nil {
-			report(run.ContextUsage{Tokens: int32(tokens), Window: int32(model.ContextWindow)})
+			report(run.ContextUsage{Tokens: clampTokenCount(tokens), Window: clampTokenCount(model.ContextWindow)})
 		}
 	}
 	var generatedHighWater int

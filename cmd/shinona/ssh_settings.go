@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,8 +22,6 @@ import (
 	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
-
-var sshImageName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,254}$`)
 
 const sshProviderCacheSize = 128
 
@@ -214,8 +211,12 @@ func (r *sshRuntime) sshConnectionSettings(ctx context.Context, owner string, se
 	if server.User == "" || len(server.User) > 255 || strings.ContainsAny(server.User, "\x00\r\n") {
 		return settings.SSHServer{}, settings.Invalid("SSH_INVALID_USER", "enter a valid SSH user")
 	}
-	address, err := canonicalSSHAddress(strings.TrimSpace(server.Address))
-	if err != nil || len(server.Address) > 255 {
+	server.Address = strings.TrimSpace(server.Address)
+	if len(server.Address) > 255 {
+		return settings.SSHServer{}, sshAddressError()
+	}
+	address, err := canonicalSSHAddress(server.Address)
+	if err != nil {
 		return settings.SSHServer{}, sshAddressError()
 	}
 	server.Address = address
@@ -239,7 +240,7 @@ func (r *sshRuntime) SaveSSHServer(ctx context.Context, server settings.SSHServe
 		return settings.SSHServerInfo{}, err
 	}
 	server.Name = strings.Join(strings.Fields(server.Name), " ")
-	if server.Name == "" || len(server.Name) > 160 || !sshImageName.MatchString(server.Template) {
+	if server.Name == "" || len(server.Name) > 160 || !run.ValidTemplateName(server.Template) {
 		return settings.SSHServerInfo{}, settings.Invalid("INVALID_PERSONAL_SSH", "enter a server name and a valid Docker image")
 	}
 	create := server.ID == ""

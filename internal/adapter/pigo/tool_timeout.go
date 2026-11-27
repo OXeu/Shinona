@@ -32,16 +32,43 @@ func withToolTimeout(tool agent.AgentTool) agent.AgentTool {
 		if !exists {
 			return execute(ctx, id, args, update)
 		}
-		raw, err := json.Marshal(value)
-		var seconds int64
-		if err != nil || json.Unmarshal(raw, &seconds) != nil || seconds <= 0 || seconds > math.MaxInt64/int64(time.Second) {
+		duration, ok := toolTimeout(value)
+		if !ok {
 			return agent.AgentToolResult{}, errors.New("timeout must be a positive integer in seconds")
 		}
 		arguments := maps.Clone(args)
 		delete(arguments, "timeout")
-		ctx, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, duration)
 		defer cancel()
 		return execute(ctx, id, arguments, update)
 	}
 	return tool
+}
+
+func toolTimeout(value any) (time.Duration, bool) {
+	const maxSeconds = math.MaxInt64 / int64(time.Second)
+	var seconds int64
+	switch number := value.(type) {
+	case float64:
+		if !(number >= 1 && number <= float64(maxSeconds)) || math.Trunc(number) != number {
+			return 0, false
+		}
+		seconds = int64(number)
+	case int:
+		seconds = int64(number)
+	case int64:
+		seconds = number
+	case json.Number:
+		var err error
+		seconds, err = number.Int64()
+		if err != nil {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	if seconds <= 0 || seconds > maxSeconds {
+		return 0, false
+	}
+	return time.Duration(seconds) * time.Second, true
 }

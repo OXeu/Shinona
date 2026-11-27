@@ -65,7 +65,7 @@ func TestWorkerRetriesCompletionAfterPanic(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			worker.execute(t.Context(), t.Context(), active, func() {})
+			worker.execute(t.Context(), t.Context(), t.Context(), active, func() {})
 		}()
 		first := <-repo.writes
 		if first.Status != Failed || len(first.Parts) != 1 || first.Parts[0].Output != "agent turn failed unexpectedly" {
@@ -130,7 +130,7 @@ func TestWorkerRecordsServerShutdown(t *testing.T) {
 	worker := NewWorker(repo, nil, nil, slog.New(slog.DiscardHandler), controls, 1, DefaultWorkspaceTimeouts())
 
 	stop()
-	worker.execute(lifetime, t.Context(), active, func() {})
+	worker.execute(lifetime, t.Context(), t.Context(), active, func() {})
 	completion := <-repo.writes
 	if completion.Status != Failed || len(completion.Parts) != 1 || completion.Parts[0].Text != FailureInterrupted {
 		t.Fatalf("interrupted turn was not recorded: %+v", completion)
@@ -142,9 +142,13 @@ type pendingCompletionRepository struct {
 	queued chan Run
 	writes chan string
 	permit map[string]chan struct{}
+	claims chan<- struct{}
 }
 
 func (r pendingCompletionRepository) ClaimNext(context.Context, time.Time) (*Run, error) {
+	if r.claims != nil {
+		r.claims <- struct{}{}
+	}
 	select {
 	case item := <-r.queued:
 		return &item, nil
@@ -191,6 +195,106 @@ func TestWorkerBoundsCompletionRetriesDuringShutdown(t *testing.T) {
 		if elapsed := time.Since(stopping); elapsed != completionWriteTimeout || len(repo.writes) != 1 {
 			t.Fatalf("shutdown took %v, with %d completion retries", elapsed, len(repo.writes))
 		}
+	})
+}
+
+func TestWorkerPreservesCompletionWindowAfterSlowShutdownCleanup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		limits := DefaultWorkspaceTimeouts()
+		limits.Cleanup = 2 * completionWriteTimeout
+		repo := shutdownCleanupRepository{writes: make(chan time.Duration, 1)}
+		started := make(chan struct{})
+		provider := workerWorkspaceProvider(func(context.Context) (sandbox.Workspace, error) {
+			return timedWorkspace{close: func(ctx context.Context) error {
+				<-ctx.Done()
+				return ctx.Err()
+			}}, nil
+		})
+		resolve := func(context.Context, string, string) (Target, error) {
+			return Target{Provider: provider, ResolveAgent: func(context.Context, string) (Agent, error) {
+				return workerTestAgent(func(ctx context.Context) (Result, error) {
+					close(started)
+					<-ctx.Done()
+					return Result{}, ctx.Err()
+				}), nil
+			}}, nil
+		}
+		worker := NewWorker(&repo, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), &Controls{}, 1, limits)
+		ctx, shutdown := context.WithCancel(t.Context())
+		defer shutdown()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			worker.Serve(ctx)
+		}()
+		<-started
+		stopping := time.Now()
+		shutdown()
+		<-done
+		select {
+		case window := <-repo.writes:
+			if window != completionWriteTimeout {
+				t.Fatalf("completion write received %v, want %v", window, completionWriteTimeout)
+			}
+		default:
+			t.Fatal("workspace cleanup used up the completion window")
+		}
+		if elapsed := time.Since(stopping); elapsed != limits.WorkerShutdownTimeout() {
+			t.Fatalf("worker shut down after %v, want %v", elapsed, limits.WorkerShutdownTimeout())
+		}
+	})
+}
+
+type shutdownCleanupRepository struct {
+	workerWorkspaceRepository
+	claimed bool
+	writes  chan time.Duration
+}
+
+func (r *shutdownCleanupRepository) ClaimNext(context.Context, time.Time) (*Run, error) {
+	if r.claimed {
+		return nil, nil
+	}
+	r.claimed = true
+	return &Run{ID: "turn", OwnerID: "owner", SessionID: "session", Policy: sandbox.Shared}, nil
+}
+
+func (r *shutdownCleanupRepository) Complete(ctx context.Context, _ string, _ Completion) error {
+	start := time.Now()
+	<-ctx.Done()
+	r.writes <- time.Since(start)
+	return ctx.Err()
+}
+
+func TestWorkerWaitsForCompletionBeforeProbingBlockedQueue(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		permit := make(chan struct{})
+		claims := make(chan struct{}, 8)
+		repo := pendingCompletionRepository{
+			queued: make(chan Run, 1), writes: make(chan string, 1), claims: claims,
+			permit: map[string]chan struct{}{"turn": permit},
+		}
+		repo.queued <- Run{ID: "turn", OwnerID: "owner", SessionID: "session"}
+		worker := NewWorker(repo, nil, nil, slog.New(slog.DiscardHandler), &Controls{}, 3, DefaultWorkspaceTimeouts())
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			worker.Serve(ctx)
+		}()
+		<-repo.writes
+		synctest.Wait()
+		if got := len(claims); got != 2 {
+			t.Fatalf("expected one claim and one empty probe before the write completes, got %d", got)
+		}
+		close(permit)
+		synctest.Wait()
+		if got := len(claims); got != 3 {
+			t.Fatalf("expected another queue probe after the write completes, got %d", got)
+		}
+		cancel()
+		<-done
 	})
 }
 
@@ -288,7 +392,7 @@ func TestWorkerStopsClaimedTurnIfItsProjectWasRemoved(t *testing.T) {
 			return Target{}, ErrSandboxProvider
 		}
 		worker := NewWorker(repo, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), controls, 1, DefaultWorkspaceTimeouts())
-		go worker.execute(ctx, ctx, active, func() {})
+		go worker.execute(ctx, context.WithoutCancel(ctx), ctx, active, func() {})
 		synctest.Wait()
 		if len(writes) != 0 {
 			t.Fatal("the claimed turn bypassed the original project's gate")
@@ -328,7 +432,7 @@ func TestWorkerBoundsStartupAndCompletesTimedOutTurn(t *testing.T) {
 			}}, nil
 		}
 		worker := NewWorker(repo, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), controls, 1, limits)
-		worker.execute(t.Context(), t.Context(), active, func() {})
+		worker.execute(t.Context(), t.Context(), t.Context(), active, func() {})
 		completion := <-writes
 		if time.Since(start) != limits.Lifecycle || completion.Status != Failed || len(completion.Parts) != 1 || completion.Parts[0].Text != "deadline" {
 			t.Fatalf("startup ended after %v with %+v", time.Since(start), completion)
@@ -366,7 +470,7 @@ func TestWorkerKeepsAcquiredLeasePastStartupDeadline(t *testing.T) {
 		ctx := t.Context()
 		worker := NewWorker(workerWorkspaceRepository{}, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), &Controls{}, 1, limits)
 		active := &activeTurn{item: Run{OwnerID: "owner", SessionID: "session", Policy: sandbox.Shared}, ctx: ctx}
-		result, err := worker.run(ctx, active)
+		result, err := worker.run(ctx, context.WithoutCancel(ctx), active)
 		if err != nil || result.Output != "done" || !closed || lease.Err() != context.Canceled {
 			t.Fatalf("completed run = %+v, %v, closed = %t, lease error = %v", result, err, closed, lease.Err())
 		}
@@ -416,7 +520,7 @@ func TestWorkerPreservesTurnOutcomeDuringWorkspaceCleanup(t *testing.T) {
 					}}, nil
 				}
 				worker := NewWorker(repo, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), controls, 1, DefaultWorkspaceTimeouts())
-				worker.execute(ctx, ctx, active, func() {})
+				worker.execute(ctx, context.WithoutCancel(ctx), ctx, active, func() {})
 				completion := <-writes
 				if !tc.panicClose && !errors.Is(cleanupError, context.DeadlineExceeded) {
 					t.Fatalf("workspace cleanup returned %v", cleanupError)
@@ -464,7 +568,7 @@ func TestWorkerUsesConfiguredCleanupForCanceledTurn(t *testing.T) {
 		}
 		worker := NewWorker(workerWorkspaceRepository{}, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), &Controls{}, 1, limits)
 		active := &activeTurn{item: Run{OwnerID: "owner", SessionID: "session", Policy: sandbox.Shared}, ctx: ctx}
-		_, err := worker.run(ctx, active)
+		_, err := worker.run(ctx, context.WithoutCancel(ctx), active)
 		if !errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) != limits.Cleanup {
 			t.Fatalf("worker cleanup finished after %v, error = %v", time.Since(start), err)
 		}

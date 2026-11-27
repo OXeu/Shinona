@@ -25,14 +25,14 @@ type Agent struct {
 }
 
 func New(endpoint *Endpoint, modelID string, remote ToolSource) *Agent {
-	return &Agent{endpoint: endpoint, model: endpoint.Model(modelID), remote: remote}
+	return &Agent{endpoint: endpoint, model: ai.Model{ID: modelID}, remote: remote}
 }
 
 func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Workspace) (run.Result, error) {
 	model, reasoning := a.selectedModel(input.Payload.Options)
 	result := run.Result{ContextWindow: model.ContextWindow}
 	if len(input.Payload.Images) > 0 && !slices.Contains(model.Input, "image") {
-		return result, errors.New("the selected model does not accept images")
+		return result, fmt.Errorf("%w: the selected model does not accept images", run.ErrModelResponse)
 	}
 	loadout, closeTools, err := a.openTools(ctx, input, workspace)
 	if err != nil {
@@ -48,20 +48,22 @@ func (a *Agent) Run(ctx context.Context, input run.Input, workspace sandbox.Work
 		return result, err
 	}
 	execution, err := a.runSession(ctx, input, model, reasoning, loadout, history)
-	return turnResult(result, execution, err)
+	return turnResult(ctx, result, execution, err)
 }
 
 func (a *Agent) selectedModel(options run.Options) (ai.Model, agent.ThinkingLevel) {
 	model := a.model
+	reasoning := agent.ThinkOff
+	if options.Thinking != "" && options.Thinking != "off" {
+		reasoning = agent.ThinkingLevel(options.Thinking)
+	}
 	if a.endpoint != nil {
 		if options.Model != "" {
 			model.ID = options.Model
 		}
-		model = a.endpoint.Model(model.ID)
+		return a.endpoint.model(model.ID, reasoning != agent.ThinkOff), reasoning
 	}
-	reasoning := agent.ThinkOff
-	if options.Thinking != "" && options.Thinking != "off" {
-		reasoning = agent.ThinkingLevel(options.Thinking)
+	if reasoning != agent.ThinkOff {
 		model.Reasoning = true
 		model.Compat = completionCompatibility(model.Compat, false, true)
 	}
@@ -109,11 +111,14 @@ func (a *Agent) openTools(ctx context.Context, input run.Input, workspace sandbo
 	return loadout, closeTools, nil
 }
 
-func turnResult(result run.Result, execution sessionExecution, err error) (run.Result, error) {
+func turnResult(ctx context.Context, result run.Result, execution sessionExecution, err error) (run.Result, error) {
 	messages := execution.messages
 	var message *ai.AssistantMessage
 	if len(messages) > 0 {
 		message = assistantMessage(messages[len(messages)-1])
+	}
+	if err == nil && message != nil && message.StopReason == ai.StopAborted {
+		err = ctx.Err()
 	}
 	answered := err == nil && successfulResponse(message)
 	result.Parts = transcriptParts(messages, answered)
@@ -123,9 +128,10 @@ func turnResult(result run.Result, execution sessionExecution, err error) (run.R
 			if used := contextTokens(message.Usage); used > 0 {
 				result.ContextTokens = used
 			}
-			usage.Input += int32(message.Usage.Input + message.Usage.CacheWrite)
-			usage.Cached += int32(message.Usage.CacheRead)
-			usage.Output += int32(message.Usage.Output)
+			usage.Input = addTokenCount(usage.Input, message.Usage.Input)
+			usage.Input = addTokenCount(usage.Input, message.Usage.CacheWrite)
+			usage.Cached = addTokenCount(usage.Cached, message.Usage.CacheRead)
+			usage.Output = addTokenCount(usage.Output, message.Usage.Output)
 		}
 	}
 	if usage != (run.TokenUsage{}) {

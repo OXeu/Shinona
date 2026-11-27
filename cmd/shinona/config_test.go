@@ -1,18 +1,36 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
+func TestEnvironmentEmptyVariableOverridesDotEnv(t *testing.T) {
+	const key = "SHINONA_TEST_EMPTY_ENVIRONMENT_OVERRIDE"
+	values := environment{key: "from .env"}
+	t.Setenv(key, "")
+	if value, ok := values.lookup(key); value != "" || !ok {
+		t.Fatalf("explicit empty override = %q, %t", value, ok)
+	}
+}
+
+func unsetTestEnv(t *testing.T, key string) {
+	t.Helper()
+	t.Setenv(key, "")
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAPICacheBudgetsUseMiBAndAcceptZero(t *testing.T) {
 	const responses = "SHINONA_TRANSCRIPT_RESPONSE_CACHE_MIB"
 	const turns = "SHINONA_TRANSCRIPT_TURN_CACHE_MIB"
 	const lists = "SHINONA_SESSION_LIST_CACHE_MIB"
-	t.Setenv(responses, "")
-	t.Setenv(turns, "")
-	t.Setenv(lists, "")
+	unsetTestEnv(t, responses)
+	unsetTestEnv(t, turns)
+	unsetTestEnv(t, lists)
 	config := environment{responses: "0", turns: "7", lists: "3"}
 	got, err := apiConfig(config)
 	if err != nil || got.Transcript.ResponseCacheBytes != 0 || got.Transcript.TurnCacheBytes != 7<<20 || got.SessionListCacheBytes != 3<<20 {
@@ -26,7 +44,7 @@ func TestAPICacheBudgetsUseMiBAndAcceptZero(t *testing.T) {
 	if _, err := apiConfig(config); err == nil || !strings.Contains(err.Error(), lists) {
 		t.Fatalf("negative session-list cache budget returned %v", err)
 	}
-	t.Setenv(lists, "")
+	unsetTestEnv(t, lists)
 	t.Setenv(turns, "513")
 	if _, err := apiConfig(config); err == nil || !strings.Contains(err.Error(), turns) {
 		t.Fatalf("oversized turn cache returned %v", err)
@@ -40,7 +58,7 @@ func TestAPICacheBudgetsUseMiBAndAcceptZero(t *testing.T) {
 func TestOpenDatabaseRejectsInvalidReadConnections(t *testing.T) {
 	const readers = "SHINONA_SQLITE_READ_CONNECTIONS"
 	t.Setenv("SHINONA_DATABASE", ":memory:")
-	t.Setenv(readers, "")
+	unsetTestEnv(t, readers)
 	repo, err := openDatabase(t.Context(), environment{readers: "3"})
 	if err != nil {
 		t.Fatal(err)
@@ -58,9 +76,9 @@ func TestWorkspaceTimeoutsReadStartupOverrides(t *testing.T) {
 	const operation = "SHINONA_WORKSPACE_OPERATION_TIMEOUT_SECONDS"
 	const lifecycle = "SHINONA_PROJECT_SANDBOX_TIMEOUT_SECONDS"
 	const cleanup = "SHINONA_WORKSPACE_CLEANUP_TIMEOUT_SECONDS"
-	t.Setenv(operation, "")
+	unsetTestEnv(t, operation)
 	t.Setenv(lifecycle, "150")
-	t.Setenv(cleanup, "")
+	unsetTestEnv(t, cleanup)
 	config := environment{operation: "30", cleanup: "8"}
 	limits, err := workspaceTimeouts(config)
 	if err != nil || limits.Operation != 30*time.Second || limits.Lifecycle != 150*time.Second || limits.Cleanup != 8*time.Second {
@@ -75,8 +93,8 @@ func TestWorkspaceTimeoutsReadStartupOverrides(t *testing.T) {
 func TestAuthLimitsReadStartupOverrides(t *testing.T) {
 	const passwordKey = "SHINONA_AUTH_PASSWORD_CONCURRENCY"
 	const rateKey = "SHINONA_AUTH_RATE_LIMIT_ENTRIES"
-	t.Setenv(passwordKey, "")
-	t.Setenv(rateKey, "")
+	unsetTestEnv(t, passwordKey)
+	unsetTestEnv(t, rateKey)
 	config := environment{passwordKey: "6", rateKey: "4096"}
 	t.Setenv(passwordKey, "8")
 	limits, err := authLimits(config)
@@ -92,8 +110,8 @@ func TestAuthLimitsReadStartupOverrides(t *testing.T) {
 func TestResendConfig(t *testing.T) {
 	const endpointKey = "SHINONA_RESEND_API_URL"
 	const timeoutKey = "SHINONA_RESEND_TIMEOUT_SECONDS"
-	t.Setenv(endpointKey, "")
-	t.Setenv(timeoutKey, "")
+	unsetTestEnv(t, endpointKey)
+	unsetTestEnv(t, timeoutKey)
 	if got, err := resendConfig(nil); err != nil || got.Endpoint != "https://api.resend.com/emails" || got.Timeout != 8*time.Second {
 		t.Fatalf("default Resend config = %+v, %v", got, err)
 	}

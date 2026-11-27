@@ -149,7 +149,7 @@ func (s *Service) StartTerminal(ctx, lifetime context.Context, owner, id string)
 	pool.tabs[key] = append(tabs, entry)
 	pool.running[entry] = key
 	spec.RunID = entry.tab.ID
-	go pool.runTerminal(key, entry, provider, spec, s.workspace)
+	go pool.runTerminal(key, entry, provider, spec, s.workspace, s.log())
 	return entry.tab, nil
 }
 
@@ -183,7 +183,9 @@ func (p *terminalRegistry) signalDrained() {
 	}
 }
 
-func (p *terminalRegistry) runTerminal(key sessionKey, entry *TerminalSession, provider sandbox.ProjectProvider, spec sandbox.Spec, limits WorkspaceTimeouts) {
+func (p *terminalRegistry) runTerminal(key sessionKey, entry *TerminalSession, provider sandbox.ProjectProvider,
+	spec sandbox.Spec, limits WorkspaceTimeouts, logger *slog.Logger,
+) {
 	defer func() {
 		entry.cancel(context.Canceled)
 		p.mu.Lock()
@@ -193,7 +195,7 @@ func (p *terminalRegistry) runTerminal(key sessionKey, entry *TerminalSession, p
 		close(entry.done)
 		p.signalDrained()
 	}()
-	err := entry.run(provider, spec, limits)
+	err := entry.run(provider, spec, limits, logger)
 	entry.mu.Lock()
 	entry.state = TerminalExited
 	failed := err != nil && !errors.Is(err, io.EOF) && entry.ctx.Err() == nil
@@ -207,7 +209,7 @@ func (p *terminalRegistry) runTerminal(key sessionKey, entry *TerminalSession, p
 	entry.signal()
 	entry.mu.Unlock()
 	if failed {
-		slog.Warn("workspace terminal", "terminal_id", entry.tab.ID, "error", err)
+		logger.Warn("workspace terminal", "terminal_id", entry.tab.ID, "error", err)
 	}
 }
 
@@ -348,8 +350,10 @@ func (s *Service) AccountDeleted(owner string) {
 	}
 }
 
-func (t *TerminalSession) run(provider sandbox.ProjectProvider, spec sandbox.Spec, limits WorkspaceTimeouts) error {
+func (t *TerminalSession) run(provider sandbox.ProjectProvider, spec sandbox.Spec, limits WorkspaceTimeouts, logger *slog.Logger) error {
 	ctx, phases := timing.WithRecorder(t.ctx)
+	logTimings := sync.OnceFunc(func() { logger.Debug("terminal startup timing", "phases", phases) })
+	defer logTimings()
 	// Keep the context used to open the PTY for the shell's lifetime.
 	startup := time.AfterFunc(limits.Lifecycle, func() { t.cancel(errTerminalStartTimeout) })
 	defer startup.Stop()
@@ -357,25 +361,23 @@ func (t *TerminalSession) run(provider sandbox.ProjectProvider, spec sandbox.Spe
 	workspace, err := provider.Acquire(ctx, spec)
 	acquire()
 	if err != nil {
-		slog.Info("terminal startup timing", "phases", phases)
 		return err
 	}
-	defer func() { _ = limits.closeResource(t.ctx, workspace.Close) }()
+	defer func() { _ = limits.closeResource(context.WithoutCancel(t.ctx), logger, workspace.Close) }()
 	terminal, ok := workspace.(sandbox.TerminalWorkspace)
 	if !ok {
 		startup.Stop()
-		slog.Info("terminal startup timing", "phases", phases)
 		return ErrTerminalUnavailable
 	}
 	open := timing.Start(ctx, "pty_open")
 	shell, err := terminal.OpenTerminal(ctx, sandbox.TerminalSize{Cols: 80, Rows: 24})
 	startedInTime := startup.Stop()
 	open()
-	slog.Info("terminal startup timing", "phases", phases)
+	logTimings()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = limits.closeResource(t.ctx, shell.Close) }()
+	defer func() { _ = limits.closeResource(context.WithoutCancel(t.ctx), logger, shell.Close) }()
 	if !startedInTime {
 		<-ctx.Done()
 	}

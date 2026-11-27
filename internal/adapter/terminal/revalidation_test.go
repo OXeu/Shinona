@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,7 +34,7 @@ func TestTerminalRevalidationDistinguishesRevocationFromLookupFailure(t *testing
 				}
 				defer func() { _ = socket.Close() }()
 				check, stop := context.WithCancel(r.Context())
-				keepAlive(check, socket, stop, time.Millisecond, func(context.Context) (bool, error) {
+				keepAlive(check, socket, stop, slog.New(slog.DiscardHandler), time.Millisecond, func(context.Context) (bool, error) {
 					return false, tc.err
 				})
 			}))

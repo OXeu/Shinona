@@ -56,25 +56,17 @@ func NewWorker(repo WorkerRepository, projects ProjectSandboxRepository, resolve
 func (w *Worker) Serve(ctx context.Context) {
 	ticker := time.NewTicker(queueInterval)
 	defer ticker.Stop()
-	// Cancel execution immediately on shutdown. Give pending completion writes
-	// one shared grace period to finish, including retries after transient errors.
-	completions, cancelCompletions := context.WithCancel(context.WithoutCancel(ctx))
+	// Cleanup and completion writes have separate shutdown budgets.
+	detached := context.WithoutCancel(ctx)
+	cleanups, cancelCleanups := withShutdownGrace(ctx, detached, w.workspace.Cleanup)
+	defer cancelCleanups()
+	completions, cancelCompletions := withShutdownGrace(ctx, detached, w.workspace.WorkerShutdownTimeout())
 	defer cancelCompletions()
-	stopGrace := context.AfterFunc(ctx, func() {
-		timer := time.NewTimer(completionWriteTimeout)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-			cancelCompletions()
-		case <-completions.Done():
-		}
-	})
-	defer stopGrace()
 	wake := w.controls.queueWake()
 	// Allow one pending completion per execution slot. A slow write can then
 	// block its own project without immediately consuming a model slot.
 	maxOutstanding := 2 * w.parallelism
-	updates := make(chan workerEvent, maxOutstanding)
+	updates := make(chan workerEvent, 2*maxOutstanding)
 	executing, outstanding := 0, 0
 	defer func() {
 		// Completion still writes to the repository after cancellation.
@@ -85,9 +77,16 @@ func (w *Worker) Serve(ctx context.Context) {
 		}
 	}()
 
+	claimNeeded := true
 	for ctx.Err() == nil {
-		if executing < w.parallelism && outstanding < maxOutstanding {
+		if claimNeeded && executing < w.parallelism && outstanding < maxOutstanding {
+			// Any wake already queued is covered by this claim.
+			select {
+			case <-wake:
+			default:
+			}
 			item, err := w.controls.claim(ctx, w.repo)
+			claimNeeded = item != nil
 			switch {
 			case err != nil && ctx.Err() == nil:
 				w.logger.Error("claim queued run", "error", err)
@@ -96,7 +95,7 @@ func (w *Worker) Serve(ctx context.Context) {
 				outstanding++
 				go func() {
 					defer func() { updates <- completionFinished }()
-					w.execute(ctx, completions, item, func() { updates <- executionFinished })
+					w.execute(ctx, cleanups, completions, item, func() { updates <- executionFinished })
 				}()
 				continue
 			}
@@ -106,21 +105,52 @@ func (w *Worker) Serve(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			claimNeeded = true
 		case <-wake:
+			claimNeeded = true
 		case event := <-updates:
 			if event == executionFinished {
+				// The project stays blocked until its completion is durable.
 				executing--
 			} else {
 				outstanding--
+				claimNeeded = true
 			}
 		}
 	}
 }
 
-func (w *Worker) execute(ctx, completions context.Context, active *activeTurn, releaseExecution func()) {
+// WorkerShutdownTimeout bounds the worker's workspace cleanup and completion writes.
+func (limits WorkspaceTimeouts) WorkerShutdownTimeout() time.Duration {
+	return limits.Cleanup + completionWriteTimeout
+}
+
+// withShutdownGrace starts a grace period at shutdown or at registration if
+// shutdown has already begun. The parent can impose an earlier cutoff.
+func withShutdownGrace(lifetime, parent context.Context, grace time.Duration) (context.Context, func()) {
+	if lifetime.Err() != nil {
+		return context.WithTimeout(parent, grace)
+	}
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(lifetime, func() {
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			cancel()
+		case <-ctx.Done():
+		}
+	})
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
+
+func (w *Worker) execute(ctx, cleanups, completions context.Context, active *activeTurn, releaseExecution func()) {
 	defer active.cancel()
 	item := active.item
-	result, err := w.runSafely(active)
+	result, err := w.runSafely(cleanups, active)
 
 	stopping := w.controls.beginCompletion(active)
 	unstarted := errors.Is(err, errClaimedProjectChanged)
@@ -141,9 +171,18 @@ func (w *Worker) execute(ctx, completions context.Context, active *activeTurn, r
 
 	finished := time.Now().UTC()
 	releaseExecution()
-	completion := Completion{
-		Result: result, Steering: active.steering.close(), Status: status, UpdatedAt: finished, Unstarted: unstarted,
-	}
+	steeringCtx, cancelSteering := context.WithTimeout(cleanups, w.workspace.Cleanup)
+	steering := active.steering.close(steeringCtx)
+	cancelSteering()
+	w.complete(ctx, completions, active, Completion{
+		Result: result, Steering: steering, Status: status, UpdatedAt: finished, Unstarted: unstarted,
+	})
+}
+
+func (w *Worker) complete(ctx, completions context.Context, active *activeTurn, completion Completion) {
+	completions, stop := withShutdownGrace(ctx, completions, completionWriteTimeout)
+	defer stop()
+	item := active.item
 	for completions.Err() == nil {
 		saveCtx, cancel := context.WithTimeout(completions, completionWriteTimeout)
 		err := w.repo.Complete(saveCtx, item.ID, completion)
@@ -169,14 +208,14 @@ func (w *Worker) execute(ctx, completions context.Context, active *activeTurn, r
 	}
 }
 
-func (w *Worker) runSafely(active *activeTurn) (result Result, err error) {
+func (w *Worker) runSafely(cleanup context.Context, active *activeTurn) (result Result, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			w.logger.Error("panic in agent turn", "run_id", active.item.ID, "stack", string(debug.Stack()))
 			err = errors.New("agent turn failed unexpectedly")
 		}
 	}()
-	return w.run(active.ctx, active)
+	return w.run(active.ctx, cleanup, active)
 }
 
 func (w *Worker) closeTurnWorkspace(ctx context.Context, id string, workspace sandbox.Workspace) {
@@ -185,7 +224,7 @@ func (w *Worker) closeTurnWorkspace(ctx context.Context, id string, workspace sa
 			w.logger.Error("panic closing turn workspace", "run_id", id, "stack", string(debug.Stack()))
 		}
 	}()
-	_ = w.workspace.closeResource(ctx, workspace.Close)
+	_ = w.workspace.closeResource(ctx, w.logger, workspace.Close)
 }
 
 var diagnosticCredentials = regexp.MustCompile(`(?i)(\b(?:api[ _-]?key|client[ _-]?secret|access[ _-]?token|refresh[ _-]?token|authorization)\b["']?\s*[:=]\s*["']?(?:(?:bearer|basic)[ \t]+)?|\b(?:bearer|basic)[ \t]+)[^\s"',;&}\]]+`)
@@ -218,7 +257,7 @@ func turnFailureReason(ctx context.Context, err error) string {
 	}
 }
 
-func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
+func (w *Worker) run(ctx, cleanup context.Context, active *activeTurn) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
@@ -281,7 +320,7 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %w", errWorkspaceSetup, errors.Join(err, startupErr))
 	}
-	defer w.closeTurnWorkspace(ctx, item.ID, workspace)
+	defer w.closeTurnWorkspace(cleanup, item.ID, workspace)
 	if startupErr != nil {
 		w.controls.beginCompletion(active)
 		return Result{}, startupErr

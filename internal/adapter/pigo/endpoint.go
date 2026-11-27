@@ -47,6 +47,7 @@ type Endpoint struct {
 	mu             sync.Mutex
 	models         []ModelInfo
 	expires        time.Time
+	catalogErr     error
 	flight         *catalogFetch
 }
 
@@ -71,11 +72,11 @@ func NewEndpoint(base, key string, client *http.Client) (*Endpoint, error) {
 }
 
 func matchesModelOrigin(endpoint *url.URL, modelBase string) bool {
-	if endpoint.Scheme != "https" {
+	if endpoint.Scheme != "https" || endpoint.User != nil {
 		return false
 	}
 	catalog, err := url.Parse(modelBase)
-	if err != nil || catalog.Scheme != endpoint.Scheme || catalog.Hostname() == "" {
+	if err != nil || catalog.Scheme != endpoint.Scheme || catalog.Hostname() == "" || catalog.User != nil {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSuffix(endpoint.Hostname(), "."), strings.TrimSuffix(catalog.Hostname(), ".")) &&
@@ -90,9 +91,9 @@ func httpsPort(endpoint *url.URL) string {
 }
 
 func (e *Endpoint) Catalog(ctx context.Context, force bool) ([]ModelInfo, error) {
-	models, flight := e.catalog(force)
+	models, flight, err := e.catalog(force)
 	if flight == nil {
-		return models, nil
+		return models, err
 	}
 	defer timing.Start(ctx, "model_catalog_wait")()
 	select {
@@ -107,18 +108,21 @@ func (e *Endpoint) Catalog(ctx context.Context, force bool) ([]ModelInfo, error)
 // CachedCatalog starts a bounded refresh when the cache expires and returns
 // immediately so model discovery does not delay access to composer settings.
 func (e *Endpoint) CachedCatalog() ([]ModelInfo, bool) {
-	models, flight := e.catalog(false)
+	models, flight, _ := e.catalog(false)
 	return models, flight != nil
 }
 
-func (e *Endpoint) catalog(force bool) ([]ModelInfo, *catalogFetch) {
+func (e *Endpoint) catalog(force bool) ([]ModelInfo, *catalogFetch, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.flight == nil && (force || !time.Now().Before(e.expires)) {
 		e.flight = &catalogFetch{done: make(chan struct{})}
 		go e.refreshCatalog(e.flight)
 	}
-	return slices.Clone(e.models), e.flight
+	if len(e.models) == 0 {
+		return nil, e.flight, e.catalogErr
+	}
+	return slices.Clone(e.models), e.flight, nil
 }
 
 func (e *Endpoint) refreshCatalog(flight *catalogFetch) {
@@ -131,6 +135,7 @@ func (e *Endpoint) refreshCatalog(flight *catalogFetch) {
 	} else {
 		e.models, e.expires = models, time.Now().Add(5*time.Minute)
 	}
+	e.catalogErr = err
 	flight.models = e.models
 	flight.err = err
 	flight.phases = phases
@@ -199,6 +204,10 @@ func (e *Endpoint) fetch(ctx context.Context) ([]ModelInfo, error) {
 }
 
 func (e *Endpoint) Model(id string) ai.Model {
+	return e.model(id, false)
+}
+
+func (e *Endpoint) model(id string, reasoning bool) ai.Model {
 	model := ai.Model{ID: id, Name: id, Input: []string{"text", "image"}}
 	if e.catalogOrigin {
 		if known := ai.GetModel(completionProvider, id); known != nil && matchesModelOrigin(e.base, known.BaseURL) {
@@ -206,13 +215,16 @@ func (e *Endpoint) Model(id string) ai.Model {
 		}
 	}
 	e.mu.Lock()
-	if index := slices.IndexFunc(e.models, func(entry ModelInfo) bool { return entry.ID == id }); index >= 0 &&
-		e.models[index].ContextWindow > 0 {
+	index, found := slices.BinarySearchFunc(e.models, id, func(entry ModelInfo, id string) int {
+		return strings.Compare(entry.ID, id)
+	})
+	if found && e.models[index].ContextWindow > 0 {
 		model.ContextWindow = int(e.models[index].ContextWindow)
 	}
 	e.mu.Unlock()
 	model.Provider, model.Api, model.BaseURL = completionProvider, ai.APIOpenAICompletions, e.base.String()
-	model.Compat = completionCompatibility(model.Compat, !e.catalogOrigin, false)
+	model.Reasoning = model.Reasoning || reasoning
+	model.Compat = completionCompatibility(model.Compat, !e.catalogOrigin, reasoning)
 	return model
 }
 

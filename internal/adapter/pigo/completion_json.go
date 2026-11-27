@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"strings"
+	"net/url"
 
 	"github.com/sky-valley/pi/ai"
 )
@@ -283,7 +283,8 @@ func (r jsonCompletionUsage) toUsage(model *ai.Model) ai.Usage {
 		TotalTokens: int(total), Reasoning: int(count(reasoning)),
 	}
 	ai.CalculateCost(model, &usage)
-	if model.Provider == "openrouter" || strings.Contains(model.BaseURL, "openrouter.ai") {
+	base, err := url.Parse(model.BaseURL)
+	if err == nil && matchesModelOrigin(base, "https://openrouter.ai") {
 		if cost, ok := r.openRouterCost(); ok {
 			usage.Cost.Total, usage.Cost.TotalFromProvider = cost, ai.OptBoolTrue
 		}

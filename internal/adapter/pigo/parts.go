@@ -141,7 +141,7 @@ func textPart(block ai.Content, streaming bool) (run.TurnPart, bool) {
 				part.Status = string(run.Running)
 				// Use the untruncated UTF-8 text. The endpoint does not report
 				// per-block token usage as it streams.
-				part.EstimatedTokens = int32((len(block.Thinking) + 3) / 4)
+				part.EstimatedTokens = clampTokenCount((len(block.Thinking) + 3) / 4)
 			}
 			return part, true
 		}
@@ -177,14 +177,12 @@ func toolOutput(blocks ai.ContentList) string {
 		}
 		remaining := partBytes - text.Len()
 		text.WriteString(clipPart(item.Text, remaining))
-		if len(item.Text) > remaining {
-			break
-		}
 	}
 	return text.String()
 }
 
 func clipPart(text string, limit int) string {
+	text = strings.ToValidUTF8(text, "�")
 	if len(text) <= limit {
 		return text
 	}

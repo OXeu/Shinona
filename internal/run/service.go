@@ -2,8 +2,10 @@ package run
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -12,6 +14,7 @@ import (
 )
 
 type Service struct {
+	logger         atomic.Pointer[slog.Logger]
 	stores         ServiceStores
 	resolve        ResolveTarget
 	projectTargets ListProjectTargets
@@ -29,6 +32,17 @@ type Settings struct {
 
 func NewService(stores ServiceStores, resolve ResolveTarget, newID func() string, controls *Controls, projectTargets ListProjectTargets, workspace WorkspaceTimeouts) *Service {
 	return &Service{stores: stores, resolve: resolve, newID: newID, controls: controls, projectTargets: projectTargets, workspace: workspace}
+}
+
+func (s *Service) SetLogger(logger *slog.Logger) {
+	s.logger.Store(logger)
+}
+
+func (s *Service) log() *slog.Logger {
+	if logger := s.logger.Load(); logger != nil {
+		return logger
+	}
+	return slog.Default()
 }
 
 func (s *Service) CreateSession(ctx context.Context, owner, projectID string) (Session, error) {
