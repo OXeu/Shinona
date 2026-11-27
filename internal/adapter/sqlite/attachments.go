@@ -14,6 +14,9 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
+// Bound the raw image data accumulated by a single attachment query.
+const attachmentBatchTurns = max(1, (32<<20)/run.MaxImageBytes)
+
 type runAttachmentRow struct {
 	TurnID   string `gorm:"primaryKey"`
 	Position int    `gorm:"primaryKey;autoIncrement:false"`
@@ -89,12 +92,16 @@ func hydrateRunAttachments(db *gorm.DB, turns []row) error {
 			ids = append(ids, turn.ID)
 		}
 	}
-	for start := 0; start < len(ids); start += 256 {
+	for start := 0; start < len(ids); start += attachmentBatchTurns {
 		var attachments []runAttachmentRow
-		if err := db.Where("turn_id IN ?", ids[start:min(start+256, len(ids))]).Find(&attachments).Error; err != nil {
+		batch := db.Session(&gorm.Session{}).Where("turn_id IN ?", ids[start:min(start+attachmentBatchTurns, len(ids))])
+		if err := batch.Find(&attachments).Error; err != nil {
 			return err
 		}
 		for _, attachment := range attachments {
+			if err := db.Statement.Context.Err(); err != nil {
+				return err
+			}
 			images := imagesByTurn[attachment.TurnID]
 			if attachment.Position < 0 || attachment.Position >= len(images) {
 				return fmt.Errorf("invalid attachment position for turn %s", attachment.TurnID)

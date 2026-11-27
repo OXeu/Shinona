@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -523,6 +524,62 @@ func TestRecoverInterruptedTurns(t *testing.T) {
 	claimed, err := repo.Conversations.ClaimNext(ctx, queuedAt.Add(2*time.Second))
 	if err != nil || claimed == nil || claimed.ID != "pending" || claimed.Status != run.Running {
 		t.Fatalf("failed to resume the queue after recovery: %+v, %v", claimed, err)
+	}
+}
+
+func TestHistoryReleasesSnapshotBeforeLoadingAttachments(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner")
+	newSession(t, repo, "owner", "session")
+	now := time.Now().UTC()
+	image := run.Image{Name: "photo.png", MediaType: "image/png", Data: "aW1hZ2U="}
+	const historyTurns = attachmentBatchTurns + 1
+	for index := range historyTurns {
+		stored := run.Run{
+			ID: fmt.Sprintf("saved-%d", index), OwnerID: "owner", SessionID: "session",
+			Status: run.Succeeded, CreatedAt: now, UpdatedAt: now, Payload: run.Payload{Images: []run.Image{image}},
+		}
+		if _, err := repo.Conversations.Enqueue(ctx, stored, "", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var loads int
+	var removeTurn bool
+	err = repo.read.Callback().Query().Before("gorm:query").Register("test:history-image-read", func(db *gorm.DB) {
+		if db.Statement.Table == "run_attachments" {
+			loads++
+			if _, inTransaction := db.Statement.ConnPool.(*sql.Tx); inTransaction {
+				t.Error("history still holds a read transaction while loading attachments")
+			}
+			if removeTurn {
+				removeTurn = false
+				if err := repo.db.WithContext(ctx).Delete(&row{}, "id = ?", "saved-0").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := run.Run{OwnerID: "owner", SessionID: "session", Sequence: historyTurns + 1}
+	history, err := repo.Conversations.History(ctx, current, 0)
+	if err != nil || loads != 2 || len(history) != historyTurns {
+		t.Fatalf("loaded %d history turns in %d attachment batches: %v", len(history), loads, err)
+	}
+	for _, exchange := range history {
+		if !slices.Equal(exchange.Images, []run.Image{image}) {
+			t.Fatalf("expected the original historical image: %+v", exchange.Images)
+		}
+	}
+	removeTurn = true
+	if history, err := repo.Conversations.History(ctx, current, 0); err == nil || len(history) != 0 {
+		t.Fatalf("returned incomplete history after the turn was deleted: %+v, %v", history, err)
 	}
 }
 

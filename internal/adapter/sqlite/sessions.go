@@ -449,17 +449,25 @@ func lastTurnSequence(db *gorm.DB, owner, sessionID string) (int, error) {
 
 func (r *ConversationStore) History(ctx context.Context, turn run.Run, limit int) ([]run.Exchange, error) {
 	var records []row
-	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := historyQuery(tx, turn, limit).Find(&records).Error; err != nil {
-			return err
-		}
-		return hydrateRunAttachments(tx, records)
-	})
-	if err != nil {
+	db := r.read.WithContext(ctx)
+	if err := historyQuery(db, turn, limit).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	// The first query fixes membership and order, including the checkpoint.
+	// Historical attachment contents are immutable. A revert changes visibility
+	// but leaves those bytes in storage, so each batch can read independently.
+	attachments := db.Where(`EXISTS (SELECT 1 FROM runs AS source
+		WHERE source.id = run_attachments.turn_id AND source.owner_id = ? AND source.session_id = ?)`, turn.OwnerID, turn.SessionID)
+	if err := hydrateRunAttachments(attachments, records); err != nil {
 		return nil, err
 	}
 	history := make([]run.Exchange, len(records))
 	for i, record := range records {
+		for index, image := range record.Payload.Images {
+			if image.Data == "" {
+				return nil, fmt.Errorf("missing image %d for history turn %s", index+1, record.ID)
+			}
+		}
 		history[len(records)-1-i] = run.Exchange{
 			Prompt: record.Prompt, Output: record.Output, Steering: record.Steering, Images: record.Payload.Images,
 			AgentMessages: record.AgentMessages, CompactedContext: record.CompactedContext,
