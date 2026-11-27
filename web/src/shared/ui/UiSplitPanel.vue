@@ -142,5 +142,6 @@ function keydown(event: KeyboardEvent) {
   content: '';
 }
 .split-panel--column > .split-divider::after { inset: 2px 0; }
-.split-divider:is(:hover, :active, :focus-visible)::after { inset: 0; background: var(--primary); opacity: .48; }
+.split-divider:is(:hover, :active)::after { inset: 0; background: var(--border-hover); }
+.split-divider:focus-visible::after { inset: 0; background: var(--accent); opacity: .72; }
 </style>
