@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, useId, watch } from 'vue'
+import { computed, defineAsyncComponent, onUnmounted, ref, useId, watch } from 'vue'
 
 import { copyText } from '../../shared/clipboard'
 import { languageTag, t } from '../../shared/i18n'
@@ -21,6 +21,9 @@ const AgentRichContent = defineAsyncComponent(() => import('./AgentRichContent.v
 const emit = defineEmits<{ error: [message: string] }>()
 const processId = useId()
 const openGroups = ref(new Set<number>())
+const copied = ref(false)
+let copiedTimer: number | undefined
+onUnmounted(() => window.clearTimeout(copiedTimer))
 const settled = computed(() => hasSettled(props.turn))
 watch(settled, (isSettled) => {
   if (isSettled) openGroups.value.clear()
@@ -81,6 +84,11 @@ async function copy() {
   try {
     await copyText(props.turn.output)
     emit('error', '')
+    copied.value = true
+    window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      copied.value = false
+    }, 1400)
     notify.success(t('chat.answerCopied'))
   } catch {
     emit('error', t('chat.copyFailed'))
@@ -167,8 +175,9 @@ async function copy() {
       </UiTime>
       <UiIconButton
         class="message-action agent-copy"
-        icon="file-copy-line"
+        :icon="copied ? 'check-line' : 'file-copy-line'"
         :label="t('chat.copyAnswer')"
+        :data-copied="copied || undefined"
         :hidden="!turn.output"
         @click="copy"
       />

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useTemplateRef, watch } from 'vue'
+import { computed, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 
 import { copyText } from '../../shared/clipboard'
 import { t } from '../../shared/i18n'
@@ -67,6 +67,8 @@ const failureDialogOpen = ref(false)
 const failureDetail = ref('')
 const failureTurnId = ref('')
 const retryModel = ref('')
+const copiedId = ref<string | null>(null)
+let copiedTimer: number | undefined
 const composer = useTemplateRef('composer')
 const retryModels = computed(() => [
   { value: '', label: t('chat.retryCurrentModel') },
@@ -76,7 +78,10 @@ const canRetryFromDetails = computed(() => !!failureTurnId.value &&
   props.session?.turns.at(-1)?.id === failureTurnId.value && retryModels.value.length > 1)
 watch(() => props.session?.id, () => {
   failureDialogOpen.value = false
+  copiedId.value = null
+  window.clearTimeout(copiedTimer)
 })
+onUnmounted(() => window.clearTimeout(copiedTimer))
 
 function failurePart(turn: Turn) {
   return turn.parts.findLast((part) => part.kind === 'failure')
@@ -112,11 +117,18 @@ function failureMessage(turn: Turn) {
   }
 }
 
-async function copyMessage(text: string, attachments?: string[]) {
+async function copyMessage(text: string, attachments?: string[], id?: string) {
   try {
     const names = attachments?.length ? t('composer.attached', { images: attachments.join(', ') }) : ''
     await copyText([text, names].filter(Boolean).join('\n'))
     emit('error', 'copy', '')
+    if (id) {
+      copiedId.value = id
+      window.clearTimeout(copiedTimer)
+      copiedTimer = window.setTimeout(() => {
+        if (copiedId.value === id) copiedId.value = null
+      }, 1400)
+    }
     notify.success(t('chat.messageCopied'))
   } catch {
     emit('error', 'copy', t('chat.copyMessageFailed'))
@@ -211,9 +223,10 @@ const messages = computed(() => {
                 />
                 <UiIconButton
                   class="message-action user-message-copy"
-                  icon="file-copy-line"
+                  :icon="copiedId === item.id ? 'check-line' : 'file-copy-line'"
                   :label="t('chat.copyMessage')"
-                  @click="copyMessage(item.text, item.attachments)"
+                  :data-copied="copiedId === item.id || undefined"
+                  @click="copyMessage(item.text, item.attachments, item.id)"
                 />
               </UiBox>
             </UiBox>
@@ -245,8 +258,15 @@ const messages = computed(() => {
     </template>
 
     <template #before-composer>
-      <UiBox class="welcome-project" :hidden="hasSelection">
-        <SessionProjectPicker hide-all />
+      <UiBox class="welcome-bar" :hidden="!centered">
+        <UiImage
+          class="welcome-peek"
+          src="/shinona-logo.webp"
+          alt=""
+          width="38"
+          height="38"
+        />
+        <SessionProjectPicker v-if="!hasSelection" hide-all />
       </UiBox>
     </template>
     <template #composer>

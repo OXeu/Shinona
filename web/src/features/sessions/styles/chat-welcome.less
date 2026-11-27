@@ -8,12 +8,33 @@
   letter-spacing: -0.03em;
 }
 
-.welcome-project {
+.welcome-bar {
   display: flex;
-  justify-content: flex-end;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
   width: min(100%, var(--composer-max-width));
   margin-inline: auto;
   padding-inline: calc(var(--composer-padding-inline) + var(--composer-border-width));
+}
+
+.welcome-peek {
+  display: block;
+  flex: none;
+  margin-block-end: -14px;
+  margin-inline-start: 6px;
+  pointer-events: none;
+  user-select: none;
+  transition: transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.chat-frame:has(.chat-composer:focus-within) .welcome-peek {
+  transform: translateY(-2px) rotate(-3deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome-peek { transition: none; }
+  .chat-frame:has(.chat-composer:focus-within) .welcome-peek { transform: none; }
 }
 
 .welcome-recent {
@@ -21,4 +42,4 @@
   margin-inline: auto;
 }
 
-.welcome-recent .session-group { border-top: 1px solid var(--border); padding-top: 10px; }
+.welcome-recent .session-group { padding-top: 10px; }

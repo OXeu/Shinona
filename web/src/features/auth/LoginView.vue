@@ -120,6 +120,16 @@ async function signIn() {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   object-fit: cover;
+  transition: transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.login-logo:hover {
+  transform: translateY(-2px) rotate(-4deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-logo { transition: none; }
+  .login-logo:hover { transform: none; }
 }
 
 .login-heading-row {

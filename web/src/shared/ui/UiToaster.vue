@@ -92,21 +92,27 @@ onUnmounted(() => unsubscribe?.())
   background: var(--elevated);
   box-shadow: var(--shadow-md);
   pointer-events: auto;
-  transition: opacity 120ms, transform 120ms;
+  transition: opacity 150ms ease, transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
   --notification-tone: var(--success);
 }
 
 .notification[data-tone='error'] { --notification-tone: var(--danger); }
 .notification > :first-child { color: var(--notification-tone); }
 .notification-title { overflow-wrap: anywhere; }
-.notification[data-phase='enter'],
+.notification[data-phase='enter'] {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
+}
 .notification[data-phase='closing'],
 .notification[data-phase='exit'] {
   opacity: 0;
   transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .notification { transition: none; }
+  .notification,
+  .notification[data-phase='closing'],
+  .notification[data-phase='exit'] { transition: none; }
 }
 </style>

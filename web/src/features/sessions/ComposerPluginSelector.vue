@@ -106,6 +106,7 @@ function toggleMcp(name: string) {
   border: 1px solid var(--border);
   border-radius: var(--radius-full);
   background: var(--sidebar-bg);
+  transition: background-color 180ms ease, border-color 180ms ease;
 }
 .plugin-switch-thumb {
   display: grid;
@@ -117,11 +118,22 @@ function toggleMcp(name: string) {
   color: var(--muted);
   font-size: 0.75rem;
   box-shadow: 0 1px 2px var(--border);
+  transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1), color 160ms ease;
 }
+.plugin-option:active:not(:disabled) .plugin-switch-thumb { transform: scale(0.92); }
 .plugin-option[aria-checked='true'] .plugin-switch {
-  justify-content: flex-end;
   border-color: var(--primary);
   background: var(--primary);
 }
-.plugin-option[aria-checked='true'] .plugin-switch-thumb { color: var(--accent); }
+.plugin-option[aria-checked='true'] .plugin-switch-thumb {
+  color: var(--accent);
+  transform: translateX(calc(1.625rem - 6px));
+}
+.plugin-option[aria-checked='true']:active:not(:disabled) .plugin-switch-thumb {
+  transform: translateX(calc(1.625rem - 6px)) scale(0.92);
+}
+@media (prefers-reduced-motion: reduce) {
+  .plugin-switch,
+  .plugin-switch-thumb { transition: none; }
+}
 </style>
