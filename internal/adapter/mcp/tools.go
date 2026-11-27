@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"slices"
@@ -82,7 +83,9 @@ func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]run
 			if session.close != nil {
 				closing.Go(func() {
 					if err := session.close(); err != nil {
-						failures[i] = fmt.Errorf("close MCP server %q: %w", session.name, err)
+						detail := sessionCleanupFailure(err)
+						slog.WarnContext(ctx, "MCP session cleanup failed", "server", session.name, "failure", detail)
+						failures[i] = fmt.Errorf("close MCP server %q: %w", session.name, detail)
 					}
 				})
 			}
@@ -113,6 +116,20 @@ func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]run
 		allTools = append(allTools, session.tools...)
 	}
 	return allTools, closeTools, nil
+}
+
+func sessionCleanupFailure(err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("session termination timed out: %w", context.DeadlineExceeded)
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("session termination canceled: %w", context.Canceled)
+	}
+	if status, ok := errors.AsType[sessionTerminationStatus](err); ok {
+		return status
+	}
+	// Transport errors can include endpoint URLs or credentials.
+	return errors.New("session termination request failed")
 }
 
 func (s *Servers) open(ctx context.Context, owner, name string) ([]run.Tool, func() error, error) {

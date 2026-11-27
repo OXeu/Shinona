@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -202,6 +203,73 @@ func testMCPIncompleteJSONResponse(t *testing.T, deadline time.Duration) {
 	}
 	if first, second := <-firstSession, <-secondSession; first == "" || first != second || calls.Load() != 2 {
 		t.Fatalf("expected one POST per call within the same session, got %d calls and session IDs %q and %q", calls.Load(), first, second)
+	}
+}
+
+func TestMCPSessionCleanupReportsUnexpectedStatus(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusBadGateway} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+			sdk.AddTool(server, &sdk.Tool{Name: "echo"}, func(_ context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, any, error) {
+				return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "complete"}}}, nil, nil
+			})
+			handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil)
+			const privateDetail = "private upstream response"
+			var deletions atomic.Int32
+			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					handler.ServeHTTP(w, r)
+					return
+				}
+				if r.Header.Get("Mcp-Session-Id") == "" {
+					t.Error("termination request did not identify the session")
+				}
+				deletions.Add(1)
+				if status == http.StatusNoContent {
+					handler.ServeHTTP(w, r)
+				} else {
+					http.Error(w, privateDetail, status)
+				}
+			}))
+			t.Cleanup(fixture.Close)
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			servers := NewServers(settings.MCPConfig{{Name: "fixture", URL: fixture.URL}}, fixture.Client(), nil)
+			tools, release, err := servers.Open(ctx, "owner", []string{"fixture"})
+			if err != nil || len(tools) != 1 {
+				t.Fatalf("open fixture: %d tools, %v", len(tools), err)
+			}
+			result, err := tools[0].Execute(ctx, nil)
+			if err != nil || result.Text != "complete" {
+				t.Errorf("call tool: %+v, %v", result, err)
+			}
+			closeErr := release()
+			if !errors.Is(release(), closeErr) || deletions.Load() != 1 {
+				t.Fatal("releasing twice repeated the termination request or changed its result")
+			}
+			if status != http.StatusBadGateway {
+				if closeErr != nil || strings.Contains(logs.String(), "MCP session cleanup failed") {
+					t.Fatalf("expected cleanup outcome %d, got error %v and logs %q", status, closeErr, logs.String())
+				}
+				return
+			}
+			if code, ok := errors.AsType[sessionTerminationStatus](closeErr); !ok || int(code) != status {
+				t.Fatalf("release did not report HTTP %d: %v", status, closeErr)
+			}
+			report := logs.String()
+			for _, detail := range []string{"MCP session cleanup failed", "server=fixture", "HTTP 502"} {
+				if !strings.Contains(report, detail) {
+					t.Errorf("cleanup warning is missing %q: %s", detail, report)
+				}
+			}
+			if strings.Contains(report, privateDetail) || strings.Contains(report, fixture.URL) || strings.Contains(closeErr.Error(), privateDetail) {
+				t.Fatalf("cleanup exposed private upstream details: %v, %s", closeErr, report)
+			}
+		})
 	}
 }
 
