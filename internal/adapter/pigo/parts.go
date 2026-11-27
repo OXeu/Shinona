@@ -23,7 +23,7 @@ type partProjection struct {
 }
 
 // liveParts keeps only the Pi turn still emitting messages or tool results.
-func liveParts(report func(int, []run.TurnPart)) func(agent.AgentEvent) {
+func liveParts(report func(int, []run.TurnPart), finalize func(int)) func(agent.AgentEvent) {
 	var lastReport time.Time
 	var committed int
 	view := partProjection{toolCalls: make(map[string]int)}
@@ -69,6 +69,9 @@ func liveParts(report func(int, []run.TurnPart)) func(agent.AgentEvent) {
 			report(committed+index, view.parts[index:])
 		case agent.EvTurnEnd:
 			committed += len(view.parts)
+			if finalize != nil {
+				finalize(committed)
+			}
 			clear(view.parts)
 			view.parts = view.parts[:0]
 			clear(view.toolCalls)

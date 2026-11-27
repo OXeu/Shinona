@@ -138,11 +138,14 @@ func TestLongAgentLoopKeepsReportingNewToolActivity(t *testing.T) {
 	responses = append(responses, ai.AssistantMessage{Content: ai.ContentList{ai.TextContent{Text: "Final answer."}}})
 	fixture := scriptedAgent(t, responses...)
 	lastInput := fmt.Sprintf(`{"path":"step-%d"}`, calls-1)
-	var liveTools, endedTools, publishedParts int
+	var liveTools, endedTools, publishedParts, finalizedParts int
 	var progress []run.TurnPart
 	result, err := fixture.Run(t.Context(), run.Input{
 		Prompt: "Run the inspection.",
 		ReportParts: func(offset int, suffix []run.TurnPart) {
+			if offset < finalizedParts {
+				t.Fatalf("Pi changed previously finalized parts: offset %d, finalized %d", offset, finalizedParts)
+			}
 			publishedParts += len(suffix)
 			progress = append(progress[:offset], suffix...)
 			parts := progress
@@ -171,12 +174,21 @@ func TestLongAgentLoopKeepsReportingNewToolActivity(t *testing.T) {
 				endedTools++
 			}
 		},
+		FinalizeParts: func(count int) {
+			if count != len(progress) || count <= finalizedParts {
+				t.Fatalf("Pi finalized %d parts after %d of %d", count, finalizedParts, len(progress))
+			}
+			finalizedParts = count
+		},
 	}, &recordingWorkspace{path: fmt.Sprintf("step-%d", calls-1), text: "hello"})
 	if err != nil || result.Output != "Final answer." || liveTools != calls || endedTools != calls || len(result.Parts) != 2*calls {
 		t.Fatalf("long turn did not preserve activity: output=%q, started=%d, ended=%d, saved=%d, error=%v", result.Output, liveTools, endedTools, len(result.Parts), err)
 	}
 	if publishedParts > 5*calls+1 {
 		t.Fatalf("published %d parts for %d tools, expected only the changed suffixes", publishedParts, calls)
+	}
+	if finalizedParts != 2*calls+1 {
+		t.Fatalf("expected finished tools, thoughts and final reply to be finalized, got %d parts", finalizedParts)
 	}
 	t.Logf("published %d parts for %d tools", publishedParts, calls)
 	last := result.Parts[len(result.Parts)-1]

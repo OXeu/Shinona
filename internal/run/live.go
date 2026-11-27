@@ -11,10 +11,11 @@ type sessionKey struct {
 }
 
 type LiveProgress struct {
-	TurnID   string
-	Parts    []TurnPart
-	Steering []SteeringMessage
-	Context  ContextUsage
+	TurnID         string
+	Parts          []TurnPart
+	FinalizedParts int // Count from the beginning of the turn, independent of PartOffset.
+	Steering       []SteeringMessage
+	Context        ContextUsage
 }
 
 type SessionChange struct {
@@ -79,9 +80,13 @@ func (w *SessionWatch) Read() SessionChange {
 	return change
 }
 
-func (c *Controls) progress(key sessionKey) LiveProgress {
+func (c *Controls) progress(key sessionKey, turnID string) LiveProgress {
 	c.mu.Lock()
 	active := c.active[key]
+	if turnID != "" && !active.matches(key.owner, key.id, turnID) {
+		c.mu.Unlock()
+		return LiveProgress{}
+	}
 	progress := active.progressFrom(0)
 	c.mu.Unlock()
 	if active != nil {
@@ -95,7 +100,7 @@ func (a *activeTurn) progressFrom(offset int) LiveProgress {
 		return LiveProgress{}
 	}
 	return LiveProgress{
-		TurnID: a.item.ID, Parts: slices.Clone(a.parts[offset:]), Context: a.usage,
+		TurnID: a.item.ID, Parts: slices.Clone(a.parts[offset:]), FinalizedParts: a.finalized, Context: a.usage,
 	}
 }
 

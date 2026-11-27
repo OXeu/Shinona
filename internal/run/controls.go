@@ -29,6 +29,7 @@ type activeTurn struct {
 	cancel    context.CancelFunc
 	steering  Steering
 	parts     []TurnPart
+	finalized int
 	usage     ContextUsage
 	stopping  bool
 	finishing bool
@@ -189,20 +190,22 @@ func (c *Controls) stopAccount(owner string) {
 	c.changedAccount(owner)
 }
 
-func (c *Controls) addProgress(turn *Run) {
-	progress := c.progress(sessionKey{turn.OwnerID, turn.SessionID})
+func (c *Controls) addProgress(turn *Run) int {
+	progress := c.progress(sessionKey{turn.OwnerID, turn.SessionID}, turn.ID)
 	if progress.TurnID == turn.ID {
 		turn.Steering = progress.Steering
 		turn.Parts = progress.Parts
 		turn.LiveContext = progress.Context
 	}
+	return progress.FinalizedParts
 }
 
 func (c *Controls) reportParts(active *activeTurn, offset int, parts []TurnPart) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := active.key()
-	if c.active[key] != active || slices.Equal(active.parts[offset:], parts) {
+	if c.active[key] != active || offset < active.finalized || offset > len(active.parts) ||
+		slices.Equal(active.parts[offset:], parts) {
 		return
 	}
 	clear(active.parts[offset:])
@@ -212,6 +215,16 @@ func (c *Controls) reportParts(active *activeTurn, offset int, parts []TurnPart)
 			watch.firstChangedPart = offset
 		}
 		watch.notify(false)
+	}
+}
+
+func (c *Controls) finalizeParts(active *activeTurn, count int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := active.key()
+	if c.active[key] == active && count > active.finalized && count <= len(active.parts) {
+		active.finalized = count
+		c.notifyLocked(key, false)
 	}
 }
 

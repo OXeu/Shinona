@@ -96,7 +96,7 @@ func (a *Agent) runSession(ctx context.Context, input run.Input, model ai.Model,
 		}
 		return ""
 	}
-	reportLive := liveParts(input.ReportParts)
+	reportLive := liveParts(input.ReportParts, input.FinalizeParts)
 	defer session.Subscribe(func(_ context.Context, event agent.AgentEvent) error {
 		reportLive(event)
 		return nil

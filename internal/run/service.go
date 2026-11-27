@@ -156,7 +156,7 @@ func (s *Service) TranscriptUpdate(ctx context.Context, owner, id string, window
 ) (*TranscriptUpdate, error) {
 	update, err := s.stores.Transcripts.TranscriptUpdate(ctx, owner, id, window, known)
 	if err == nil && update != nil {
-		s.addTranscriptProgress(update.ChangedTurns)
+		update.FinalizedParts = s.addTranscriptProgress(update.ChangedTurns)
 	}
 	return update, err
 }
@@ -166,7 +166,7 @@ func (s *Service) TranscriptPage(ctx context.Context, owner, id string, beforeSe
 }
 
 func (s *Service) StreamTranscript(ctx context.Context, owner, id string, write func(TranscriptStream) error) error {
-	progress := s.controls.progress(sessionKey{owner, id})
+	progress := s.controls.progress(sessionKey{owner, id}, "")
 	return s.stores.Transcripts.StreamTranscript(ctx, owner, id, func(stream TranscriptStream) error {
 		if stream.Next != nil && progress.TurnID != "" {
 			next := stream.Next
@@ -194,13 +194,14 @@ func (s *Service) withTranscriptProgress(transcript *Transcript, err error) (*Tr
 	return transcript, nil
 }
 
-func (s *Service) addTranscriptProgress(turns []Run) {
+func (s *Service) addTranscriptProgress(turns []Run) int {
 	for i := range turns {
 		turn := &turns[i]
 		if turn.Status == Running {
-			s.controls.addProgress(turn)
+			return s.controls.addProgress(turn)
 		}
 	}
+	return 0
 }
 
 func (s *Service) Attachment(ctx context.Context, owner, sessionID, turnID string, index int) (*Attachment, error) {

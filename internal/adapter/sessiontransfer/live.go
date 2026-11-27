@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -33,7 +34,7 @@ type LiveSource interface {
 type liveConnection struct {
 	window   run.LiveTranscriptWindow
 	known    map[string]run.TurnVersion
-	progress run.LiveProgress
+	progress run.LiveProgress // Parts holds only the mutable suffix after FinalizedParts.
 }
 
 func (h *Handler) Live(lifetime context.Context, origin string, sessionUser func(*http.Request) (*auth.User, error), source LiveSource) http.Handler {
@@ -136,6 +137,7 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 		state := liveConnection{window: run.LiveLatestPage, known: known}
 		if request.Paged != nil && !request.GetPaged() {
 			state.window = run.LiveFullHistory
+
 		}
 		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send, heartbeat)
 		switch {
@@ -240,7 +242,8 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 			}
 		case <-watch.Changes():
 			change := watch.Read()
-			if change.Transcript || change.Progress.TurnID != state.progress.TurnID || change.PartOffset > len(state.progress.Parts) {
+			if change.Transcript || change.Progress.TurnID != state.progress.TurnID ||
+				change.PartOffset > state.progress.FinalizedParts+len(state.progress.Parts) {
 				if found, err := syncPage("live_resync"); err != nil || !found {
 					return err
 				}
@@ -250,11 +253,8 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 				continue
 			}
 			build := timing.Start(ctx, "live_build_delta")
-			delta := progressDelta(state.progress, change.Progress, change.PartOffset)
-			clear(state.progress.Parts[change.PartOffset:])
-			change.Progress.Parts = append(state.progress.Parts[:change.PartOffset], change.Progress.Parts...)
+			delta := state.advanceProgress(change.Progress, change.PartOffset)
 			build()
-			state.progress = change.Progress
 			if delta != nil {
 				write := timing.Start(ctx, "live_send_delta")
 				err := send(&sessionpb.LiveMessage{Item: &sessionpb.LiveMessage_Progress{Progress: delta}})
@@ -284,7 +284,14 @@ func (s *liveConnection) sync(update *run.TranscriptUpdate, settings run.Setting
 	s.progress = run.LiveProgress{}
 	for _, item := range update.ChangedTurns {
 		if item.Status == run.Running {
-			s.progress = run.LiveProgress{TurnID: item.ID, Parts: item.Parts, Steering: item.Steering, Context: item.LiveContext}
+			parts := item.Parts
+			if update.FinalizedParts > 0 {
+				parts = slices.Clone(parts[update.FinalizedParts:])
+			}
+			s.progress = run.LiveProgress{
+				TurnID: item.ID, Parts: parts,
+				FinalizedParts: update.FinalizedParts, Steering: item.Steering, Context: item.LiveContext,
+			}
 		}
 		result.ChangedTurns = append(result.ChangedTurns, Turn(item))
 	}

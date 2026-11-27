@@ -286,6 +286,7 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 	return agent.Run(ctx, Input{
 		OwnerID: item.OwnerID, SessionID: item.SessionID, Prompt: item.Prompt, History: history, Payload: item.Payload, Steering: &active.steering,
 		ReportParts:   func(offset int, parts []TurnPart) { w.controls.reportParts(active, offset, parts) },
+		FinalizeParts: func(count int) { w.controls.finalizeParts(active, count) },
 		ReportContext: func(usage ContextUsage) { w.controls.reportContext(active, usage) },
 	}, workspace)
 }

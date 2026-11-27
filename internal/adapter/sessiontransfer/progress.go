@@ -8,13 +8,36 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
+func (s *liveConnection) advanceProgress(current run.LiveProgress, offset int) *sessionpb.LiveProgress {
+	previous := s.progress
+	// The watcher may still have notifications covered by the last sync.
+	if offset < previous.FinalizedParts {
+		current.Parts = current.Parts[previous.FinalizedParts-offset:]
+		offset = previous.FinalizedParts
+	}
+	delta := progressDelta(previous, current, offset)
+	prefix := previous.Parts[:offset-previous.FinalizedParts]
+	if current.FinalizedParts == previous.FinalizedParts {
+		clear(previous.Parts[len(prefix):])
+		current.Parts = append(prefix, current.Parts...)
+	} else {
+		// Detach from the old backing array so the completed parts can be collected.
+		finalizedPrefix := min(current.FinalizedParts, offset) - previous.FinalizedParts
+		finalizedTail := max(current.FinalizedParts-offset, 0)
+		current.Parts = slices.Concat(prefix[finalizedPrefix:], current.Parts[finalizedTail:])
+	}
+	s.progress = current
+	return delta
+}
+
 func progressDelta(previous, current run.LiveProgress, offset int) *sessionpb.LiveProgress {
 	partCount := offset + len(current.Parts)
 	change := &sessionpb.LiveProgress{TurnId: current.TurnID, PartCount: uint32(partCount)}
 	for part, next := range current.Parts {
 		index := offset + part
-		if index < len(previous.Parts) {
-			last := previous.Parts[index]
+		previousIndex := index - previous.FinalizedParts
+		if previousIndex < len(previous.Parts) {
+			last := previous.Parts[previousIndex]
 			if last == next {
 				continue
 			}
@@ -39,7 +62,8 @@ func progressDelta(previous, current run.LiveProgress, offset int) *sessionpb.Li
 	if previous.Context != current.Context {
 		change.Context = &sessionpb.ContextUsage{Tokens: current.Context.Tokens, Window: current.Context.Window, Estimated: current.Context.Estimated}
 	}
-	if len(change.Parts) == 0 && change.Steering == nil && change.Context == nil && len(previous.Parts) == partCount {
+	if len(change.Parts) == 0 && change.Steering == nil && change.Context == nil &&
+		previous.FinalizedParts+len(previous.Parts) == partCount {
 		return nil
 	}
 	return change

@@ -162,6 +162,7 @@ type TranscriptUpdate struct {
 	ChangedTurns       []Run
 	LastOptions        *Options
 	NextBeforeSequence int
+	FinalizedParts     int // Immutable prefix of the running turn's parts, if present.
 }
 
 type Attachment struct {
@@ -246,7 +247,9 @@ type Input struct {
 	Steering  *Steering
 	// ReportParts replaces the displayed suffix starting at offset. The
 	// callback consumes the parts before returning.
-	ReportParts   func(offset int, parts []TurnPart)
+	ReportParts func(offset int, parts []TurnPart)
+	// FinalizeParts marks the first count parts as immutable for this run.
+	FinalizeParts func(count int)
 	ReportContext func(ContextUsage)
 }
 

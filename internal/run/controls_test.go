@@ -40,7 +40,11 @@ func TestSessionWatchCoalescesChangedPartSuffixes(t *testing.T) {
 	if change := watch.Read(); change.PartOffset != 2 || len(change.Progress.Parts) != 0 || change.Progress.Context.Tokens != 100 {
 		t.Fatalf("context-only update recopied completed parts: %+v", change)
 	}
-	if got := controls.progress(active.key()).Parts; !slices.Equal(got, []TurnPart{finished, first}) {
+	controls.finalizeParts(active, 1)
+	if change := watch.Read(); change.PartOffset != 2 || len(change.Progress.Parts) != 0 || change.Progress.FinalizedParts != 1 {
+		t.Fatalf("finalizing a prefix must not resend it: %+v", change)
+	}
+	if got := controls.progress(active.key(), active.item.ID); got.FinalizedParts != 1 || !slices.Equal(got.Parts, []TurnPart{finished, first}) {
 		t.Fatalf("reconnect must include the full active transcript: %+v", got)
 	}
 }
