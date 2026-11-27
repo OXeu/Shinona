@@ -153,6 +153,10 @@ func (b *commitWorkspaceFixture) Exec(_ context.Context, cmd sandbox.Command) (s
 		return sandbox.Result{Stdout: "main\n"}, nil
 	case slices.Contains(cmd.Args, "status"):
 		return sandbox.Result{Stdout: " M patch.txt\x00"}, nil
+	case slices.Contains(cmd.Args, "--verify") && slices.Contains(cmd.Args, "HEAD"):
+		return sandbox.Result{}, nil
+	case slices.Contains(cmd.Args, "--numstat"):
+		return sandbox.Result{Stdout: "1\t0\tpatch.txt\n"}, nil
 	case slices.Contains(cmd.Args, "--only"):
 		b.committed = true
 		return sandbox.Result{}, nil

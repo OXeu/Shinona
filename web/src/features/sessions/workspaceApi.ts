@@ -32,6 +32,8 @@ interface WorkspaceSelection {
 
 export interface WorkspaceChanges extends WorkspaceList<ChangedFile> {
   branch: string
+  additions: number
+  deletions: number
   selection: WorkspaceSelection
 }
 

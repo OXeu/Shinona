@@ -112,6 +112,56 @@ func TestScopedChangesStayInsideTheSelectedDirectory(t *testing.T) {
 	if len(paths) != 1 || paths[0] != "extra.go" {
 		t.Fatalf("scoped changes: %v", paths)
 	}
+	if changes.Additions != 1 || changes.Deletions != 0 {
+		t.Fatalf("scoped line counts: +%d -%d", changes.Additions, changes.Deletions)
+	}
+}
+
+func TestChangesCountLinesAcrossWorktree(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	gitTest(t, dir, "init", "-q", ".")
+	gitTest(t, dir, "config", "user.email", "a@b.c")
+	gitTest(t, dir, "config", "user.name", "A")
+	write(t, dir, "tracked.txt", "a\nb\nc\n")
+	write(t, dir, "gone.txt", "one\ntwo\nthree\n")
+	write(t, dir, "binary.dat", "\x00\x01\x02")
+	gitTest(t, dir, "add", "-A")
+	gitTest(t, dir, "commit", "-qm", "base")
+
+	write(t, dir, "tracked.txt", "a\nB\nC\nd\n")
+	gitTest(t, dir, "add", "tracked.txt")
+	write(t, dir, "tracked.txt", "a\nB\nC\nd\ne\n")
+	write(t, dir, "new.txt", "x\ny\n")
+	if err := os.Remove(filepath.Join(dir, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "binary.dat", "\x00\x03\x04")
+
+	changes, err := New(localWorkspace{dir}).Changes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes.Additions != 6 || changes.Deletions != 5 {
+		t.Fatalf("line counts: +%d -%d", changes.Additions, changes.Deletions)
+	}
+}
+
+func TestChangesCountLinesBeforeTheFirstCommit(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	gitTest(t, dir, "init", "-q", ".")
+	write(t, dir, "staged.txt", "a\nb\n")
+	gitTest(t, dir, "add", "staged.txt")
+	write(t, dir, "untracked.txt", "c\nd\ne\n")
+
+	changes, err := New(localWorkspace{dir}).Changes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes.Additions != 5 || changes.Deletions != 0 {
+		t.Fatalf("line counts before HEAD: +%d -%d", changes.Additions, changes.Deletions)
+	}
 }
 
 func TestScopedHistorySkipsCommitsOutsideTheDirectory(t *testing.T) {

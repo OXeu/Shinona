@@ -35,6 +35,8 @@ type Changes struct {
 	Branch    string   `json:"branch"`
 	Entries   []Change `json:"entries"`
 	Truncated bool     `json:"truncated"`
+	Additions int      `json:"additions"`
+	Deletions int      `json:"deletions"`
 }
 
 type Commit struct {
@@ -148,8 +150,14 @@ func (r Repository) Changes(ctx context.Context) (Changes, error) {
 	if err != nil {
 		return Changes{}, err
 	}
+	entries := statusEntries(status.Stdout, prefix)
+	additions, deletions, err := r.lineCounts(ctx, entries)
+	if err != nil {
+		return Changes{}, err
+	}
 	return Changes{
-		Branch: strings.TrimSpace(branch.Stdout), Entries: statusEntries(status.Stdout, prefix), Truncated: status.Truncated,
+		Branch: strings.TrimSpace(branch.Stdout), Entries: entries, Truncated: status.Truncated,
+		Additions: additions, Deletions: deletions,
 	}, nil
 }
 
@@ -202,6 +210,63 @@ func statusEntries(output, prefix string) []Change {
 		}
 	}
 	return entries
+}
+
+// lineCounts counts lines added and deleted in the scoped directory. Tracked
+// changes come from the diff against HEAD; untracked files have no diff, so
+// they are compared with /dev/null instead.
+func (r Repository) lineCounts(ctx context.Context, entries []Change) (int, int, error) {
+	head, err := r.git(ctx, "rev-parse", "--quiet", "--verify", "HEAD")
+	if err != nil {
+		return 0, 0, err
+	}
+	if head.ExitCode > 1 {
+		return 0, 0, ErrRepository
+	}
+	var additions, deletions int
+	if head.ExitCode == 0 {
+		// Renames are reported as one delete and one add so their lines count.
+		numstat, err := r.git(ctx, "diff", "--numstat", "--no-renames", "HEAD", "--", ".")
+		if err != nil {
+			return 0, 0, err
+		}
+		if numstat.ExitCode != 0 {
+			return 0, 0, ErrRepository
+		}
+		additions, deletions = numstatCounts(numstat.Stdout)
+	}
+	for _, entry := range entries {
+		if (head.ExitCode == 0 && !entry.Untracked) || !validPath(entry.Path) {
+			continue
+		}
+		result, err := r.git(ctx, "diff", "--no-index", "--numstat", "--", "/dev/null", entry.Path)
+		if err != nil || result.ExitCode > 1 {
+			// The file may have disappeared since status was read.
+			continue
+		}
+		added, deleted := numstatCounts(result.Stdout)
+		additions += added
+		deletions += deleted
+	}
+	return additions, deletions, nil
+}
+
+func numstatCounts(output string) (int, int) {
+	var additions, deletions int
+	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) < 3 || fields[0] == "-" || fields[1] == "-" {
+			continue
+		}
+		added, addedErr := strconv.Atoi(fields[0])
+		deleted, deletedErr := strconv.Atoi(fields[1])
+		if addedErr != nil || deletedErr != nil {
+			continue
+		}
+		additions += added
+		deletions += deleted
+	}
+	return additions, deletions
 }
 
 func (r Repository) History(ctx context.Context) (History, error) {

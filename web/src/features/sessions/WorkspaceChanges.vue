@@ -54,7 +54,10 @@ defineExpose({
       <UiInline class="workspace-ellipsis" :title="changes?.branch">
         {{ changes?.branch || t('repository.changedFiles') }}
       </UiInline>
-      <UiInline class="workspace-meta">{{ t('repository.changeCount', { count: entries.length }) }}</UiInline>
+      <UiInline class="workspace-meta workspace-line-counts">
+        <UiInline class="workspace-additions">+{{ changes?.additions ?? 0 }}</UiInline>
+        <UiInline class="workspace-deletions">-{{ changes?.deletions ?? 0 }}</UiInline>
+      </UiInline>
     </UiBox>
     <UiBox class="workspace-scroll">
       <UiInline v-if="changes && !entries.length" class="workspace-note">{{ t('repository.noChanges') }}</UiInline>
