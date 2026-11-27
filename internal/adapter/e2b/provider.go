@@ -268,22 +268,24 @@ func (p *Provider) reconnectProject(ctx context.Context, spec sandbox.Spec, proj
 		}
 		return p.api.Connect(ctx, id, options)
 	})
+	switch {
+	case err != nil:
+		err = fmt.Errorf("reconnect E2B project sandbox %s: %w", id, err)
+	case box.ID != id:
+		return nil, fmt.Errorf("E2B returned an unexpected sandbox while reconnecting %s", id)
+	case project.tokens.Timeout == 0 || project.tokens.Timeout > p.config.Timeout:
+		// Connect can extend the expiration. Overwrite it when the previous
+		// duration was longer or the workspace predates saved timeout settings.
+		if timeoutErr := box.SetTimeout(ctx, p.config.Timeout); timeoutErr != nil {
+			err = fmt.Errorf("set E2B project sandbox timeout: %w", timeoutErr)
+		}
+	}
 	if err != nil {
 		if isGone(err) {
 			p.leases.update(p.leaseKey(spec), "", 0, nil)
 			return nil, fmt.Errorf("%w: %w", sandbox.ErrWorkspaceMissing, err)
 		}
-		return nil, fmt.Errorf("reconnect E2B project sandbox %s: %w", id, err)
-	}
-	if box.ID != id {
-		return nil, fmt.Errorf("E2B returned an unexpected sandbox while reconnecting %s", id)
-	}
-	// Connect can extend the expiration. Overwrite it when the previous
-	// duration was longer or the workspace predates saved timeout settings.
-	if project.tokens.Timeout == 0 || project.tokens.Timeout > p.config.Timeout {
-		if err := box.SetTimeout(ctx, p.config.Timeout); err != nil {
-			return nil, fmt.Errorf("set E2B project sandbox timeout: %w", err)
-		}
+		return nil, err
 	}
 	p.leases.update(p.leaseKey(spec), id, p.config.Timeout, box.RefreshTimeout)
 	tokens := boxCredentials(box, project.tokens)

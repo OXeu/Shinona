@@ -17,8 +17,13 @@ var errSnapshotMissing = errors.New("E2B snapshot no longer exists")
 func (p *Provider) recoverProject(ctx context.Context, spec sandbox.Spec, previous projectSandbox) (*projectWorkspace, error) {
 	pages := p.api.ListSnapshots(ctx, sdk.SnapshotListOptions{SandboxID: previous.id})
 	attempted := make(map[string]bool)
+	visited := make(map[[sha256.Size]byte]struct{})
 	for pages.HasNext() {
-		cursor := pages.NextToken()
+		cursor := sha256.Sum256([]byte(pages.NextToken()))
+		if _, repeated := visited[cursor]; repeated {
+			return nil, errors.New("E2B returned a repeated snapshot page cursor")
+		}
+		visited[cursor] = struct{}{}
 		snapshots, err := pages.NextItems(ctx)
 		if err != nil {
 			if snapshotListUnavailable(err) {
@@ -36,9 +41,6 @@ func (p *Provider) recoverProject(ctx context.Context, spec sandbox.Spec, previo
 			if !errors.Is(err, errSnapshotMissing) {
 				return workspace, err
 			}
-		}
-		if pages.HasNext() && cursor == pages.NextToken() {
-			return nil, errors.New("E2B returned the same snapshot page cursor twice")
 		}
 	}
 	if id := previous.tokens.RecoverySnapshot; id != "" && !attempted[id] {
@@ -66,17 +68,22 @@ func snapshotListUnavailable(err error) bool {
 }
 
 func hasStatus(err error, statuses ...int) bool {
-	failure, ok := errors.AsType[interface {
-		error
-		HTTPStatus() int
-	}](err)
-	if !ok {
-		return false
-	}
-	for _, status := range statuses {
-		if failure.HTTPStatus() == status {
+	status := httpStatus(err)
+	for _, expected := range statuses {
+		if status == expected {
 			return true
 		}
 	}
 	return false
+}
+
+func httpStatus(err error) int {
+	failure, ok := errors.AsType[interface {
+		error
+		HTTPStatus() int
+	}](err)
+	if ok {
+		return failure.HTTPStatus()
+	}
+	return 0
 }
