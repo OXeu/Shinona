@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,4 +137,78 @@ func TestWALMaintenanceTruncatesLargeLogAfterReaderReleases(t *testing.T) {
 		time.Sleep(walCheckpointInterval / 4)
 	}
 	t.Fatalf("background checkpoint left %d bytes in the WAL after the reader released", logSize())
+}
+
+func TestWALMaintenanceTruncatesReusedLargeLog(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "reused checkpoint.db")
+	filename := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	repo, err := Open(ctx, filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	// Set up both WAL cycles before the background checkpoint can run again.
+	if err := repo.stopCheckpoint(); err != nil {
+		t.Fatal(err)
+	}
+	repo.stopCheckpoint = nil
+	if err := repo.db.Exec("CREATE TABLE wal_fixture (content BLOB)").Error; err != nil {
+		t.Fatal(err)
+	}
+	var pageSize int
+	if err := repo.db.Raw("PRAGMA page_size").Row().Scan(&pageSize); err != nil {
+		t.Fatal(err)
+	}
+	largeWrite := pageSize * (walLargeLogPages + 64)
+	if err := repo.db.Exec("INSERT INTO wal_fixture VALUES (zeroblob(?))", largeWrite).Error; err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := func() int {
+		t.Helper()
+		var busy, pages, checkpointed int
+		if err := repo.db.Raw("PRAGMA wal_checkpoint(PASSIVE)").Row().Scan(&busy, &pages, &checkpointed); err != nil {
+			t.Fatal(err)
+		}
+		if busy != 0 || pages != checkpointed {
+			t.Fatalf("checkpoint left outstanding work: busy=%d, pages=%d, checkpointed=%d", busy, pages, checkpointed)
+		}
+		return pages
+	}
+	if pages := checkpoint(); pages < walLargeLogPages {
+		t.Fatalf("large write used only %d WAL pages", pages)
+	}
+	if err := repo.db.Exec("INSERT INTO wal_fixture VALUES ('small write')").Error; err != nil {
+		t.Fatal(err)
+	}
+	if pages := checkpoint(); pages <= 0 || pages >= walLargeLogPages {
+		t.Fatalf("small write used %d WAL pages after recycling", pages)
+	}
+	logSize := func() int64 {
+		t.Helper()
+		info, err := os.Stat(path + "-wal")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Size()
+	}
+	if got := logSize(); got < int64(largeWrite) {
+		t.Fatalf("recycled WAL held %d bytes, expected at least %d", got, largeWrite)
+	}
+	_, readDSN, err := databaseDSNs(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.stopCheckpoint, err = startWALCheckpoint(ctx, readDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if logSize() == 0 {
+			return
+		}
+		time.Sleep(walCheckpointInterval / 4)
+	}
+	t.Fatalf("background checkpoint left %d bytes in the recycled WAL", logSize())
 }

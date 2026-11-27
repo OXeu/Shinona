@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ const (
 	walCheckpointInterval = 250 * time.Millisecond
 	walCheckpointWarn     = 30 * time.Second
 	walLargeLogPages      = 4096
+	walHeaderBytes        = 32
+	walFrameHeaderBytes   = 24
 )
 
 func disableWALAutoCheckpoint(conn *sqlite3.SQLiteConn) error {
@@ -38,9 +41,19 @@ func startWALCheckpoint(ctx context.Context, dsn string) (func() error, error) {
 	pool := sql.OpenDB(&sqliteConnector{dsn: path + "?" + options.Encode()})
 	pool.SetMaxOpenConns(1)
 	pool.SetMaxIdleConns(1)
-	if err := pool.PingContext(ctx); err != nil {
+	// Read SQLite's resolved filename so that URI escaping and relative paths
+	// are handled the same way as in the writer pool.
+	var index int
+	var schema, filename string
+	if err := pool.QueryRowContext(ctx, "PRAGMA database_list").Scan(&index, &schema, &filename); err != nil {
 		return nil, errors.Join(err, pool.Close())
 	}
+	var pageSize int64
+	if err := pool.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
+		return nil, errors.Join(err, pool.Close())
+	}
+	logPath := filename + "-wal"
+	largeLogBytes := walHeaderBytes + walLargeLogPages*(pageSize+walFrameHeaderBytes)
 
 	lifetime, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
@@ -57,11 +70,21 @@ func startWALCheckpoint(ctx context.Context, dsn string) (func() error, error) {
 			case now := <-ticker.C:
 				var busy, pages, checkpointed int
 				err := pool.QueryRowContext(lifetime, "PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &pages, &checkpointed)
-				if err != nil && previousErr == nil && lifetime.Err() == nil {
-					slog.Warn("SQLite WAL checkpoint failed", "error", err)
+				// Logical pages can shrink when the writer starts a new WAL cycle
+				// even though the old file allocation is still held on disk.
+				var fileBytes int64
+				info, statErr := os.Stat(logPath)
+				if statErr == nil {
+					fileBytes = info.Size()
+				} else if errors.Is(statErr, os.ErrNotExist) {
+					statErr = nil
 				}
-				previousErr = err
-				if err != nil || pages < walLargeLogPages {
+				checkErr := errors.Join(err, statErr)
+				if checkErr != nil && previousErr == nil && lifetime.Err() == nil {
+					slog.Warn("SQLite WAL maintenance check failed", "error", checkErr)
+				}
+				previousErr = checkErr
+				if err != nil || (pages < walLargeLogPages && fileBytes < largeLogBytes) {
 					stalledSince = time.Time{}
 					continue
 				}
@@ -76,7 +99,8 @@ func startWALCheckpoint(ctx context.Context, dsn string) (func() error, error) {
 					stalledSince = now
 				}
 				if now.Sub(stalledSince) >= walCheckpointWarn && now.Sub(warnedAt) >= walCheckpointWarn {
-					slog.Warn("SQLite WAL could not be reset", "pages", pages, "checkpointed", checkpointed, "busy", busy, "error", err)
+					slog.Warn("SQLite WAL could not be reset", "file_bytes", fileBytes,
+						"pages", pages, "checkpointed", checkpointed, "busy", busy, "error", err)
 					warnedAt = now
 				}
 			}
