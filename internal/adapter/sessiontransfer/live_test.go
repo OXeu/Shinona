@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -32,6 +33,25 @@ type stagedAgent struct {
 type timingLogs chan string
 
 type watchSessionFunc func(context.Context, string, string) (*run.SessionWatch, error)
+
+type fullHistoryLimitReader struct{ Reader }
+
+func (r fullHistoryLimitReader) TranscriptUpdate(ctx context.Context, owner, id string, window run.LiveTranscriptWindow, known map[string]run.TurnVersion) (*run.TranscriptUpdate, error) {
+	if window == run.LiveFullHistory {
+		return nil, run.ErrTranscriptExportLimit
+	}
+	return r.Reader.TranscriptUpdate(ctx, owner, id, window, known)
+}
+
+func TestLiveMessageEncoderRejectsOversizedResponse(t *testing.T) {
+	turn := &sessionpb.Turn{Output: strings.Repeat("x", 1<<20)}
+	message := &sessionpb.LiveMessage{Item: &sessionpb.LiveMessage_Sync{Sync: &sessionpb.LiveSync{
+		ChangedTurns: slices.Repeat([]*sessionpb.Turn{turn}, 64),
+	}}}
+	if body, err := encodeProtobuf(t.Context(), message); !errors.Is(err, errLiveMessageTooLarge) || len(body) != 0 {
+		t.Fatalf("encoder did not reject the oversized live message: %d bytes, %v", len(body), err)
+	}
+}
 
 func (f watchSessionFunc) WatchSession(ctx context.Context, owner, id string) (*run.SessionWatch, error) {
 	return f(ctx, owner, id)
@@ -171,7 +191,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		}
 	}
 	logs := make(timingLogs, 16)
-	handler := New(service, slog.New(slog.NewTextHandler(logs, nil)))
+	handler := New(fullHistoryLimitReader{service}, slog.New(slog.NewTextHandler(logs, nil)))
 	var revoked atomic.Bool
 	const origin = "https://shinona.example"
 	live := handler.live(ctx, origin, func(r *http.Request) (*auth.User, error) {
@@ -186,7 +206,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	}))
 	defer server.Close()
 
-	dial := func(account, token string) *websocket.Conn {
+	dial := func(account, token string, paged *bool) *websocket.Conn {
 		t.Helper()
 		header := http.Header{"Origin": {origin}, "X-Test-Owner": {account}, "X-Test-Cookie": {token}}
 		url := "ws" + strings.TrimPrefix(server.URL, "http")
@@ -201,7 +221,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		payload, err := proto.Marshal(&sessionpb.LiveRequest{SessionId: entry.ID, KnownTurns: known})
+		payload, err := proto.Marshal(&sessionpb.LiveRequest{SessionId: entry.ID, KnownTurns: known, Paged: paged})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -231,11 +251,17 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		}
 	}
 
-	foreign := dial("other", "")
+	foreign := dial("other", "", nil)
 	if _, _, err := foreign.ReadMessage(); !websocket.IsCloseError(err, websocket.ClosePolicyViolation) {
 		t.Fatalf("cross-account subscription: %v", err)
 	}
-	conn := dial(owner, "")
+	legacy := dial(owner, "", new(false))
+	_, _, err = legacy.ReadMessage()
+	if closed, ok := errors.AsType[*websocket.CloseError](err); !ok || closed.Code != websocket.CloseMessageTooBig ||
+		!strings.Contains(closed.Text, "paged subscription") {
+		t.Fatalf("legacy subscription did not report its size limit and recovery: %v", err)
+	}
+	conn := dial(owner, "", nil)
 	var seq uint32
 	start := waitFor(conn, &seq, func(msg *sessionpb.LiveMessage) bool { return msg.GetSync() != nil }).GetSync()
 	if len(start.TurnIds) != run.TranscriptPageSize || len(start.ChangedTurns) != 0 || start.NextBeforeSequence != earlier+1 {
@@ -303,7 +329,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	_ = conn.Close()
 	waitForBootstrapAndDeltaTiming(t, ctx, logs)
 
-	resumed := dial(owner, "")
+	resumed := dial(owner, "", nil)
 	var resumedSeq uint32
 	resume := waitFor(resumed, &resumedSeq, func(msg *sessionpb.LiveMessage) bool { return msg.GetSync() != nil }).GetSync()
 	if len(resume.ChangedTurns) != 1 {
@@ -314,7 +340,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		parts[2].Tool != "read" || parts[2].Status != string(run.Succeeded) || parts[3].Text != "Current thought" {
 		t.Fatalf("reconnect did not restore the whole live process: %v", parts)
 	}
-	revocable := dial(owner, "revocable")
+	revocable := dial(owner, "revocable", nil)
 	var revocableSeq uint32
 	waitFor(revocable, &revocableSeq, func(msg *sessionpb.LiveMessage) bool { return msg.GetSync() != nil })
 	revoked.Store(true)

@@ -129,9 +129,16 @@ func (r *ConversationStore) readTranscriptUpdate(ctx context.Context, owner, id 
 		update.NextBeforeSequence = cursor
 		update.Versions = make([]run.TurnVersion, 0, len(versions))
 		ids := make([]string, 0, len(versions))
+		remaining := int64(run.MaxLiveMessageBytes)
 		for _, row := range slices.Backward(versions) {
 			update.Versions = append(update.Versions, row.TurnVersion)
 			if row.NeedsSync(known) {
+				// Legacy subscriptions require one complete sync message. Bound
+				// the bodies we fetch while allowing known turns to be reused.
+				remaining -= row.Size
+				if window == run.LiveFullHistory && remaining < 0 {
+					return run.ErrTranscriptExportLimit
+				}
 				ids = append(ids, row.ID)
 			}
 		}

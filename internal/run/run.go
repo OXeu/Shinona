@@ -91,6 +91,7 @@ type SessionChanges struct {
 
 const TranscriptPageSize = 30
 const MaxLiveTranscriptTurns = 256
+const MaxLiveMessageBytes = 64 << 20
 const maxActiveSessionTurns = 8
 
 func CheckTurnAdmission(active int64, queue bool) error {

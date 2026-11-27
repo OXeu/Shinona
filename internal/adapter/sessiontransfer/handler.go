@@ -3,6 +3,7 @@ package sessiontransfer
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/timing"
 )
+
+var errLiveMessageTooLarge = errors.New("live update exceeds its size limit")
 
 type Reader interface {
 	TranscriptUpdate(context.Context, string, string, run.LiveTranscriptWindow, map[string]run.TurnVersion) (*run.TranscriptUpdate, error)
@@ -40,5 +43,11 @@ func closeSocket(conn *websocket.Conn, code int, reason string) {
 
 func encodeProtobuf(ctx context.Context, message proto.Message) ([]byte, error) {
 	defer timing.Start(ctx, "protobuf_encode")()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if proto.Size(message) > run.MaxLiveMessageBytes {
+		return nil, errLiveMessageTooLarge
+	}
 	return proto.Marshal(message)
 }

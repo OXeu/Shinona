@@ -3,6 +3,7 @@ package sqlite
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,38 @@ import (
 
 	"github.com/OXeu/shinona/internal/run"
 )
+
+func TestLegacyLiveSyncRejectsOversizedUnknownTurns(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "legacy-live.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	const owner, session = "owner", "session"
+	seedAccounts(t, repo, owner)
+	newSession(t, repo, owner, session)
+	now := time.Now().UTC()
+	rows := []row{
+		{ID: "older", OwnerID: owner, SessionID: session, Sequence: 1, Status: run.Succeeded, CreatedAt: now, UpdatedAt: now},
+		{ID: "newer", OwnerID: owner, SessionID: session, Sequence: 2, Status: run.Succeeded, Output: "New reply.", CreatedAt: now, UpdatedAt: now},
+	}
+	if err := repo.db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	// If the old row reaches the decoder, its invalid JSON returns a different error.
+	if err := repo.db.Exec("UPDATE runs SET parts = zeroblob(?) WHERE id = 'older'", run.MaxLiveMessageBytes).Error; err != nil {
+		t.Fatal(err)
+	}
+	if update, err := repo.Conversations.TranscriptUpdate(ctx, owner, session, run.LiveFullHistory, nil); update != nil || !errors.Is(err, run.ErrTranscriptExportLimit) {
+		t.Fatalf("legacy sync accepted the oversized batch or decoded its data: %v", err)
+	}
+	known := map[string]run.TurnVersion{"older": {ID: "older", UpdatedAt: now, Status: run.Succeeded}}
+	update, err := repo.Conversations.TranscriptUpdate(ctx, owner, session, run.LiveFullHistory, known)
+	if err != nil || update == nil || len(update.Versions) != 2 || len(update.ChangedTurns) != 1 || update.ChangedTurns[0].ID != "newer" {
+		t.Fatalf("legacy delta did not reuse the known large turn: %+v, %v", update, err)
+	}
+}
 
 func TestTranscriptPageAndLiveSyncShareTheByteBudget(t *testing.T) {
 	ctx := t.Context()

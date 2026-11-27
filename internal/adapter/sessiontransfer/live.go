@@ -141,6 +141,10 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 		switch {
 		case errors.Is(err, errLiveAuth):
 			closeSocket(conn, signInRequired, "Sign in required.")
+		case errors.Is(err, run.ErrTranscriptExportLimit):
+			closeSocket(conn, websocket.CloseMessageTooBig, "Full live history exceeds its limit. Use a paged subscription.")
+		case errors.Is(err, errLiveMessageTooLarge):
+			closeSocket(conn, websocket.CloseMessageTooBig, "Live update exceeds its size limit.")
 		case err != nil && ctx.Err() == nil:
 			h.logger.Debug("stream live session", "error", err)
 			closeSocket(conn, websocket.CloseInternalServerErr, "Live session unavailable.")
