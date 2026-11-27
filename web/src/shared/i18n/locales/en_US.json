@@ -271,7 +271,7 @@
   "projects.saveName": "Save name",
   "projects.renamed": "Project renamed.",
   "projects.removed": "Project removed.",
-  "projects.confirmRemove": "Remove “{name}”? Its sandbox will be destroyed and its sessions will move to the default project.",
+  "projects.confirmRemove": "Remove “{name}”? Its sandbox will be destroyed, pending turns will stop, and its sessions will move to the default project.",
   "projects.updateFailed": "Could not update the project.",
   "projects.all": "All projects",
   "projects.default": "Default project",

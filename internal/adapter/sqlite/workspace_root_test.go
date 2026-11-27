@@ -18,6 +18,74 @@ func newSession(t *testing.T, repo *Database, owner, id string) {
 	}
 }
 
+func TestRemoveProjectKeepsPendingTurnsOutOfTheDefaultWorkspace(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	const owner, project, session = "owner", "project", "project-session"
+	seedAccounts(t, repo, owner)
+	newSession(t, repo, owner, "default-session")
+	if err := repo.Projects.CreateProject(ctx, run.Project{ID: project, OwnerID: owner, Name: "Fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := repo.Conversations.CreateSession(ctx, run.Session{
+		ID: session, OwnerID: owner, ProjectID: project, Title: "Fixture", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index, item := range []run.Run{
+		{ID: "claimed", OwnerID: owner, SessionID: session, ProjectID: project, Prompt: "Claimed prompt"},
+		{ID: "pending", OwnerID: owner, SessionID: session, ProjectID: project, Prompt: "Pending prompt"},
+		{ID: "default-turn", OwnerID: owner, SessionID: "default-session"},
+	} {
+		item.Status = run.Queued
+		item.CreatedAt = now.Add(time.Duration(index) * time.Millisecond)
+		item.UpdatedAt = item.CreatedAt
+		if _, err := repo.Conversations.Enqueue(ctx, item, "", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimed, err := repo.Conversations.ClaimNext(ctx, now)
+	if err != nil || claimed == nil || claimed.ID != "claimed" || claimed.ProjectID != project || claimed.StartedAt == nil {
+		t.Fatalf("claim did not capture its project: %+v, %v", claimed, err)
+	}
+	if err := repo.Projects.RemoveProject(ctx, owner, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Conversations.Enqueue(ctx, run.Run{
+		ID: "late", OwnerID: owner, SessionID: session, ProjectID: project, Status: run.Queued,
+	}, "", true); !errors.Is(err, run.ErrWorkspaceBusy) {
+		t.Fatalf("late submission to the old workspace: %v", err)
+	}
+	if err := repo.Conversations.Complete(ctx, claimed.ID, run.Completion{
+		Status: run.Stopped, UpdatedAt: now, Unstarted: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next, err := repo.Conversations.ClaimNext(ctx, now)
+	if err != nil || next == nil || next.ID != "default-turn" || next.ProjectID != "" {
+		t.Fatalf("project removal affected default workspace scheduling: %+v, %v", next, err)
+	}
+	page, err := repo.Conversations.TranscriptPage(ctx, owner, session, 0)
+	if err != nil || page == nil || page.Session.ProjectID != "" || len(page.Turns) != 2 {
+		t.Fatalf("the removed project's conversation was not preserved: %+v, %v", page, err)
+	}
+	for index, prompt := range []string{"Claimed prompt", "Pending prompt"} {
+		turn := page.Turns[index]
+		if turn.Status != run.Stopped || turn.StartedAt != nil || turn.Prompt != prompt {
+			t.Errorf("turn %d was not preserved as an unstarted stop: %+v", index, turn)
+		}
+	}
+	history, err := repo.Conversations.History(ctx, run.Run{OwnerID: owner, SessionID: session, Sequence: 3}, 0)
+	if err != nil || len(history) != 0 {
+		t.Fatalf("unstarted turns reached the next model context: %+v, %v", history, err)
+	}
+}
+
 func TestWorkspaceRootDefaultsToTheProjectWorkspace(t *testing.T) {
 	ctx := t.Context()
 	repo, err := Open(ctx, ":memory:")

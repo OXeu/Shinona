@@ -196,6 +196,7 @@ type Run struct {
 	ID               string
 	OwnerID          string
 	SessionID        string
+	ProjectID        string `json:"-"` // Session's project at admission or claim.
 	RetryOf          string // The previous failed attempt, if this turn retries it.
 	Sequence         int
 	Policy           sandbox.Policy
@@ -223,6 +224,7 @@ type Completion struct {
 	Steering  []SteeringMessage
 	Status    Status
 	UpdatedAt time.Time
+	Unstarted bool // The claim was stopped before it began.
 }
 
 type Exchange struct {

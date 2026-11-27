@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -97,8 +98,23 @@ func (r *ProjectStore) RemoveProject(ctx context.Context, ownerID, id string) er
 		if retained {
 			return run.ErrProjectCleanupRequired
 		}
-		if err := tx.Model(&sessionRow{}).Where("owner_id = ? AND project_id = ?", ownerID, id).
-			UpdateColumn("project_id", "").Error; err != nil {
+		now := time.Now().UTC()
+		sessions := func() *gorm.DB {
+			return tx.Model(&sessionRow{}).Where("owner_id = ? AND project_id = ?", ownerID, id)
+		}
+		queued := func() *gorm.DB {
+			return tx.Model(&row{}).Where("owner_id = ? AND status = ?", ownerID, run.Queued)
+		}
+		// Stop turns submitted for this workspace before their sessions move.
+		if err := sessions().Where("updated_at < ? AND id IN (?)", now, queued().Select("session_id")).
+			UpdateColumn("updated_at", now).Error; err != nil {
+			return err
+		}
+		if err := queued().Where("session_id IN (?)", sessions().Select("id")).
+			UpdateColumns(map[string]any{"status": run.Stopped, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		if err := sessions().UpdateColumn("project_id", "").Error; err != nil {
 			return err
 		}
 		result := tx.Delete(&projectRow{}, "owner_id = ? AND id = ?", ownerID, id)

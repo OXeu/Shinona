@@ -37,7 +37,7 @@ type TranscriptRepository interface {
 
 type TurnRepository interface {
 	queuedTurnStopper
-	// Enqueue checks ownership and the per-session queue bound atomically.
+	// Enqueue checks ownership, project membership, and the per-session queue bound atomically.
 	Enqueue(ctx context.Context, item Run, firstTitle string, queue bool) (Run, error)
 	// EnqueueRetry also verifies that the retry target is still the latest failed turn.
 	EnqueueRetry(ctx context.Context, item Run, options RetryOptions) (Run, error)
@@ -84,6 +84,7 @@ type sessionProjectReader interface {
 
 type turnClaimer interface {
 	// ClaimNext preserves session order and excludes projects with a running turn.
+	// The claimed turn includes the project's ID from the same write.
 	// Stored image contents are loaded separately once execution starts.
 	ClaimNext(ctx context.Context, now time.Time) (*Run, error)
 }

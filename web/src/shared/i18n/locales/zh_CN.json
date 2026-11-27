@@ -271,7 +271,7 @@
   "projects.saveName": "保存名称",
   "projects.renamed": "已重命名项目。",
   "projects.removed": "已移除项目。",
-  "projects.confirmRemove": "移除「{name}」？该项目的沙箱将被销毁，会话将移至默认项目。",
+  "projects.confirmRemove": "移除「{name}」？该项目的沙箱将被销毁，尚未执行的回合将停止，会话将移至默认项目。",
   "projects.updateFailed": "无法更新项目。",
   "projects.all": "所有项目",
   "projects.default": "默认项目",

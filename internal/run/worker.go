@@ -23,6 +23,7 @@ const (
 )
 
 var errWorkspaceSetup = errors.New("could not prepare the sandbox")
+var errClaimedProjectChanged = errors.New("the conversation moved after this turn was claimed")
 
 // Worker dispatches a bounded number of turns. Claims preserve ordering within
 // each session and avoid filling execution slots with the same workspace.
@@ -126,9 +127,10 @@ func (w *Worker) execute(ctx, completions context.Context, active *activeTurn, r
 	active.finishing = true
 	stopping := active.stopping
 	w.controls.mu.Unlock()
+	unstarted := errors.Is(err, errClaimedProjectChanged)
 	status := Succeeded
 	switch {
-	case stopping:
+	case stopping || unstarted:
 		status = Stopped
 	case err != nil:
 		details := failureDetails(err)
@@ -144,7 +146,7 @@ func (w *Worker) execute(ctx, completions context.Context, active *activeTurn, r
 	finished := time.Now().UTC()
 	releaseExecution()
 	completion := Completion{
-		Result: result, Steering: active.steering.close(), Status: status, UpdatedAt: finished,
+		Result: result, Steering: active.steering.close(), Status: status, UpdatedAt: finished, Unstarted: unstarted,
 	}
 	for completions.Err() == nil {
 		saveCtx, cancel := context.WithTimeout(completions, completionWriteTimeout)
@@ -218,13 +220,19 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (Result, error) {
 	startup, cancelStartup := context.WithTimeout(ctx, w.workspace.Lifecycle)
 	defer cancelStartup()
 	item := active.item
-	spec, release, err := lockSessionProject(startup, w.repo, item.OwnerID, item.SessionID, func(key sandbox.ProjectKey) (func(), error) {
-		return w.controls.leases.Acquire(startup, key, false)
-	})
+	spec := sandbox.Spec{OwnerID: item.OwnerID, SessionID: item.SessionID, ProjectID: item.ProjectID, Policy: sandbox.Shared}
+	release, err := w.controls.leases.Acquire(startup, spec.ProjectKey(), false)
 	if err != nil {
 		return Result{}, fmt.Errorf("lock workspace project: %w", err)
 	}
 	defer release()
+	project, err := w.repo.SessionProject(startup, item.OwnerID, item.SessionID)
+	if err != nil {
+		return Result{}, fmt.Errorf("load session project: %w", err)
+	}
+	if project != item.ProjectID {
+		return Result{}, errClaimedProjectChanged
+	}
 	spec, target, err := projectTarget(startup, w.projects, w.resolve, spec, item.Backend, true)
 	if err != nil {
 		return Result{}, fmt.Errorf("load workspace project: %w", err)

@@ -18,6 +18,7 @@ type row struct {
 	ID               string `gorm:"primaryKey"`
 	OwnerID          string
 	SessionID        string `gorm:"index:idx_turns_session,priority:1;index:idx_runs_session_status_sequence,priority:1;index:idx_runs_retries,priority:1,where:retry_of <> ''"`
+	ProjectID        string `gorm:"->;-:migration"`
 	RetryOf          string
 	Sequence         int `gorm:"index:idx_turns_session,priority:2;index:idx_runs_session_status_sequence,priority:3;index:idx_runs_retries,priority:2"`
 	Policy           sandbox.Policy
@@ -59,7 +60,10 @@ func (r *ConversationStore) ClaimNext(ctx context.Context, now time.Time) (*run.
 	db := r.db.WithContext(ctx)
 	next := eligibleTurns(db).Order("candidate.created_at, candidate.id").Limit(1)
 	var records []row
-	result := db.Model(&records).Clauses(clause.Returning{}).
+	result := db.Model(&records).Clauses(clause.Returning{Columns: []clause.Column{
+		{Name: "*", Raw: true},
+		{Name: `(SELECT project_id FROM agent_sessions WHERE owner_id = runs.owner_id AND id = runs.session_id) AS project_id`, Raw: true},
+	}}).
 		Where("id = (?) AND status = ?", next, run.Queued).
 		Updates(map[string]any{"status": run.Running, "started_at": now, "updated_at": now})
 	if result.Error != nil || len(records) == 0 {
@@ -104,15 +108,19 @@ func (r *ConversationStore) Complete(ctx context.Context, id string, completion 
 		usage = string(data)
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{
+			"status": completion.Status, "output": completion.Output, "updated_at": completion.UpdatedAt,
+			"steering": string(steering), "parts": string(parts), "context_tokens": completion.ContextTokens,
+			"context_window": completion.ContextWindow, "token_usage": usage, "agent_messages": completion.AgentMessages,
+			"compacted_context": completion.CompactedContext,
+		}
+		if completion.Unstarted {
+			updates["started_at"] = nil
+		}
 		var item row
 		result := tx.Model(&item).Clauses(clause.Returning{Columns: []clause.Column{{Name: "session_id"}}}).
 			Where("id = ? AND status = ?", id, run.Running).
-			Updates(map[string]any{
-				"status": completion.Status, "output": completion.Output, "updated_at": completion.UpdatedAt,
-				"steering": string(steering), "parts": string(parts), "context_tokens": completion.ContextTokens,
-				"context_window": completion.ContextWindow, "token_usage": usage, "agent_messages": completion.AgentMessages,
-				"compacted_context": completion.CompactedContext,
-			})
+			Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}

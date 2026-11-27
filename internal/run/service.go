@@ -112,6 +112,7 @@ func (s *Service) prepareQueued(ctx context.Context, item Run) (Run, error) {
 		return Run{}, err
 	}
 	now := time.Now().UTC()
+	item.ProjectID = project
 	item.ID, item.Backend, item.Policy = s.newID(), target.Name, settings.Selected
 	item.Status, item.CreatedAt, item.UpdatedAt = Queued, now, now
 	return item, nil

@@ -269,6 +269,37 @@ func (a workerTestAgent) Run(ctx context.Context, _ Input, _ sandbox.Workspace) 
 	return a(ctx)
 }
 
+func TestWorkerStopsClaimedTurnIfItsProjectWasRemoved(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		writes := make(chan Completion, 1)
+		repo := workerWorkspaceRepository{completed: writes}
+		active := &activeTurn{item: Run{ID: "turn", OwnerID: "owner", SessionID: "session", ProjectID: "removed"}}
+		active.ctx, active.cancel = context.WithCancel(ctx)
+		defer active.cancel()
+		controls := &Controls{active: map[sessionKey]*activeTurn{active.key(): active}}
+		release, ok := controls.leases.TryAcquire(sandbox.ProjectKey{OwnerID: "owner", ProjectID: "removed"}, false)
+		if !ok {
+			t.Fatal("could not acquire the removal gate")
+		}
+		defer release()
+		resolve := func(context.Context, string, string) (Target, error) {
+			t.Error("the claimed turn attempted to resolve the replacement workspace")
+			return Target{}, ErrSandboxProvider
+		}
+		worker := NewWorker(repo, workspaceTestRepository{}, resolve, slog.New(slog.DiscardHandler), controls, 1, DefaultWorkspaceTimeouts())
+		go worker.execute(ctx, ctx, active, func() {})
+		synctest.Wait()
+		if len(writes) != 0 {
+			t.Fatal("the claimed turn bypassed the original project's gate")
+		}
+		release()
+		if completion := <-writes; completion.Status != Stopped || !completion.Unstarted || len(completion.Parts) != 0 {
+			t.Fatalf("moved turn completion: %+v", completion)
+		}
+	})
+}
+
 func TestWorkerBoundsStartupAndCompletesTimedOutTurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		limits := DefaultWorkspaceTimeouts()

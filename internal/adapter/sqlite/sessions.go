@@ -307,6 +307,9 @@ func (r *ConversationStore) enqueue(ctx context.Context, item run.Run, firstTitl
 		if err != nil {
 			return err
 		}
+		if session.ProjectID != item.ProjectID {
+			return run.ErrWorkspaceBusy
+		}
 
 		var active int64
 		if err := tx.Model(&row{}).Where("session_id = ? AND status IN ?", session.ID, []run.Status{run.Queued, run.Running}).
