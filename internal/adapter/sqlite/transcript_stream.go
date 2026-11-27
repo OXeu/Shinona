@@ -10,8 +10,6 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 )
 
-const transcriptBatchBytes = 4 << 20
-
 type exportTurnRef struct {
 	ID   string
 	Size int64
@@ -37,10 +35,7 @@ func (r *ConversationStore) StreamTranscript(ctx context.Context, owner, id stri
 		// mutable turns together, then release the transaction before writing.
 		turns := func() *gorm.DB { return conversationTurns(tx, owner, id) }
 		// Measure the variable-size fields without pulling their bodies into Go.
-		// SQLite can read octet_length for text and blobs from the record header.
-		const columns = `id, coalesce(octet_length(prompt), 0) + coalesce(octet_length(output), 0)
-			+ coalesce(octet_length(parts), 0) + coalesce(octet_length(steering), 0)
-			+ coalesce(octet_length(payload), 0) + coalesce(octet_length(token_usage), 0) AS size`
+		const columns = "id, " + transcriptStoredBytes + " AS size"
 		if err := turns().Select(columns).Order("sequence ASC, id ASC").Limit(run.MaxTranscriptExportTurns + 1).Find(&refs).Error; err != nil {
 			return err
 		}

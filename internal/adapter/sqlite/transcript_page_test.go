@@ -3,11 +3,79 @@ package sqlite
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/OXeu/shinona/internal/run"
 )
+
+func TestTranscriptPageAndLiveSyncShareTheByteBudget(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	const owner, session = "owner", "session"
+	seedAccounts(t, repo, owner)
+	newSession(t, repo, owner, session)
+	now := time.Now().UTC()
+	chunk := strings.Repeat("输出", 400_000)
+	rows := []row{
+		{ID: "first", Output: "first"},
+		{ID: "wide", Output: chunk},
+		{ID: "oversized", Output: chunk + chunk},
+		{ID: "long-tool", Parts: []run.TurnPart{{Kind: "tool", Output: chunk}}},
+		{ID: "running", Payload: run.Payload{Options: run.Options{Model: "latest-model"}}},
+	}
+	for i := range rows {
+		rows[i].OwnerID, rows[i].SessionID, rows[i].Sequence = owner, session, i+1
+		rows[i].Status, rows[i].CreatedAt, rows[i].UpdatedAt = run.Succeeded, now, now
+	}
+	rows[4].Status = run.Running
+	if err := repo.db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := 0
+	for _, want := range []struct {
+		ids  []string
+		next int
+	}{
+		{[]string{"long-tool", "running"}, 4},
+		{[]string{"oversized"}, 3},
+		{[]string{"first", "wide"}, 0},
+	} {
+		page, err := repo.Conversations.TranscriptPage(ctx, owner, session, before)
+		if err != nil || page == nil {
+			t.Fatalf("load page before %d: %v", before, err)
+		}
+		var ids []string
+		for _, turn := range page.Turns {
+			ids = append(ids, turn.ID)
+		}
+		if !slices.Equal(ids, want.ids) || page.NextBeforeSequence != want.next {
+			t.Fatalf("page before %d contains %v with cursor %d, want %v with cursor %d",
+				before, ids, page.NextBeforeSequence, want.ids, want.next)
+		}
+		if before == 4 && page.Turns[0].Output != chunk+chunk {
+			t.Fatal("pagination truncated a large single turn")
+		}
+		before = page.NextBeforeSequence
+	}
+	known := map[string]run.TurnVersion{"long-tool": {ID: "long-tool", Status: run.Succeeded, UpdatedAt: now}}
+	update, err := repo.Conversations.TranscriptUpdate(ctx, owner, session, run.LiveLatestPage, known)
+	if err != nil || update == nil {
+		t.Fatalf("load live update: %v", err)
+	}
+	if len(update.Versions) != 2 || update.Versions[0].ID != "long-tool" || update.Versions[1].ID != "running" ||
+		len(update.ChangedTurns) != 1 || update.ChangedTurns[0].ID != "running" || update.NextBeforeSequence != 4 ||
+		update.LastOptions == nil || update.LastOptions.Model != "latest-model" {
+		t.Fatalf("live update has mismatched metadata: %v, %d changes, cursor %d, options %v",
+			update.Versions, len(update.ChangedTurns), update.NextBeforeSequence, update.LastOptions)
+	}
+}
 
 func TestTranscriptUpdateReadsChangedTurnsAndKeepsPageMetadata(t *testing.T) {
 	ctx := t.Context()

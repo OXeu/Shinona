@@ -116,7 +116,7 @@ func (r *ConversationStore) Transcript(ctx context.Context, ownerID, sessionID s
 }
 
 func (r *ConversationStore) TranscriptPage(ctx context.Context, ownerID, sessionID string, beforeSequence int) (*run.Transcript, error) {
-	window := transcriptWindow{limit: run.TranscriptPageSize, before: beforeSequence, paged: true}
+	window := transcriptWindow{before: beforeSequence, paged: true}
 	if beforeSequence != 0 {
 		return r.transcript(ctx, ownerID, sessionID, window)
 	}
@@ -181,29 +181,29 @@ func (r *ConversationStore) transcript(ctx context.Context, ownerID, sessionID s
 		if err != nil || state == nil {
 			return err
 		}
-		query := transcriptQuery(conversationTurns(tx, ownerID, sessionID)).Order("sequence DESC")
-		if window.before != 0 {
-			query = query.Where("sequence < ?", window.before)
-		}
-		if window.limit > 0 {
-			query = query.Limit(window.limit)
-		}
-		if err := query.Find(&turns).Error; err != nil {
-			return err
-		}
 		result = &run.Transcript{TranscriptState: *state}
-		if window.paged && len(turns) == window.limit {
-			before := turns[len(turns)-1].Run.Sequence
-			var earlier []int
-			if err := conversationTurns(tx, ownerID, sessionID).Where("sequence < ?", before).
-				Limit(1).Pluck("sequence", &earlier).Error; err != nil {
+		scope := func() *gorm.DB {
+			query := conversationTurns(tx, ownerID, sessionID)
+			if window.before != 0 {
+				query = query.Where("sequence < ?", window.before)
+			}
+			return query
+		}
+		query := scope()
+		if window.paged {
+			versions, cursor, err := readTranscriptVersions(scope(), run.LiveLatestPage)
+			if err != nil {
 				return err
 			}
-			if len(earlier) != 0 {
-				result.NextBeforeSequence = before
+			if len(versions) == 0 {
+				return nil
 			}
+			result.NextBeforeSequence = cursor
+			query = query.Where("sequence >= ?", versions[len(versions)-1].Sequence)
+		} else if window.limit > 0 {
+			query = query.Limit(window.limit)
 		}
-		return nil
+		return transcriptQuery(query).Order("sequence DESC").Find(&turns).Error
 	})
 	if err != nil || result == nil {
 		return nil, err

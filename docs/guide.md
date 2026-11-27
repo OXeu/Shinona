@@ -178,7 +178,7 @@ Shinona applies resource limits to existing containers when they next run. Their
 
 The session list uses `GET /api/v1/sessions`. Clients can send `If-None-Match` for an unchanged `304` response. Add `delta=true` with a previously received ETag in that header to request changes. When the requested base has left the cache, the server returns the current full list. The browser pauses polling when the tab is hidden. Visible tabs showing the same account and project filter share requests when the browser supports Shared Workers. When the last waiting tab cancels its refresh, the worker cancels the shared request.
 
-`GET /api/v1/sessions/{id}/transcript` returns a Protobuf `TranscriptPage` with media type `application/protobuf`. It returns the latest 30 turns and a cursor for fetching earlier turns with `beforeSequence`.
+`GET /api/v1/sessions/{id}/transcript` returns a Protobuf `TranscriptPage` with media type `application/protobuf`. A page returns up to 30 turns and a cursor for fetching earlier turns with `beforeSequence`. Pages and paged live updates group turns using a 4 MiB budget for stored message data. A turn larger than the budget can be returned on its own.
 
 With `paged=false`, the response uses `application/vnd.shinona.transcript-stream+protobuf`. Each unsigned varint length is followed by one `TranscriptExportFrame`. The stream starts with a header, delivers the turns in sequence, and finishes with an end frame whose `failure` is `NONE` on success. An end frame with `LIMIT`, `TIMEOUT`, or `INTERNAL` reports an export that stopped after streaming began. EOF without an end frame means the transfer was interrupted. Errors before streaming starts use the normal JSON error response with an HTTP status.
 

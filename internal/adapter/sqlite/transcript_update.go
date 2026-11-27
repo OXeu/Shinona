@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 
 	"gorm.io/gorm"
@@ -10,6 +11,50 @@ import (
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/timing"
 )
+
+const transcriptBatchBytes = 4 << 20
+
+// SQLite can read the byte counts of text and blob values from record headers.
+const transcriptStoredBytes = `coalesce(octet_length(prompt), 0) + coalesce(octet_length(output), 0)
+	+ coalesce(octet_length(parts), 0) + coalesce(octet_length(steering), 0)
+	+ coalesce(octet_length(payload), 0) + coalesce(octet_length(token_usage), 0)`
+
+type transcriptVersion struct {
+	run.TurnVersion
+	Sequence int
+	Size     int64
+}
+
+// readTranscriptVersions selects a contiguous suffix of the requested
+// window before any turn bodies are loaded.
+func readTranscriptVersions(query *gorm.DB, window run.LiveTranscriptWindow) (_ []transcriptVersion, _ int, err error) {
+	limit := window.Limit()
+	rows, err := query.Select("id, sequence, updated_at, status, " + transcriptStoredBytes).
+		Order("sequence DESC").Limit(limit + 1).Rows()
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	remaining := int64(transcriptBatchBytes)
+	var versions []transcriptVersion
+	for rows.Next() {
+		var version transcriptVersion
+		if err := rows.Scan(&version.ID, &version.Sequence, &version.UpdatedAt, &version.Status, &version.Size); err != nil {
+			return nil, 0, err
+		}
+		// Always admit the first turn, including one that exceeds the page budget.
+		pageFull := window == run.LiveLatestPage && len(versions) != 0 && version.Size > remaining
+		if len(versions) == limit || pageFull {
+			if window == run.LiveFullHistory {
+				return nil, 0, run.ErrTranscriptExportLimit
+			}
+			return versions, versions[len(versions)-1].Sequence, nil
+		}
+		remaining -= version.Size
+		versions = append(versions, version)
+	}
+	return versions, 0, rows.Err()
+}
 
 func (r *ConversationStore) TranscriptUpdate(ctx context.Context, owner, id string, window run.LiveTranscriptWindow,
 	known map[string]run.TurnVersion,
@@ -74,25 +119,14 @@ func (r *ConversationStore) readTranscriptUpdate(ctx context.Context, owner, id 
 		}
 		update = &run.TranscriptUpdate{Session: state.Session}
 		turns := func() *gorm.DB { return conversationTurns(tx, owner, id) }
-		var versions []struct {
-			run.TurnVersion `gorm:"embedded"`
-			Sequence        int
-		}
-		limit := window.Limit()
-		if err := turns().Select("id", "sequence", "updated_at", "status").Order("sequence DESC").Limit(limit + 1).Find(&versions).Error; err != nil {
+		versions, cursor, err := readTranscriptVersions(turns(), window)
+		if err != nil {
 			return err
 		}
 		if len(versions) == 0 {
 			return nil
 		}
-		if len(versions) > limit {
-			if window == run.LiveFullHistory {
-				return run.ErrTranscriptExportLimit
-			}
-			versions = versions[:limit]
-			update.NextBeforeSequence = versions[limit-1].Sequence
-		}
-
+		update.NextBeforeSequence = cursor
 		update.Versions = make([]run.TurnVersion, 0, len(versions))
 		ids := make([]string, 0, len(versions))
 		for _, row := range slices.Backward(versions) {
