@@ -125,6 +125,9 @@ func oauthClient(ctx context.Context, client *http.Client, metadata *oauthex.Aut
 }
 
 func protectedResource(ctx context.Context, client *http.Client, resource *url.URL) (*oauthex.ProtectedResourceMetadata, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	path := *resource
 	path.Path, path.RawPath = "/.well-known/oauth-protected-resource"+strings.TrimSuffix(resource.Path, "/"), ""
 	base := *resource
@@ -154,6 +157,9 @@ func protectedResource(ctx context.Context, client *http.Client, resource *url.U
 		}
 	}
 	for _, location := range locations {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		if _, err := checkedOAuthURL(location.metadata, isLoopbackURL(resource.String())); err != nil {
 			continue
 		}
@@ -165,6 +171,9 @@ func protectedResource(ctx context.Context, client *http.Client, resource *url.U
 			scopes = metadata.ScopesSupported
 		}
 		return metadata, scopes, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 	return nil, nil, errors.New("the MCP server did not publish usable protected resource metadata")
 }

@@ -49,6 +49,9 @@ func TestOAuthToolAccessAndRefresh(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "Bearer fresh-access" {
+			if r.Close {
+				t.Error("OAuth tool request disabled HTTP keep-alive")
+			}
 			remoteHTTP.ServeHTTP(w, r)
 			return
 		}

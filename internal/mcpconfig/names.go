@@ -1,10 +1,16 @@
 package mcpconfig
 
+import (
+	"strings"
+	"unicode/utf8"
+)
+
 const MaxServers = 16
 
 func ValidName(name string) bool {
 	const maxNameBytes = 80
-	return name != "" && len(name) <= maxNameBytes
+	return len(name) <= maxNameBytes && strings.TrimSpace(name) != "" && utf8.ValidString(name) &&
+		!strings.ContainsAny(name, "\x00\r\n")
 }
 
 func ValidSelection(names []string) bool {

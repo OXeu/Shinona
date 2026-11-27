@@ -19,7 +19,7 @@ func TestSelectionLimits(t *testing.T) {
 	if ValidSelection(append(names, "extra")) {
 		t.Fatal("accepted a selection over the server limit")
 	}
-	for _, invalid := range []string{names[last] + "x", names[0], ""} {
+	for _, invalid := range []string{names[last] + "x", names[0], "", " ", "line\nfeed", "carriage\rreturn", "null\x00byte"} {
 		names[last] = invalid
 		if ValidSelection(names) {
 			t.Errorf("accepted invalid server name %q", invalid)

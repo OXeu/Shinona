@@ -19,6 +19,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 )
 
@@ -361,6 +362,17 @@ func TestMCPSessionCleanupReportsUnexpectedStatus(t *testing.T) {
 				t.Fatalf("cleanup exposed private upstream details: %v, %s", closeErr, report)
 			}
 		})
+	}
+}
+
+func TestToolTextPreservesReplacementRunesAtTheOutputLimit(t *testing.T) {
+	var text strings.Builder
+	prefix := strings.Repeat("a", sandbox.DefaultOutputLimit-4) + "\uFFFD"
+	if appendToolText(&text, prefix) {
+		t.Fatal("truncated text that fits the limit")
+	}
+	if !appendToolText(&text, "界") || text.String() != prefix {
+		t.Fatal("truncation changed a complete rune or retained part of a rune")
 	}
 }
 

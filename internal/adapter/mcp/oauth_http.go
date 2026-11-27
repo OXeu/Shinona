@@ -101,11 +101,12 @@ func (h oauthHandler) disconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, owner := r.Context(), auth.CurrentUser(r.Context()).ID
-	if server, ok := h.findServer(ctx, owner, name); !ok || server.OAuth == nil {
+	err := h.oauth.disconnect(ctx, owner, name, h.findServer)
+	if errors.Is(err, errOAuthServerNotFound) {
 		httpserver.WriteError(w, http.StatusNotFound, "MCP_SERVER_NOT_FOUND", "MCP OAuth server not found.")
 		return
 	}
-	if err := h.oauth.Disconnect(ctx, owner, name); err != nil {
+	if err != nil {
 		h.logger.Error("disconnect MCP OAuth failed", "server", name, "error", err)
 		httpserver.WriteError(w, http.StatusInternalServerError, "MCP_OAUTH_DISCONNECT_FAILED", "Could not disconnect MCP OAuth.")
 		return

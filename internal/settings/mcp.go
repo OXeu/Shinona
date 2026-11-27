@@ -69,10 +69,10 @@ func (servers MCPConfig) Info(overridden bool) MCPSettings {
 }
 
 func (servers MCPConfig) Save(input MCPServerInput) (MCPConfig, error) {
-	entry := MCPServer{Name: strings.TrimSpace(input.Name), URL: strings.TrimSpace(input.URL)}
-	if len(entry.URL) > 2048 || input.Token != nil && len(*input.Token) > 4096 {
-		return nil, Invalid("MCP_SERVER_FIELD_LIMIT", "MCP URLs are limited to 2048 bytes and tokens to 4096 bytes")
+	if strings.ContainsAny(input.Name, "\x00\r\n") || strings.ContainsAny(input.URL, "\x00\r\n") {
+		return nil, Invalid("INVALID_MCP_SERVERS", "the MCP server name or endpoint contains an invalid character")
 	}
+	entry := MCPServer{Name: strings.TrimSpace(input.Name), URL: strings.TrimSpace(input.URL)}
 	if input.Token != nil {
 		entry.Token = *input.Token
 	}
@@ -80,10 +80,6 @@ func (servers MCPConfig) Save(input MCPServerInput) (MCPConfig, error) {
 	if !oauth && (input.OAuthClientID != nil || input.OAuthClientSecret != nil) {
 		return nil, Invalid("INVALID_MCP_OAUTH", "enable OAuth to configure an OAuth client")
 	}
-	if strings.ContainsAny(entry.Name, "\x00\r\n") || strings.ContainsRune(entry.Token, 0) {
-		return nil, Invalid("INVALID_MCP_SERVERS", "the MCP server name or token contains an invalid character")
-	}
-
 	index := -1
 	var previousClient *MCPOAuthConfig
 	if input.PreviousName != nil {
@@ -121,7 +117,10 @@ func (input MCPServerInput) oauthClient(previous *MCPOAuthConfig) MCPOAuthConfig
 		client.ClientID = previous.ClientID
 	}
 	if input.OAuthClientID != nil {
-		client.ClientID = strings.TrimSpace(*input.OAuthClientID)
+		client.ClientID = *input.OAuthClientID
+		if !strings.ContainsAny(client.ClientID, "\x00\r\n") {
+			client.ClientID = strings.TrimSpace(client.ClientID)
+		}
 	}
 	if input.OAuthClientSecret != nil {
 		client.ClientSecret = *input.OAuthClientSecret
@@ -153,11 +152,14 @@ func (servers MCPConfig) Validate() error {
 	}
 	names := make(map[string]bool, len(servers))
 	for _, entry := range servers {
+		if len(entry.URL) > 2048 || len(entry.Token) > 4096 {
+			return Invalid("MCP_SERVER_FIELD_LIMIT", "MCP URLs are limited to 2048 bytes and tokens to 4096 bytes")
+		}
 		target, err := url.Parse(entry.URL)
 		if !mcpconfig.ValidName(entry.Name) ||
 			err != nil || target.Hostname() == "" || target.User != nil || target.RawQuery != "" ||
 			target.ForceQuery || target.Fragment != "" || (target.Scheme != "https" && target.Scheme != "http") ||
-			strings.ContainsAny(entry.Token, "\r\n") {
+			strings.ContainsAny(target.Path, "\x00\r\n") || strings.ContainsAny(entry.Token, "\x00\r\n") {
 			return Invalid("INVALID_MCP_SERVERS", "enter a name and an HTTP(S) MCP endpoint without embedded credentials, a query, or a fragment")
 		}
 		if names[entry.Name] {
@@ -167,8 +169,9 @@ func (servers MCPConfig) Validate() error {
 			if entry.Token != "" {
 				return Invalid("INVALID_MCP_OAUTH", "choose OAuth without a bearer token")
 			}
-			if len(client.ClientID) > 2048 || len(client.ClientSecret) > 4096 || strings.ContainsAny(client.ClientID+client.ClientSecret, "\x00\r\n") ||
-				(client.ClientSecret != "" && client.ClientID == "") {
+			if len(client.ClientID) > 2048 || len(client.ClientSecret) > 4096 ||
+				strings.ContainsAny(client.ClientID, "\x00\r\n") || strings.ContainsAny(client.ClientSecret, "\x00\r\n") ||
+				(client.ClientSecret != "" && strings.TrimSpace(client.ClientID) == "") {
 				return Invalid("INVALID_MCP_OAUTH_CLIENT", "enter a valid client ID for the OAuth client secret")
 			}
 		}

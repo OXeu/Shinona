@@ -9,17 +9,20 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/OXeu/shinona/internal/mcpconfig"
 	"github.com/OXeu/shinona/internal/run"
+	"github.com/OXeu/shinona/internal/sandbox"
 	"github.com/OXeu/shinona/internal/settings"
 	"github.com/OXeu/shinona/internal/timing"
 )
@@ -83,8 +86,7 @@ func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]run
 			if session.close != nil {
 				closing.Go(func() {
 					if err := session.close(); err != nil {
-						detail := sessionCleanupFailure(err)
-						slog.WarnContext(ctx, "MCP session cleanup failed", "server", session.name, "failure", detail)
+						detail := sessionCleanupFailure(context.WithoutCancel(ctx), session.name, err)
 						failures[i] = fmt.Errorf("close MCP server %q: %w", session.name, detail)
 					}
 				})
@@ -118,7 +120,12 @@ func (s *Servers) Open(ctx context.Context, owner string, names []string) ([]run
 	return allTools, closeTools, nil
 }
 
-func sessionCleanupFailure(err error) error {
+func sessionCleanupFailure(ctx context.Context, server string, err error) error {
+	detail := err
+	if requestErr, ok := errors.AsType[*url.Error](err); ok {
+		detail = requestErr.Err
+	}
+	slog.WarnContext(ctx, "MCP session cleanup failed", "server", server, "error", detail)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("session termination timed out: %w", context.DeadlineExceeded)
@@ -143,7 +150,7 @@ func (s *Servers) open(ctx context.Context, owner, name string) ([]run.Tool, fun
 		if s.oauth == nil {
 			return nil, nil, ErrOAuthRequired
 		}
-		client.Transport = s.oauth.transport(owner, server, oauthHTTP(server.URL).Transport)
+		client.Transport = s.oauth.transport(owner, server, client.Transport)
 	} else {
 		client.Transport = tokenTransport{base: client.Transport, token: server.Token}
 	}
@@ -263,7 +270,9 @@ func executeTool(session *sdk.ClientSession, name string) func(context.Context, 
 		var text strings.Builder
 		for _, content := range result.Content {
 			if item, ok := content.(*sdk.TextContent); ok {
-				text.WriteString(item.Text[:min(len(item.Text), (16<<10)-text.Len())])
+				if appendToolText(&text, item.Text) {
+					break
+				}
 			}
 		}
 		if text.Len() == 0 && result.StructuredContent != nil {
@@ -271,10 +280,25 @@ func executeTool(session *sdk.ClientSession, name string) func(context.Context, 
 			if err != nil {
 				return run.ToolResult{}, err
 			}
-			text.Write(data[:min(len(data), 16<<10)])
+			appendToolText(&text, string(data))
 		}
 		return run.ToolResult{
-			Text: strings.ToValidUTF8(text.String(), "�"), IsError: result.IsError,
+			Text: text.String(), IsError: result.IsError,
 		}, nil
 	}
+}
+
+// appendToolText reports when the remaining space cannot fit the whole text.
+func appendToolText(out *strings.Builder, value string) bool {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	remaining := sandbox.DefaultOutputLimit - out.Len()
+	if len(value) <= remaining {
+		out.WriteString(value)
+		return false
+	}
+	for remaining > 0 && !utf8.RuneStart(value[remaining]) {
+		remaining--
+	}
+	out.WriteString(value[:remaining])
+	return true
 }

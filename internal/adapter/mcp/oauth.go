@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -27,6 +29,7 @@ const (
 	maxOAuthFlows          = 256
 	maxFlowsPerOwner       = 8
 	oauthRefreshTimeout    = 12 * time.Second
+	oauthFinishTimeout     = 12 * time.Second
 	oauthGrantWriteTimeout = 5 * time.Second
 )
 
@@ -175,6 +178,8 @@ func (o *OAuth) takeFlow(owner, state string, cancelPending context.CancelCauseF
 }
 
 func (o *OAuth) Finish(ctx context.Context, owner, state, code, issuer string, lookup oauthServerLookup) error {
+	ctx, cancel := context.WithTimeout(ctx, oauthFinishTimeout)
+	defer cancel()
 	ctx, cancelPending := context.WithCancelCause(ctx)
 	defer cancelPending(nil)
 	flow := o.takeFlow(owner, state, cancelPending)
@@ -229,8 +234,17 @@ func (o *OAuth) Finish(ctx context.Context, owner, state, code, issuer string, l
 }
 
 func (o *OAuth) Disconnect(ctx context.Context, owner, name string) error {
+	return o.disconnect(ctx, owner, name, nil)
+}
+
+func (o *OAuth) disconnect(ctx context.Context, owner, name string, lookup oauthServerLookup) error {
 	defer timing.Start(ctx, "mcp_oauth_disconnect")()
 	return o.ApplyServerChanges(ctx, owner, func() ([]string, error) {
+		if lookup != nil {
+			if server, ok := lookup(ctx, owner, name); !ok || server.OAuth == nil {
+				return nil, errOAuthServerNotFound
+			}
+		}
 		return []string{name}, o.store.DeleteMCPGrant(ctx, owner, name)
 	})
 }
@@ -359,16 +373,25 @@ func (o *OAuth) refresh(ctx context.Context, owner string, server settings.MCPSe
 	}
 	token, err := grant.refreshToken(ctx, oauthHTTP(server.URL))
 	if err != nil {
-		// Credentials and provider response bodies stay out of the chat.
-		if failure, ok := errors.AsType[*oauth2.RetrieveError](err); ok && failure.ErrorCode == "invalid_grant" {
-			deleted, writeErr := o.store.DeleteMCPGrantIfUnchanged(ctx, owner, server.Name, previous)
-			if writeErr != nil {
-				return nil, writeErr
+		if failure, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
+			slog.WarnContext(ctx, "MCP OAuth refresh rejected", "server", server.Name, "status", failure.Response.StatusCode)
+			if failure.ErrorCode == "invalid_grant" {
+				save, cancel := context.WithTimeout(context.WithoutCancel(ctx), oauthGrantWriteTimeout)
+				defer cancel()
+				deleted, writeErr := o.store.DeleteMCPGrantIfUnchanged(save, owner, server.Name, previous)
+				if writeErr != nil {
+					return nil, writeErr
+				}
+				if !deleted {
+					return o.currentToken(save, owner, server)
+				}
+				return nil, ErrOAuthRequired
 			}
-			if !deleted {
-				return o.currentToken(ctx, owner, server)
+		} else {
+			if requestErr, ok := errors.AsType[*url.Error](err); ok {
+				err = requestErr.Err
 			}
-			return nil, ErrOAuthRequired
+			slog.WarnContext(ctx, "MCP OAuth refresh failed", "server", server.Name, "error", err)
 		}
 		return nil, fmt.Errorf("could not refresh MCP OAuth for %s", server.Name)
 	}
@@ -413,7 +436,7 @@ func fingerprint(server settings.MCPServer) [sha256.Size]byte {
 
 func validBearer(token *oauth2.Token) bool {
 	return token != nil && token.AccessToken != "" && strings.EqualFold(token.Type(), "Bearer") &&
-		!strings.ContainsAny(token.AccessToken, "\r\n")
+		!strings.ContainsAny(token.AccessToken, "\x00\r\n")
 }
 
 func (o *OAuth) transport(owner string, server settings.MCPServer, base http.RoundTripper) http.RoundTripper {
