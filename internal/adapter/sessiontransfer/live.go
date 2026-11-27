@@ -137,7 +137,8 @@ func (h *Handler) live(lifetime context.Context, origin string, sessionUser func
 		state := liveConnection{window: run.LiveLatestPage, known: known}
 		if request.Paged != nil && !request.GetPaged() {
 			state.window = run.LiveFullHistory
-
+		} else if request.IncludeEarlierTurn {
+			state.window = run.LiveLatestPageWithEarlierTurn
 		}
 		err = h.streamLive(ctx, conn, watch, &state, owner, request.SessionId, send, heartbeat)
 		switch {
@@ -242,14 +243,16 @@ func (h *Handler) streamLive(ctx context.Context, conn *websocket.Conn, watch *r
 			}
 		case <-watch.Changes():
 			change := watch.Read()
+			// A legacy paged client can omit the running turn. Its part
+			// events cannot change the page; durable events still resync it.
+			if !change.Transcript && state.progress.TurnID == "" {
+				continue
+			}
 			if change.Transcript || change.Progress.TurnID != state.progress.TurnID ||
 				change.PartOffset > state.progress.FinalizedParts+len(state.progress.Parts) {
 				if found, err := syncPage("live_resync"); err != nil || !found {
 					return err
 				}
-				continue
-			}
-			if change.Progress.TurnID == "" {
 				continue
 			}
 			build := timing.Start(ctx, "live_build_delta")
@@ -280,6 +283,10 @@ func (s *liveConnection) sync(update *run.TranscriptUpdate, settings run.Setting
 	for _, version := range update.Versions {
 		result.TurnIds = append(result.TurnIds, version.ID)
 		s.known[version.ID] = version
+	}
+	if earlier := update.EarlierTurn; earlier != nil {
+		result.EarlierTurnId = earlier.ID
+		s.known[earlier.ID] = *earlier
 	}
 	s.progress = run.LiveProgress{}
 	for _, item := range update.ChangedTurns {

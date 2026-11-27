@@ -81,6 +81,7 @@ export interface TurnPart {
 
 export interface AgentSession extends SessionSummary {
   turns: Turn[]
+  earlierTurn?: Turn
   lastOptions?: ComposerRunOptions | null
   nextBeforeSequence?: number
 }
@@ -159,6 +160,7 @@ async function transcriptPage(id: string, signal: AbortSignal, beforeSequence?: 
   return {
     session: page.session ? {
       ...decodeSessionSummary(page.session), turns: page.turns.map(decodeTurn),
+      earlierTurn: page.earlierTurn && decodeTurn(page.earlierTurn),
       nextBeforeSequence: page.nextBeforeSequence, lastOptions: decodeRunOptions(page.lastOptions),
     } : null,
     sandboxSettings: decodeSandboxSettings(page.sandboxSettings),

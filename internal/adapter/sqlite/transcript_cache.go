@@ -29,6 +29,7 @@ type latestTranscriptPage struct {
 	updatedAt time.Time
 	turnCount int
 	turns     []run.Run
+	earlier   *run.Run
 	next      int
 }
 
@@ -53,7 +54,7 @@ func (c *latestTranscriptCache) put(key latestTranscriptKey, page *run.Transcrip
 	if c.maxPageBytes == 0 {
 		return
 	}
-	size := latestTranscriptSize(page.Turns) + len(key.owner) + len(key.session) + len(page.HeadID)
+	size := latestTranscriptSize(page.Turns, page.EarlierTurn) + len(key.owner) + len(key.session) + len(page.HeadID)
 	if size > c.maxPageBytes {
 		return
 	}
@@ -61,6 +62,9 @@ func (c *latestTranscriptCache) put(key latestTranscriptKey, page *run.Transcrip
 		key: key, head: page.HeadID, turns: cloneTranscriptTurns(page.Turns),
 		createdAt: page.Session.CreatedAt, updatedAt: page.Session.UpdatedAt, turnCount: page.Session.TurnCount,
 		next: page.NextBeforeSequence,
+	}
+	if page.EarlierTurn != nil {
+		entry.earlier = new(cloneTranscriptTurn(*page.EarlierTurn))
 	}
 	c.entries.Put(key, entry, size)
 }
@@ -129,57 +133,69 @@ func (r *ConversationStore) cachedTranscriptState(ctx context.Context, key lates
 func cloneTranscriptTurns(turns []run.Run) []run.Run {
 	copied := slices.Clone(turns)
 	for i := range copied {
-		turn := &copied[i]
-		turn.Payload.Images = slices.Clone(turn.Payload.Images)
-		turn.Payload.Options.MCPServers = slices.Clone(turn.Payload.Options.MCPServers)
-		turn.Steering = slices.Clone(turn.Steering)
-		turn.Parts = slices.Clone(turn.Parts)
-		turn.AgentMessages = slices.Clone(turn.AgentMessages)
-		turn.CompactedContext = slices.Clone(turn.CompactedContext)
-		if turn.TokenUsage != nil {
-			turn.TokenUsage = new(*turn.TokenUsage)
-		}
-		if turn.StartedAt != nil {
-			turn.StartedAt = new(*turn.StartedAt)
-		}
-		if turn.RevertedAt != nil {
-			turn.RevertedAt = new(*turn.RevertedAt)
-		}
+		copied[i] = cloneTranscriptTurn(copied[i])
 	}
 	return copied
 }
 
+func cloneTranscriptTurn(turn run.Run) run.Run {
+	turn.Payload.Images = slices.Clone(turn.Payload.Images)
+	turn.Payload.Options.MCPServers = slices.Clone(turn.Payload.Options.MCPServers)
+	turn.Steering = slices.Clone(turn.Steering)
+	turn.Parts = slices.Clone(turn.Parts)
+	turn.AgentMessages = slices.Clone(turn.AgentMessages)
+	turn.CompactedContext = slices.Clone(turn.CompactedContext)
+	if turn.TokenUsage != nil {
+		turn.TokenUsage = new(*turn.TokenUsage)
+	}
+	if turn.StartedAt != nil {
+		turn.StartedAt = new(*turn.StartedAt)
+	}
+	if turn.RevertedAt != nil {
+		turn.RevertedAt = new(*turn.RevertedAt)
+	}
+	return turn
+}
+
 // Estimate retained memory from the strings and slices in the decoded page.
-func latestTranscriptSize(turns []run.Run) int {
-	size := int(unsafe.Sizeof(latestTranscriptPage{})) + len(turns)*int(unsafe.Sizeof(run.Run{}))
+func latestTranscriptSize(turns []run.Run, earlier *run.Run) int {
+	size := int(unsafe.Sizeof(latestTranscriptPage{}))
 	for _, turn := range turns {
-		size += len(turn.ID) + len(turn.OwnerID) + len(turn.SessionID) + len(turn.Backend) +
-			len(turn.Policy) + len(turn.Status) + len(turn.Prompt) + len(turn.Output) +
-			len(turn.AgentMessages) + len(turn.CompactedContext)
-		size += len(turn.RetryOf)
-		if turn.TokenUsage != nil {
-			size += int(unsafe.Sizeof(run.TokenUsage{}))
-		}
-		if turn.StartedAt != nil {
-			size += int(unsafe.Sizeof(time.Time{}))
-		}
-		if turn.RevertedAt != nil {
-			size += int(unsafe.Sizeof(time.Time{}))
-		}
-		options := turn.Payload.Options
-		size += len(options.Model) + len(options.Permission) + len(options.Thinking) + len(options.MCP)
-		for _, server := range options.MCPServers {
-			size += int(unsafe.Sizeof("")) + len(server)
-		}
-		for _, part := range turn.Parts {
-			size += int(unsafe.Sizeof(run.TurnPart{})) + len(part.Kind) + len(part.Text) + len(part.Tool) + len(part.Input) + len(part.Output) + len(part.Status)
-		}
-		for _, steer := range turn.Steering {
-			size += int(unsafe.Sizeof(run.SteeringMessage{})) + len(steer.Text)
-		}
-		for _, image := range turn.Payload.Images {
-			size += int(unsafe.Sizeof(run.Image{})) + len(image.Name) + len(image.MediaType) + len(image.Data)
-		}
+		size += transcriptTurnSize(turn)
+	}
+	if earlier != nil {
+		size += transcriptTurnSize(*earlier)
+	}
+	return size
+}
+
+func transcriptTurnSize(turn run.Run) int {
+	size := int(unsafe.Sizeof(run.Run{})) + len(turn.ID) + len(turn.OwnerID) + len(turn.SessionID) + len(turn.Backend) +
+		len(turn.Policy) + len(turn.Status) + len(turn.Prompt) + len(turn.Output) +
+		len(turn.AgentMessages) + len(turn.CompactedContext)
+	size += len(turn.RetryOf)
+	if turn.TokenUsage != nil {
+		size += int(unsafe.Sizeof(run.TokenUsage{}))
+	}
+	if turn.StartedAt != nil {
+		size += int(unsafe.Sizeof(time.Time{}))
+	}
+	if turn.RevertedAt != nil {
+		size += int(unsafe.Sizeof(time.Time{}))
+	}
+	options := turn.Payload.Options
+	size += len(options.Model) + len(options.Permission) + len(options.Thinking) + len(options.MCP)
+	for _, server := range options.MCPServers {
+		size += int(unsafe.Sizeof("")) + len(server)
+	}
+	for _, part := range turn.Parts {
+		size += int(unsafe.Sizeof(run.TurnPart{})) + len(part.Kind) + len(part.Text) + len(part.Tool) + len(part.Input) + len(part.Output) + len(part.Status)
+	}
+	for _, steer := range turn.Steering {
+		size += int(unsafe.Sizeof(run.SteeringMessage{})) + len(steer.Text)
+	}
+	for _, image := range turn.Payload.Images {
+		size += int(unsafe.Sizeof(run.Image{})) + len(image.Name) + len(image.MediaType) + len(image.Data)
 	}
 	return size
 }

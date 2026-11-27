@@ -87,6 +87,8 @@ message TranscriptPage {
   repeated Turn turns = 5;
   // True for a complete page.
   bool complete = 6;
+  // The latest started turn when the latest page contains only queued or unstarted turns.
+  Turn earlier_turn = 7;
 }
 
 // Full exports send unsigned varint-length-prefixed frames. The header comes
@@ -121,6 +123,7 @@ message LiveRequest {
   string session_id = 1;
   repeated TurnVersion known_turns = 2;
   optional bool paged = 3;
+  bool include_earlier_turn = 4;
 }
 
 message TurnVersion {
@@ -146,6 +149,8 @@ message LiveSync {
   repeated Turn changed_turns = 4;
   RunOptions last_options = 5;
   int32 next_before_sequence = 6;
+  // Outside turn_ids and the cursor range. Its body follows the same version rules as the page.
+  string earlier_turn_id = 7;
 }
 
 message LiveProgress {

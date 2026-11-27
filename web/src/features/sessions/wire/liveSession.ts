@@ -19,8 +19,9 @@ interface LiveCallbacks {
 class SessionState {
   private turns: Map<string, Turn>
 
-  constructor(initial: Turn[]) {
-    this.turns = new Map(initial.map((turn) => [turn.id, turn]))
+  constructor(initial: AgentSession) {
+    this.turns = new Map(initial.turns.map((turn) => [turn.id, turn]))
+    if (initial.earlierTurn) this.turns.set(initial.earlierTurn.id, initial.earlierTurn)
   }
 
   sync(update: LiveSync, callbacks: LiveCallbacks) {
@@ -30,14 +31,17 @@ class SessionState {
     }
     if (!update.sandboxSettings) throw new Error('Live session is missing settings.')
     const changes = new Map(update.changedTurns.map((item) => [item.id, decodeTurn(item)]))
-    const turns = update.turnIds.map((id) => {
+    const getTurn = (id: string) => {
       const turn = changes.get(id) ?? this.turns.get(id)
       if (!turn) throw new Error('Live session references an unknown turn.')
       return turn
-    })
+    }
+    const turns = update.turnIds.map(getTurn)
+    const earlierTurn = update.earlierTurnId ? getTurn(update.earlierTurnId) : undefined
     this.turns = new Map(turns.map((turn) => [turn.id, turn]))
+    if (earlierTurn) this.turns.set(earlierTurn.id, earlierTurn)
     callbacks.sync({
-      ...decodeSessionSummary(update.session), turns,
+      ...decodeSessionSummary(update.session), turns, earlierTurn,
       lastOptions: decodeRunOptions(update.lastOptions), nextBeforeSequence: update.nextBeforeSequence,
     },
       decodeSandboxSettings(update.sandboxSettings))
@@ -74,12 +78,15 @@ class SessionState {
 
 export async function watchLiveSession(initial: AgentSession, callbacks: LiveCallbacks, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted()
+  const known = initial.turns.slice(-30)
+  if (initial.earlierTurn) known.push(initial.earlierTurn)
   const payload = toBinary(LiveRequestSchema, create(LiveRequestSchema, {
     sessionId: initial.id,
     paged: true,
-    knownTurns: initial.turns.slice(-30).map(({ id, updatedAt, status }) => ({ id, updatedAt, status })),
+    includeEarlierTurn: true,
+    knownTurns: known.map(({ id, updatedAt, status }) => ({ id, updatedAt, status })),
   }))
-  const state = new SessionState(initial.turns)
+  const state = new SessionState(initial)
   const url = new URL(endpoint, location.href)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   const socket = new WebSocket(url)

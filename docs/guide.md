@@ -180,6 +180,8 @@ The session list uses `GET /api/v1/sessions`. Clients can send `If-None-Match` f
 
 `GET /api/v1/sessions/{id}/transcript` returns a Protobuf `TranscriptPage` with media type `application/protobuf`. A page returns up to 30 turns and a cursor for fetching earlier turns with `beforeSequence`. Pages and paged live updates group turns using a 4 MiB budget for stored message data. A turn larger than the budget can be returned on its own.
 
+If the latest page contains only submissions that have never started, it can carry the most recent started turn in `earlier_turn`. Older pages still follow the cursor, and can include that turn in their normal sequence. Paged live clients can set `include_earlier_turn` to receive the same record and its progress. Live sync identifies it with `earlier_turn_id` and uses the usual version checks for its body.
+
 With `paged=false`, the response uses `application/vnd.shinona.transcript-stream+protobuf`. Each unsigned varint length is followed by one `TranscriptExportFrame`. The stream starts with a header, delivers the turns in sequence, and finishes with an end frame whose `failure` is `NONE` on success. An end frame with `LIMIT`, `TIMEOUT`, or `INTERNAL` reports an export that stopped after streaming began. EOF without an end frame means the transfer was interrupted. Errors before streaming starts use the normal JSON error response with an HTTP status.
 
 The full export allows up to 5,000 turns, 128 MiB before compression, and 45 seconds including time spent waiting for an export slot. Use pagination for larger histories. The server applies Zstandard to JSON and Protobuf responses of at least 1 KiB when the client accepts `zstd`.

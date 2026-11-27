@@ -167,7 +167,7 @@ func TestStoredTranscriptPartsAreAnArray(t *testing.T) {
 func TestLatestTranscriptCacheRejectsPagesOverItsBudget(t *testing.T) {
 	page := &run.Transcript{Turns: []run.Run{{ID: "turn", Output: "Completed"}}}
 	key := latestTranscriptKey{owner: "owner", session: "session"}
-	size := latestTranscriptSize(page.Turns) + len(key.owner) + len(key.session)
+	size := latestTranscriptSize(page.Turns, nil) + len(key.owner) + len(key.session)
 	for _, budget := range []int{0, size - 1, size} {
 		cache := newLatestTranscriptCache(budget)
 		cache.put(key, page)

@@ -54,7 +54,7 @@ const {
   submit, retryTurn, stop, changePending, askRevert, revertMessage,
 } = useTurnActions(sessionId, transcript, setChatError)
 const { catalog, savingDefaults, saveComposerDefaults, resume: resumeCatalog } = useComposerCatalog(returnToLogin)
-const runningTurnId = computed(() => session.value?.turns.find((turn) => turn.status === 'RUNNING')?.id)
+const runningTurnId = computed(() => transcript.runningTurn.value?.id)
 const activeSessionProjectId = computed(() => {
   const current = session.value
   return current && current.id === props.id ? current.projectId : summary.value?.projectId

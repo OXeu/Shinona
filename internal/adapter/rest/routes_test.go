@@ -368,6 +368,51 @@ func TestTranscriptPaginationAndHTTPCompression(t *testing.T) {
 	}
 }
 
+func TestLatestTranscriptIncludesDisplacedStartedTurnWithoutMovingCursor(t *testing.T) {
+	repo, router := restFixture(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	const owner, session = "alice", "busy-history"
+	if err := repo.Conversations.CreateSession(ctx, run.Session{ID: session, OwnerID: owner, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range run.TranscriptPageSize + 1 {
+		id := fmt.Sprintf("busy-turn-%d", i+1)
+		if _, err := repo.Conversations.Enqueue(ctx, run.Run{
+			ID: id, OwnerID: owner, SessionID: session, Status: run.Queued, CreatedAt: now, UpdatedAt: now,
+		}, "Busy", i != 0); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			if _, err := repo.Conversations.ClaimNext(ctx, now); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := repo.Conversations.StopQueued(ctx, owner, session, id, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const path = "/sessions/" + session + "/transcript"
+	page := decodeTranscript(t, perform(t, router, owner, "GET", path, nil, 200))
+	if page.GetEarlierTurn().GetStatus() != string(run.Running) || page.GetEarlierTurn().GetSequence() != 1 ||
+		len(page.GetTurns()) != run.TranscriptPageSize || page.GetTurns()[0].GetSequence() != 2 || page.GetNextBeforeSequence() != 2 {
+		t.Fatalf("latest page lost the running turn or changed its cursor: %v", page)
+	}
+	older := decodeTranscript(t, perform(t, router, owner, "GET", path+"?beforeSequence=2", nil, 200))
+	if older.GetEarlierTurn() != nil || len(older.GetTurns()) != 1 || !proto.Equal(older.GetTurns()[0], page.GetEarlierTurn()) {
+		t.Fatalf("older page did not reach the same turn: %v", older)
+	}
+	if err := repo.Conversations.Complete(ctx, page.EarlierTurn.Id, run.Completion{
+		Result: run.Result{Output: "Finished outside the latest page."}, Status: run.Succeeded, UpdatedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finished := decodeTranscript(t, perform(t, router, owner, "GET", path, nil, 200))
+	if finished.GetSession().GetActive() || finished.GetEarlierTurn().GetStatus() != string(run.Succeeded) ||
+		finished.GetEarlierTurn().GetOutput() != "Finished outside the latest page." {
+		t.Fatalf("latest page lost the completed reply: %v", finished)
+	}
+}
+
 func TestTranscriptCacheUsesStateFromTheEncodedSnapshot(t *testing.T) {
 	repo, _ := restFixture(t)
 	now := time.Now().UTC()

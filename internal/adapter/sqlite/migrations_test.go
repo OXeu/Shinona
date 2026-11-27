@@ -40,6 +40,42 @@ func markUnversioned(t *testing.T, repo *Database) {
 	}
 }
 
+func TestMigratesIndexForEarlierStartedTurns(t *testing.T) {
+	const previousVersion = 13
+	const index = "idx_runs_started_session_sequence"
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "earlier-turn.db")
+	old := openSchemaFixture(t, path, previousVersion)
+	if old.db.Migrator().HasIndex(&row{}, index) {
+		t.Fatal("the previous schema already has the new index")
+	}
+	seedAccounts(t, old, "owner")
+	newSession(t, old, "owner", "session")
+	now := time.Now().UTC()
+	if err := old.db.Create(&row{
+		ID: "started", OwnerID: "owner", SessionID: "session", Sequence: 1, Status: run.Succeeded,
+		StartedAt: &now, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if !db.db.Migrator().HasIndex(&row{}, index) {
+		t.Fatal("opening an existing database did not install the new index")
+	}
+	version, err := readEarlierTurnVersion(conversationTurns(db.read.WithContext(ctx), "owner", "session"), nil, 2)
+	if err != nil || version == nil || version.ID != "started" {
+		t.Fatalf("earlier started turn after the upgrade: %+v, %v", version, err)
+	}
+}
+
 func TestSessionListRevisionMigrationReplacesLegacyUpdateTrigger(t *testing.T) {
 	const previousVersion = 8
 	ctx := t.Context()

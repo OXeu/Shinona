@@ -116,6 +116,9 @@ func (r *handler) pagedTranscriptResponse(c *gin.Context, key transcriptPageKey,
 		meta.Session = sessiontransfer.Summary(page.Session)
 		meta.LastOptions = sessiontransfer.RunOptions(page.LastOptions())
 		meta.NextBeforeSequence = int32(page.NextBeforeSequence)
+		if page.EarlierTurn != nil {
+			meta.EarlierTurn = sessiontransfer.Turn(*page.EarlierTurn)
+		}
 		turns = make([][]byte, len(page.Turns))
 		for i, turn := range page.Turns {
 			if err := ctx.Err(); err != nil {

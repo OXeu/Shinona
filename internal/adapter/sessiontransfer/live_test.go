@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -145,9 +146,18 @@ func TestLiveCancelsSubscriptionSetupOnDisconnect(t *testing.T) {
 }
 
 func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) {
+	t.Run("memory", func(t *testing.T) {
+		testLiveSubscription(t, ":memory:")
+	})
+	t.Run("file", func(t *testing.T) {
+		testLiveSubscription(t, filepath.Join(t.TempDir(), "live.db"))
+	})
+}
+
+func testLiveSubscription(t *testing.T, filename string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	repo, err := sqlite.Open(ctx, ":memory:")
+	repo, err := sqlite.Open(ctx, filename)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,8 +200,8 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 			known = append(known, &sessionpb.TurnVersion{Id: id, UpdatedAt: now.Format(time.RFC3339Nano), Status: string(run.Succeeded)})
 		}
 	}
-	logs := make(timingLogs, 16)
-	handler := New(fullHistoryLimitReader{service}, slog.New(slog.NewTextHandler(logs, nil)))
+	logs := make(timingLogs, 32)
+	handler := New(fullHistoryLimitReader{service}, slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	var revoked atomic.Bool
 	const origin = "https://shinona.example"
 	live := handler.live(ctx, origin, func(r *http.Request) (*auth.User, error) {
@@ -221,7 +231,9 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		payload, err := proto.Marshal(&sessionpb.LiveRequest{SessionId: entry.ID, KnownTurns: known, Paged: paged})
+		payload, err := proto.Marshal(&sessionpb.LiveRequest{
+			SessionId: entry.ID, KnownTurns: known, Paged: paged, IncludeEarlierTurn: true,
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -235,6 +247,9 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		for {
 			kind, raw, err := conn.ReadMessage()
 			if err != nil || kind != websocket.BinaryMessage {
+				for len(logs) > 0 {
+					t.Log(strings.TrimSpace(<-logs))
+				}
 				t.Fatalf("read live protobuf: %v (kind %d)", err, kind)
 			}
 			var message sessionpb.LiveMessage
@@ -319,6 +334,7 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 			{Kind: "tool", Tool: "read", Status: string(run.Succeeded)},
 			{Kind: "thinking", Text: "Current thought", Status: string(run.Running)},
 		})
+		input.FinalizeParts(3)
 	}
 	progress = waitFor(conn, &seq, func(msg *sessionpb.LiveMessage) bool { return msg.GetProgress().GetPartCount() == 4 }).GetProgress()
 	if len(progress.Parts) != 3 || progress.Parts[0].Index != 1 || progress.Parts[0].GetReplace().GetText() != "Earlier thought" ||
@@ -339,6 +355,13 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 	if len(parts) != 4 || parts[0].Text != "initial text and delta" || parts[1].Text != "Earlier thought" ||
 		parts[2].Tool != "read" || parts[2].Status != string(run.Succeeded) || parts[3].Text != "Current thought" {
 		t.Fatalf("reconnect did not restore the whole live process: %v", parts)
+	}
+	agent.steps <- func(input run.Input) {
+		input.ReportParts(3, []run.TurnPart{{Kind: "thinking", Text: "Current thought continues", Status: string(run.Running)}})
+	}
+	progress = waitFor(resumed, &resumedSeq, func(msg *sessionpb.LiveMessage) bool { return len(msg.GetProgress().GetParts()) > 0 }).GetProgress()
+	if len(progress.Parts) != 1 || progress.Parts[0].Index != 3 || progress.Parts[0].GetAppend().GetText() != " continues" {
+		t.Fatalf("expected an append after the finalized prefix: %v", progress)
 	}
 	revocable := dial(owner, "revocable", nil)
 	var revocableSeq uint32
@@ -364,12 +387,48 @@ func TestLiveSubscriptionStreamsDeltasAndReconcilesAfterReconnect(t *testing.T) 
 		messages := msg.GetProgress().GetSteering().GetMessages()
 		return len(messages) == 1 && messages[0].Delivered
 	})
+	for range run.TranscriptPageSize {
+		queued, err := service.Submit(ctx, owner, entry.ID, "Later submission.", run.Payload{}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.Stop(ctx, owner, entry.ID, queued.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	displaced := waitFor(resumed, &resumedSeq, func(msg *sessionpb.LiveMessage) bool {
+		return msg.GetSync().GetEarlierTurnId() == current.ID
+	}).GetSync()
+	if len(displaced.TurnIds) != run.TranscriptPageSize || slices.Contains(displaced.TurnIds, current.ID) ||
+		displaced.NextBeforeSequence != int32(current.Sequence+1) {
+		t.Fatalf("displaced running turn changed the page or cursor: %v", displaced)
+	}
+	// Use a new watcher so remaining durable queue notifications cannot
+	// coalesce this particular part change into another sync.
+	_ = resumed.Close()
+	resumed, resumedSeq = dial(owner, "", nil), 0
+	reconnected := waitFor(resumed, &resumedSeq, func(msg *sessionpb.LiveMessage) bool { return msg.GetSync() != nil }).GetSync()
+	if reconnected.GetEarlierTurnId() != current.ID {
+		t.Fatalf("reconnect lost the displaced running turn: %v", reconnected)
+	}
+	agent.steps <- func(input run.Input) {
+		input.ReportParts(3, []run.TurnPart{{Kind: "thinking", Text: "Current thought continues outside the page", Status: string(run.Running)}})
+	}
+	progress = waitFor(resumed, &resumedSeq, func(msg *sessionpb.LiveMessage) bool {
+		return len(msg.GetProgress().GetParts()) > 0
+	}).GetProgress()
+	if progress.GetTurnId() != current.ID || len(progress.Parts) != 1 || progress.Parts[0].GetAppend().GetText() != " outside the page" {
+		t.Fatalf("displaced turn no longer streams suffixes: %v", progress)
+	}
 	close(agent.done)
 	final := waitFor(resumed, &resumedSeq, func(msg *sessionpb.LiveMessage) bool {
 		return msg.GetSync().GetSession() != nil && !msg.GetSync().GetSession().Active
 	}).GetSync()
-	if len(final.ChangedTurns) != 1 || final.ChangedTurns[0].Output != "Final reply." ||
-		len(final.TurnIds) != run.TranscriptPageSize || final.NextBeforeSequence != earlier+2 {
+	finished := slices.ContainsFunc(final.ChangedTurns, func(turn *sessionpb.Turn) bool {
+		return turn.Id == current.ID && turn.Output == "Final reply."
+	})
+	if !finished || final.EarlierTurnId != current.ID ||
+		len(final.TurnIds) != run.TranscriptPageSize || final.NextBeforeSequence != int32(current.Sequence+1) {
 		t.Fatalf("unexpected terminal reconciliation: %v", final)
 	}
 }

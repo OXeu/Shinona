@@ -48,7 +48,7 @@ export function useTurnActions(
     submitting.value = true
     try {
       if (action === 'steer') {
-        const running = session.value.turns.find((turn) => turn.status === 'RUNNING')
+        const running = transcript.runningTurn.value
         if (!running || payload.images.length) {
           setChatError('submit', t('composer.notRunning'))
           return

@@ -762,7 +762,9 @@ type TranscriptPage struct {
 	NextBeforeSequence int32            `protobuf:"varint,4,opt,name=next_before_sequence,json=nextBeforeSequence,proto3" json:"next_before_sequence,omitempty"`
 	Turns              []*Turn          `protobuf:"bytes,5,rep,name=turns,proto3" json:"turns,omitempty"`
 	// True for a complete page.
-	Complete      bool `protobuf:"varint,6,opt,name=complete,proto3" json:"complete,omitempty"`
+	Complete bool `protobuf:"varint,6,opt,name=complete,proto3" json:"complete,omitempty"`
+	// The latest started turn when the latest page contains only queued or unstarted turns.
+	EarlierTurn   *Turn `protobuf:"bytes,7,opt,name=earlier_turn,json=earlierTurn,proto3" json:"earlier_turn,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -837,6 +839,13 @@ func (x *TranscriptPage) GetComplete() bool {
 		return x.Complete
 	}
 	return false
+}
+
+func (x *TranscriptPage) GetEarlierTurn() *Turn {
+	if x != nil {
+		return x.EarlierTurn
+	}
+	return nil
 }
 
 // Full exports send unsigned varint-length-prefixed frames. The header comes
@@ -1053,12 +1062,13 @@ func (x *TranscriptExportEnd) GetFailure() TranscriptExportEnd_Failure {
 }
 
 type LiveRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	KnownTurns    []*TurnVersion         `protobuf:"bytes,2,rep,name=known_turns,json=knownTurns,proto3" json:"known_turns,omitempty"`
-	Paged         *bool                  `protobuf:"varint,3,opt,name=paged,proto3,oneof" json:"paged,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	SessionId          string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	KnownTurns         []*TurnVersion         `protobuf:"bytes,2,rep,name=known_turns,json=knownTurns,proto3" json:"known_turns,omitempty"`
+	Paged              *bool                  `protobuf:"varint,3,opt,name=paged,proto3,oneof" json:"paged,omitempty"`
+	IncludeEarlierTurn bool                   `protobuf:"varint,4,opt,name=include_earlier_turn,json=includeEarlierTurn,proto3" json:"include_earlier_turn,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *LiveRequest) Reset() {
@@ -1108,6 +1118,13 @@ func (x *LiveRequest) GetKnownTurns() []*TurnVersion {
 func (x *LiveRequest) GetPaged() bool {
 	if x != nil && x.Paged != nil {
 		return *x.Paged
+	}
+	return false
+}
+
+func (x *LiveRequest) GetIncludeEarlierTurn() bool {
+	if x != nil {
+		return x.IncludeEarlierTurn
 	}
 	return false
 }
@@ -1287,8 +1304,10 @@ type LiveSync struct {
 	ChangedTurns       []*Turn          `protobuf:"bytes,4,rep,name=changed_turns,json=changedTurns,proto3" json:"changed_turns,omitempty"`
 	LastOptions        *RunOptions      `protobuf:"bytes,5,opt,name=last_options,json=lastOptions,proto3" json:"last_options,omitempty"`
 	NextBeforeSequence int32            `protobuf:"varint,6,opt,name=next_before_sequence,json=nextBeforeSequence,proto3" json:"next_before_sequence,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Outside turn_ids and the cursor range. Its body follows the same version rules as the page.
+	EarlierTurnId string `protobuf:"bytes,7,opt,name=earlier_turn_id,json=earlierTurnId,proto3" json:"earlier_turn_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LiveSync) Reset() {
@@ -1361,6 +1380,13 @@ func (x *LiveSync) GetNextBeforeSequence() int32 {
 		return x.NextBeforeSequence
 	}
 	return 0
+}
+
+func (x *LiveSync) GetEarlierTurnId() string {
+	if x != nil {
+		return x.EarlierTurnId
+	}
+	return ""
 }
 
 type LiveProgress struct {
@@ -1711,14 +1737,15 @@ const file_session_transfer_proto_rawDesc = "" +
 	"\x05input\x18\x04 \x01(\tR\x05input\x12\x16\n" +
 	"\x06output\x18\x05 \x01(\tR\x06output\x12\x16\n" +
 	"\x06status\x18\x06 \x01(\tR\x06status\x12)\n" +
-	"\x10estimated_tokens\x18\a \x01(\x05R\x0festimatedTokens\"\xe3\x02\n" +
+	"\x10estimated_tokens\x18\a \x01(\x05R\x0festimatedTokens\"\xa1\x03\n" +
 	"\x0eTranscriptPage\x12=\n" +
 	"\asession\x18\x01 \x01(\v2#.shinona.sessions.v1.SessionSummaryR\asession\x12O\n" +
 	"\x10sandbox_settings\x18\x02 \x01(\v2$.shinona.sessions.v1.SandboxSettingsR\x0fsandboxSettings\x12B\n" +
 	"\flast_options\x18\x03 \x01(\v2\x1f.shinona.sessions.v1.RunOptionsR\vlastOptions\x120\n" +
 	"\x14next_before_sequence\x18\x04 \x01(\x05R\x12nextBeforeSequence\x12/\n" +
 	"\x05turns\x18\x05 \x03(\v2\x19.shinona.sessions.v1.TurnR\x05turns\x12\x1a\n" +
-	"\bcomplete\x18\x06 \x01(\bR\bcomplete\"\xd5\x01\n" +
+	"\bcomplete\x18\x06 \x01(\bR\bcomplete\x12<\n" +
+	"\fearlier_turn\x18\a \x01(\v2\x19.shinona.sessions.v1.TurnR\vearlierTurn\"\xd5\x01\n" +
 	"\x15TranscriptExportFrame\x12E\n" +
 	"\x06header\x18\x01 \x01(\v2+.shinona.sessions.v1.TranscriptExportHeaderH\x00R\x06header\x12/\n" +
 	"\x04turn\x18\x02 \x01(\v2\x19.shinona.sessions.v1.TurnH\x00R\x04turn\x12<\n" +
@@ -1736,13 +1763,14 @@ const file_session_transfer_proto_rawDesc = "" +
 	"\x04NONE\x10\x00\x12\t\n" +
 	"\x05LIMIT\x10\x01\x12\v\n" +
 	"\aTIMEOUT\x10\x02\x12\f\n" +
-	"\bINTERNAL\x10\x03\"\x94\x01\n" +
+	"\bINTERNAL\x10\x03\"\xc6\x01\n" +
 	"\vLiveRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12A\n" +
 	"\vknown_turns\x18\x02 \x03(\v2 .shinona.sessions.v1.TurnVersionR\n" +
 	"knownTurns\x12\x19\n" +
-	"\x05paged\x18\x03 \x01(\bH\x00R\x05paged\x88\x01\x01B\b\n" +
+	"\x05paged\x18\x03 \x01(\bH\x00R\x05paged\x88\x01\x01\x120\n" +
+	"\x14include_earlier_turn\x18\x04 \x01(\bR\x12includeEarlierTurnB\b\n" +
 	"\x06_paged\"T\n" +
 	"\vTurnVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
@@ -1754,14 +1782,15 @@ const file_session_transfer_proto_rawDesc = "" +
 	"\x04sync\x18\x02 \x01(\v2\x1d.shinona.sessions.v1.LiveSyncH\x00R\x04sync\x12?\n" +
 	"\bprogress\x18\x03 \x01(\v2!.shinona.sessions.v1.LiveProgressH\x00R\bprogress\x12\x1e\n" +
 	"\theartbeat\x18\x04 \x01(\bH\x00R\theartbeatB\x06\n" +
-	"\x04item\"\xeb\x02\n" +
+	"\x04item\"\x93\x03\n" +
 	"\bLiveSync\x12=\n" +
 	"\asession\x18\x01 \x01(\v2#.shinona.sessions.v1.SessionSummaryR\asession\x12O\n" +
 	"\x10sandbox_settings\x18\x02 \x01(\v2$.shinona.sessions.v1.SandboxSettingsR\x0fsandboxSettings\x12\x19\n" +
 	"\bturn_ids\x18\x03 \x03(\tR\aturnIds\x12>\n" +
 	"\rchanged_turns\x18\x04 \x03(\v2\x19.shinona.sessions.v1.TurnR\fchangedTurns\x12B\n" +
 	"\flast_options\x18\x05 \x01(\v2\x1f.shinona.sessions.v1.RunOptionsR\vlastOptions\x120\n" +
-	"\x14next_before_sequence\x18\x06 \x01(\x05R\x12nextBeforeSequence\"\xfd\x01\n" +
+	"\x14next_before_sequence\x18\x06 \x01(\x05R\x12nextBeforeSequence\x12&\n" +
+	"\x0fearlier_turn_id\x18\a \x01(\tR\rearlierTurnId\"\xfd\x01\n" +
 	"\fLiveProgress\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12\x1d\n" +
 	"\n" +
@@ -1827,31 +1856,32 @@ var file_session_transfer_proto_depIdxs = []int32{
 	3,  // 5: shinona.sessions.v1.TranscriptPage.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
 	2,  // 6: shinona.sessions.v1.TranscriptPage.last_options:type_name -> shinona.sessions.v1.RunOptions
 	4,  // 7: shinona.sessions.v1.TranscriptPage.turns:type_name -> shinona.sessions.v1.Turn
-	11, // 8: shinona.sessions.v1.TranscriptExportFrame.header:type_name -> shinona.sessions.v1.TranscriptExportHeader
-	4,  // 9: shinona.sessions.v1.TranscriptExportFrame.turn:type_name -> shinona.sessions.v1.Turn
-	12, // 10: shinona.sessions.v1.TranscriptExportFrame.end:type_name -> shinona.sessions.v1.TranscriptExportEnd
-	1,  // 11: shinona.sessions.v1.TranscriptExportHeader.session:type_name -> shinona.sessions.v1.SessionSummary
-	3,  // 12: shinona.sessions.v1.TranscriptExportHeader.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
-	2,  // 13: shinona.sessions.v1.TranscriptExportHeader.last_options:type_name -> shinona.sessions.v1.RunOptions
-	0,  // 14: shinona.sessions.v1.TranscriptExportEnd.failure:type_name -> shinona.sessions.v1.TranscriptExportEnd.Failure
-	14, // 15: shinona.sessions.v1.LiveRequest.known_turns:type_name -> shinona.sessions.v1.TurnVersion
-	16, // 16: shinona.sessions.v1.LiveMessage.sync:type_name -> shinona.sessions.v1.LiveSync
-	17, // 17: shinona.sessions.v1.LiveMessage.progress:type_name -> shinona.sessions.v1.LiveProgress
-	1,  // 18: shinona.sessions.v1.LiveSync.session:type_name -> shinona.sessions.v1.SessionSummary
-	3,  // 19: shinona.sessions.v1.LiveSync.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
-	4,  // 20: shinona.sessions.v1.LiveSync.changed_turns:type_name -> shinona.sessions.v1.Turn
-	2,  // 21: shinona.sessions.v1.LiveSync.last_options:type_name -> shinona.sessions.v1.RunOptions
-	19, // 22: shinona.sessions.v1.LiveProgress.parts:type_name -> shinona.sessions.v1.LivePartChange
-	18, // 23: shinona.sessions.v1.LiveProgress.steering:type_name -> shinona.sessions.v1.LiveSteering
-	6,  // 24: shinona.sessions.v1.LiveProgress.context:type_name -> shinona.sessions.v1.ContextUsage
-	7,  // 25: shinona.sessions.v1.LiveSteering.messages:type_name -> shinona.sessions.v1.SteeringMessage
-	8,  // 26: shinona.sessions.v1.LivePartChange.replace:type_name -> shinona.sessions.v1.TurnPart
-	20, // 27: shinona.sessions.v1.LivePartChange.append:type_name -> shinona.sessions.v1.LivePartAppend
-	28, // [28:28] is the sub-list for method output_type
-	28, // [28:28] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	4,  // 8: shinona.sessions.v1.TranscriptPage.earlier_turn:type_name -> shinona.sessions.v1.Turn
+	11, // 9: shinona.sessions.v1.TranscriptExportFrame.header:type_name -> shinona.sessions.v1.TranscriptExportHeader
+	4,  // 10: shinona.sessions.v1.TranscriptExportFrame.turn:type_name -> shinona.sessions.v1.Turn
+	12, // 11: shinona.sessions.v1.TranscriptExportFrame.end:type_name -> shinona.sessions.v1.TranscriptExportEnd
+	1,  // 12: shinona.sessions.v1.TranscriptExportHeader.session:type_name -> shinona.sessions.v1.SessionSummary
+	3,  // 13: shinona.sessions.v1.TranscriptExportHeader.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
+	2,  // 14: shinona.sessions.v1.TranscriptExportHeader.last_options:type_name -> shinona.sessions.v1.RunOptions
+	0,  // 15: shinona.sessions.v1.TranscriptExportEnd.failure:type_name -> shinona.sessions.v1.TranscriptExportEnd.Failure
+	14, // 16: shinona.sessions.v1.LiveRequest.known_turns:type_name -> shinona.sessions.v1.TurnVersion
+	16, // 17: shinona.sessions.v1.LiveMessage.sync:type_name -> shinona.sessions.v1.LiveSync
+	17, // 18: shinona.sessions.v1.LiveMessage.progress:type_name -> shinona.sessions.v1.LiveProgress
+	1,  // 19: shinona.sessions.v1.LiveSync.session:type_name -> shinona.sessions.v1.SessionSummary
+	3,  // 20: shinona.sessions.v1.LiveSync.sandbox_settings:type_name -> shinona.sessions.v1.SandboxSettings
+	4,  // 21: shinona.sessions.v1.LiveSync.changed_turns:type_name -> shinona.sessions.v1.Turn
+	2,  // 22: shinona.sessions.v1.LiveSync.last_options:type_name -> shinona.sessions.v1.RunOptions
+	19, // 23: shinona.sessions.v1.LiveProgress.parts:type_name -> shinona.sessions.v1.LivePartChange
+	18, // 24: shinona.sessions.v1.LiveProgress.steering:type_name -> shinona.sessions.v1.LiveSteering
+	6,  // 25: shinona.sessions.v1.LiveProgress.context:type_name -> shinona.sessions.v1.ContextUsage
+	7,  // 26: shinona.sessions.v1.LiveSteering.messages:type_name -> shinona.sessions.v1.SteeringMessage
+	8,  // 27: shinona.sessions.v1.LivePartChange.replace:type_name -> shinona.sessions.v1.TurnPart
+	20, // 28: shinona.sessions.v1.LivePartChange.append:type_name -> shinona.sessions.v1.LivePartAppend
+	29, // [29:29] is the sub-list for method output_type
+	29, // [29:29] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_session_transfer_proto_init() }

@@ -128,7 +128,11 @@ func (r *ConversationStore) TranscriptPage(ctx context.Context, ownerID, session
 		}
 		if hit {
 			defer timing.Start(ctx, "transcript_cache_hit")()
-			return &run.Transcript{TranscriptState: *state, Turns: cloneTranscriptTurns(cached.turns), NextBeforeSequence: cached.next}, nil
+			page := &run.Transcript{TranscriptState: *state, Turns: cloneTranscriptTurns(cached.turns), NextBeforeSequence: cached.next}
+			if cached.earlier != nil {
+				page.EarlierTurn = new(cloneTranscriptTurn(*cached.earlier))
+			}
+			return page, nil
 		}
 	}
 	page, err := r.transcript(ctx, ownerID, sessionID, window)
@@ -176,6 +180,7 @@ func (record *transcriptRow) turn() (run.Run, error) {
 func (r *ConversationStore) transcript(ctx context.Context, ownerID, sessionID string, window transcriptWindow) (*run.Transcript, error) {
 	var result *run.Transcript
 	var turns []transcriptRow
+	var earlier transcriptRow
 	err := r.read.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		state, err := transcriptState(tx, ownerID, sessionID)
 		if err != nil || state == nil {
@@ -200,6 +205,17 @@ func (r *ConversationStore) transcript(ctx context.Context, ownerID, sessionID s
 			}
 			result.NextBeforeSequence = cursor
 			query = query.Where("sequence >= ?", versions[len(versions)-1].Sequence)
+			if window.before == 0 {
+				version, err := readEarlierTurnVersion(scope(), versions, cursor)
+				if err != nil {
+					return err
+				}
+				if version != nil {
+					if err := transcriptQuery(scope()).Where("id = ?", version.ID).Take(&earlier).Error; err != nil {
+						return err
+					}
+				}
+			}
 		} else if window.limit > 0 {
 			query = query.Limit(window.limit)
 		}
@@ -210,6 +226,10 @@ func (r *ConversationStore) transcript(ctx context.Context, ownerID, sessionID s
 	}
 	slices.Reverse(turns)
 	result.Turns, err = decodeTranscriptRows(ctx, turns)
+	if err == nil && earlier.Run.ID != "" {
+		turn, decodeErr := earlier.turn()
+		result.EarlierTurn, err = &turn, decodeErr
+	}
 	return result, err
 }
 

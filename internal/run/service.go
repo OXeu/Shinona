@@ -191,6 +191,9 @@ func (s *Service) withTranscriptProgress(transcript *Transcript, err error) (*Tr
 		return transcript, err
 	}
 	s.addTranscriptProgress(transcript.Turns)
+	if turn := transcript.EarlierTurn; turn != nil && turn.Status == Running {
+		s.controls.addProgress(turn)
+	}
 	return transcript, nil
 }
 

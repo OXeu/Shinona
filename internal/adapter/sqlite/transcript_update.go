@@ -23,13 +23,14 @@ type transcriptVersion struct {
 	run.TurnVersion
 	Sequence int
 	Size     int64
+	Started  bool
 }
 
 // readTranscriptVersions selects a contiguous suffix of the requested
 // window before any turn bodies are loaded.
 func readTranscriptVersions(query *gorm.DB, window run.LiveTranscriptWindow) (_ []transcriptVersion, _ int, err error) {
 	limit := window.Limit()
-	rows, err := query.Select("id, sequence, updated_at, status, " + transcriptStoredBytes).
+	rows, err := query.Select("id, sequence, updated_at, status, " + transcriptStoredBytes + ", started_at IS NOT NULL").
 		Order("sequence DESC").Limit(limit + 1).Rows()
 	if err != nil {
 		return nil, 0, err
@@ -39,11 +40,11 @@ func readTranscriptVersions(query *gorm.DB, window run.LiveTranscriptWindow) (_ 
 	var versions []transcriptVersion
 	for rows.Next() {
 		var version transcriptVersion
-		if err := rows.Scan(&version.ID, &version.Sequence, &version.UpdatedAt, &version.Status, &version.Size); err != nil {
+		if err := rows.Scan(&version.ID, &version.Sequence, &version.UpdatedAt, &version.Status, &version.Size, &version.Started); err != nil {
 			return nil, 0, err
 		}
 		// Always admit the first turn, including one that exceeds the page budget.
-		pageFull := window == run.LiveLatestPage && len(versions) != 0 && version.Size > remaining
+		pageFull := window != run.LiveFullHistory && len(versions) != 0 && version.Size > remaining
 		if len(versions) == limit || pageFull {
 			if window == run.LiveFullHistory {
 				return nil, 0, run.ErrTranscriptExportLimit
@@ -56,16 +57,32 @@ func readTranscriptVersions(query *gorm.DB, window run.LiveTranscriptWindow) (_ 
 	return versions, 0, rows.Err()
 }
 
+func readEarlierTurnVersion(query *gorm.DB, page []transcriptVersion, before int) (*run.TurnVersion, error) {
+	if before == 0 || slices.ContainsFunc(page, func(turn transcriptVersion) bool { return turn.Started }) {
+		return nil, nil
+	}
+	var turn run.TurnVersion
+	err := query.Select("id", "updated_at", "status").Where("started_at IS NOT NULL AND sequence < ?", before).
+		Order("sequence DESC").Take(&turn).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &turn, nil
+}
+
 func (r *ConversationStore) TranscriptUpdate(ctx context.Context, owner, id string, window run.LiveTranscriptWindow,
 	known map[string]run.TurnVersion,
 ) (*run.TranscriptUpdate, error) {
-	if window == run.LiveLatestPage {
+	if window != run.LiveFullHistory {
 		if len(known) == 0 {
 			page, err := r.TranscriptPage(ctx, owner, id, 0)
 			if err != nil || page == nil {
 				return nil, err
 			}
-			return updateFromPage(*page, known), nil
+			return updateFromPage(*page, window, known), nil
 		}
 		key := latestTranscriptKey{owner: owner, session: id}
 		if cached := r.latest.get(key); cached != nil {
@@ -76,8 +93,8 @@ func (r *ConversationStore) TranscriptUpdate(ctx context.Context, owner, id stri
 			if hit {
 				defer timing.Start(ctx, "transcript_cache_hit")()
 				update := updateFromPage(run.Transcript{
-					TranscriptState: *state, Turns: cached.turns, NextBeforeSequence: cached.next,
-				}, known)
+					TranscriptState: *state, Turns: cached.turns, NextBeforeSequence: cached.next, EarlierTurn: cached.earlier,
+				}, window, known)
 				update.ChangedTurns = cloneTranscriptTurns(update.ChangedTurns)
 				if update.LastOptions != nil {
 					update.LastOptions.MCPServers = slices.Clone(update.LastOptions.MCPServers)
@@ -89,11 +106,18 @@ func (r *ConversationStore) TranscriptUpdate(ctx context.Context, owner, id stri
 	return r.readTranscriptUpdate(ctx, owner, id, window, known)
 }
 
-func updateFromPage(page run.Transcript, known map[string]run.TurnVersion) *run.TranscriptUpdate {
+func updateFromPage(page run.Transcript, window run.LiveTranscriptWindow, known map[string]run.TurnVersion) *run.TranscriptUpdate {
 	update := &run.TranscriptUpdate{Session: page.Session, Versions: make([]run.TurnVersion, 0, len(page.Turns)),
 		NextBeforeSequence: page.NextBeforeSequence, LastOptions: page.LastOptions()}
 	if len(known) == 0 {
 		update.ChangedTurns = page.Turns
+	}
+	if turn := page.EarlierTurn; turn != nil && window == run.LiveLatestPageWithEarlierTurn {
+		version := run.TurnVersion{ID: turn.ID, UpdatedAt: turn.UpdatedAt, Status: turn.Status}
+		update.EarlierTurn = &version
+		if version.NeedsSync(known) {
+			update.ChangedTurns = append([]run.Run{*turn}, update.ChangedTurns...)
+		}
 	}
 	for _, turn := range page.Turns {
 		version := run.TurnVersion{ID: turn.ID, UpdatedAt: turn.UpdatedAt, Status: turn.Status}
@@ -129,6 +153,16 @@ func (r *ConversationStore) readTranscriptUpdate(ctx context.Context, owner, id 
 		update.NextBeforeSequence = cursor
 		update.Versions = make([]run.TurnVersion, 0, len(versions))
 		ids := make([]string, 0, len(versions))
+		if window == run.LiveLatestPageWithEarlierTurn {
+			earlier, err := readEarlierTurnVersion(turns(), versions, cursor)
+			if err != nil {
+				return err
+			}
+			update.EarlierTurn = earlier
+			if earlier != nil && earlier.NeedsSync(known) {
+				ids = append(ids, earlier.ID)
+			}
+		}
 		remaining := int64(run.MaxLiveMessageBytes)
 		for _, row := range slices.Backward(versions) {
 			update.Versions = append(update.Versions, row.TurnVersion)

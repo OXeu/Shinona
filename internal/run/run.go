@@ -129,6 +129,7 @@ type Transcript struct {
 	TranscriptState
 	Turns              []Run
 	NextBeforeSequence int
+	EarlierTurn        *Run // Most recent started turn, when it falls before the latest page.
 }
 
 type LiveTranscriptWindow uint8
@@ -136,6 +137,7 @@ type LiveTranscriptWindow uint8
 const (
 	LiveLatestPage LiveTranscriptWindow = iota
 	LiveFullHistory
+	LiveLatestPageWithEarlierTurn
 )
 
 func (w LiveTranscriptWindow) Limit() int {
@@ -162,7 +164,8 @@ type TranscriptUpdate struct {
 	ChangedTurns       []Run
 	LastOptions        *Options
 	NextBeforeSequence int
-	FinalizedParts     int // Immutable prefix of the running turn's parts, if present.
+	FinalizedParts     int          // Immutable prefix of the running turn's parts, if present.
+	EarlierTurn        *TurnVersion // Outside Versions. ChangedTurns carries its body when needed.
 }
 
 type Attachment struct {

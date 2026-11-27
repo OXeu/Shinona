@@ -22,23 +22,37 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
   const hasOlder = computed(() => history.value.nextBeforeSequence > 0)
   const loadingOlder = ref(false)
   const refreshPaused = ref(false)
+  const pageTurns = computed(() => [...history.value.turns, ...(session.value?.turns ?? [])])
+  const runningTurn = computed(() => {
+    const earlier = session.value?.earlierTurn
+    return earlier?.status === 'RUNNING' ? earlier : session.value?.turns.find((turn) => turn.status === 'RUNNING')
+  })
   const chatSession = computed(() => {
     const entry = session.value
-    return entry && { ...entry, turns: [...history.value.turns, ...entry.turns] }
+    if (!entry) return null
+    const earlier = entry.earlierTurn
+    if (!earlier) return { ...entry, turns: pageTurns.value }
+    const turns = [...pageTurns.value]
+    const found = turns.findIndex((turn) => turn.sequence >= earlier.sequence)
+    const index = found < 0 ? turns.length : found
+    turns.splice(index, turns[index]?.id === earlier.id ? 1 : 0, earlier)
+    return { ...entry, turns }
   })
   let current: SessionUpdates | undefined
   let reading: SessionUpdates | undefined
 
   function applySession(scope: SessionUpdates, entry: AgentSession, selectedPolicy: Policy | null) {
     const wasActive = session.value?.active
+    const previousRunning = runningTurn.value?.id
     const first = entry.turns[0]
-    const displayed = chatSession.value?.turns ?? []
+    const displayed = pageTurns.value
     // Keep known completed turns as the live page advances. A revert can
     // keep the same prefix while dropping its suffix.
     const boundary = first ? displayed.findIndex((turn) => turn.id === first.id) : -1
+    const earlier = entry.earlierTurn
     const prefix = boundary > 0 ? displayed.slice(0, boundary) : []
-    if (prefix.length && prefix.every((turn) => turn.status !== 'QUEUED' && turn.status !== 'RUNNING')) {
-      history.value.turns = prefix
+    if (prefix.length && prefix.every((turn) => earlier?.id === turn.id || (turn.status !== 'QUEUED' && turn.status !== 'RUNNING'))) {
+      history.value.turns = prefix.map((turn) => earlier?.id === turn.id ? earlier : turn)
     } else {
       history.value = { turns: [], nextBeforeSequence: entry.nextBeforeSequence ?? 0 }
     }
@@ -48,7 +62,10 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
     refreshPaused.value = false
     store.upsert(entry)
     if (!entry.active) {
-      if (wasActive && entry.turns.at(-1)?.status === 'SUCCEEDED') notify.success(t('chat.completed'))
+      const finishedEarlier = earlier?.id === previousRunning && earlier?.status === 'SUCCEEDED'
+      if (wasActive && (entry.turns.at(-1)?.status === 'SUCCEEDED' || finishedEarlier)) {
+        notify.success(t('chat.completed'))
+      }
       void markRead(scope)
     }
   }
@@ -56,12 +73,12 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
   async function loadOlder() {
     const scope = current
     const before = history.value.nextBeforeSequence
-    const anchor = chatSession.value?.turns[0]?.id
+    const anchor = pageTurns.value[0]?.id
     if (!scope || !before || !anchor || loadingOlder.value) return
     loadingOlder.value = true
     try {
       const result = await sessionApi.olderTurns(scope.id, before, scope.signal)
-      if (scope.signal.aborted || chatSession.value?.turns[0]?.id !== anchor) return
+      if (scope.signal.aborted || pageTurns.value[0]?.id !== anchor) return
       const page = result.session
       const last = page?.turns.at(-1)
       if (!page || page.id !== scope.id || !last || last.sequence >= before) {
@@ -72,7 +89,7 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
         nextBeforeSequence: page.nextBeforeSequence ?? 0,
       }
     } catch {
-      if (!scope.signal.aborted && chatSession.value?.turns[0]?.id === anchor) notify.error(t('chat.loadOlderFailed'))
+      if (!scope.signal.aborted && pageTurns.value[0]?.id === anchor) notify.error(t('chat.loadOlderFailed'))
     } finally {
       if (!scope.signal.aborted) loadingOlder.value = false
     }
@@ -119,6 +136,7 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
     session.value = {
       ...summary,
       turns: previous.turns.filter((turn) => turn.sequence <= summary.turnCount),
+      earlierTurn: previous.earlierTurn && previous.earlierTurn.sequence <= summary.turnCount ? previous.earlierTurn : undefined,
       lastOptions: previous.lastOptions,
     }
     history.value.turns = history.value.turns.filter((turn) => turn.sequence <= summary.turnCount)
@@ -155,9 +173,14 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
       active: () => session.value?.active ?? true,
       sync: (entry, policy) => applySession(scope, entry, policy),
       progress: (update) => {
-        const turns = session.value?.turns
-        const index = turns?.findIndex((turn) => turn.id === update.id) ?? -1
-        if (turns && index >= 0) turns[index] = update
+        const entry = session.value
+        if (!entry) return
+        if (entry.earlierTurn?.id === update.id) {
+          entry.earlierTurn = update
+          return
+        }
+        const index = entry.turns.findIndex((turn) => turn.id === update.id)
+        if (index >= 0) entry.turns[index] = update
       },
       missing: navigation.missing,
       unauthorized: navigation.unauthorized,
@@ -181,7 +204,7 @@ export function useSessionTranscript(sessionId: () => string | undefined, naviga
   })
 
   return {
-    session, summary, policy, chatSession, hasOlder, loadingOlder, refreshPaused,
+    session, summary, policy, chatSession, runningTurn, hasOlder, loadingOlder, refreshPaused,
     loadOlder, resume, resumeVisible, updateSummary, rememberQueued, applyRevert,
     updates: () => current,
   }

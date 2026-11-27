@@ -20,7 +20,12 @@ var migrations = [...]func(*gorm.DB) error{
 	initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime, deleteRevokedMCPGrants,
 	migrateOwnership, migrateSettingsStorage, addInstanceSettingsRevision,
 	initSessionListRevisions, migrateThinkingSignatures, migrateProjectSSHBindings, indexRecentProjectSessions,
-	indexQueuedTurnOrder,
+	indexQueuedTurnOrder, indexStartedSessionTurns,
+}
+
+func indexStartedSessionTurns(db *gorm.DB) error {
+	return db.Exec(`CREATE INDEX idx_runs_started_session_sequence
+		ON runs (session_id, sequence) WHERE started_at IS NOT NULL AND reverted_at IS NULL`).Error
 }
 
 func indexQueuedTurnOrder(db *gorm.DB) error {
