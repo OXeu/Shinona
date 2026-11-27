@@ -59,7 +59,9 @@ func (p *Provider) DestroyProject(ctx context.Context, spec sandbox.Spec, expect
 		return err
 	}
 	p.leases.update(key, "", 0, nil)
-	save, stop := context.WithTimeout(context.WithoutCancel(ctx), apiTimeout)
+	// The remote sandbox is gone. Finish removing the binding even if the
+	// initiating request ended, with the configured resource cleanup budget.
+	save, stop := context.WithTimeout(context.WithoutCancel(ctx), p.config.CleanupTimeout)
 	defer stop()
 	return p.store.DeleteE2BSandbox(save, spec.OwnerID, spec.ProjectID, p.endpoint, id)
 }

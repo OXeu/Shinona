@@ -1,6 +1,7 @@
 package e2b
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -110,4 +111,80 @@ func TestProjectLifecycleUsesProjectTemplateAndTimeout(t *testing.T) {
 	if err != nil || status.ID != "" || status.State != sandbox.ProjectNone || deletes.Load() != 1 {
 		t.Fatalf("destroyed status: %+v, %v, %d deletes", status, err, deletes.Load())
 	}
+}
+
+func TestDestroyProjectRetriesBindingCleanupAfterRemoteDeletion(t *testing.T) {
+	const owner, project, id = "owner", "project", "retained-box"
+	const endpoint = "https://e2b.example.test"
+	const cleanupTimeout = 100 * time.Millisecond
+	database := openStore(t, ":memory:")
+	seedWorkspaceOwner(t, database, owner, project)
+	ctx := t.Context()
+	if saved, err := database.E2B.SaveE2BSandbox(ctx, owner, project, endpoint, "", id, []byte("{}")); err != nil || !saved {
+		t.Fatalf("seed retained sandbox: %t, %v", saved, err)
+	}
+	request, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var kills int
+	client := &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodDelete || req.URL.Path != "/sandboxes/"+id {
+			t.Errorf("unexpected E2B request: %s %s", req.Method, req.URL)
+		}
+		kills++
+		status := http.StatusNotFound
+		if kills == 1 {
+			status = http.StatusNoContent
+			// Model an acknowledged deletion whose caller has disconnected.
+			cancel()
+		}
+		return &http.Response{StatusCode: status, Body: http.NoBody, Header: make(http.Header)}, nil
+	})}
+	var writes int
+	store := deleteBindingStore{WorkspaceStore: database.E2B, beforeDelete: func(cleanup context.Context) error {
+		writes++
+		deadline, ok := cleanup.Deadline()
+		if remaining := time.Until(deadline); !ok || remaining > cleanupTimeout {
+			t.Fatalf("binding cleanup has %v remaining, want a deadline within %v", remaining, cleanupTimeout)
+		}
+		if writes == 1 {
+			if !errors.Is(request.Err(), context.Canceled) {
+				t.Error("fixture did not cancel the original request")
+			}
+			// The write can be blocked by another SQLite request until the
+			// cleanup deadline. Keep the binding available for the retry.
+			<-cleanup.Done()
+			return cleanup.Err()
+		}
+		return nil
+	}}
+	provider, err := New(Config{APIKey: "fixture", BaseURL: endpoint, CleanupTimeout: cleanupTimeout}, client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := sandbox.Spec{OwnerID: owner, ProjectID: project}
+	expectedID := id
+	if err := provider.DestroyProject(request, spec, &expectedID); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("destroy did not report the binding cleanup deadline: %v", err)
+	}
+	if retained, _, err := database.E2B.E2BSandbox(ctx, owner, project, endpoint); err != nil || retained != id {
+		t.Fatalf("failed cleanup lost the retained binding %q: %v", retained, err)
+	}
+	if err := provider.DestroyProject(ctx, spec, &expectedID); err != nil {
+		t.Fatalf("retry after remote deletion: %v", err)
+	}
+	if retained, _, err := database.E2B.E2BSandbox(ctx, owner, project, endpoint); err != nil || retained != "" || kills != 2 || writes != 2 {
+		t.Fatalf("retry left binding %q after %d E2B requests and %d writes: %v", retained, kills, writes, err)
+	}
+}
+
+type deleteBindingStore struct {
+	WorkspaceStore
+	beforeDelete func(context.Context) error
+}
+
+func (s deleteBindingStore) DeleteE2BSandbox(ctx context.Context, owner, project, endpoint, id string) error {
+	if err := s.beforeDelete(ctx); err != nil {
+		return err
+	}
+	return s.WorkspaceStore.DeleteE2BSandbox(ctx, owner, project, endpoint, id)
 }
