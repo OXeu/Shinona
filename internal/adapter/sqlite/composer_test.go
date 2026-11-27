@@ -278,7 +278,10 @@ func TestWorkerQueueSteeringCancellationAndAttachmentMetadata(t *testing.T) {
 		<-done
 	}()
 
-	awaitInput(t, ctx, agent.inputs, "first")
+	input := awaitInput(t, ctx, agent.inputs, "first")
+	if !slices.Equal(input.Payload.Images, images) {
+		t.Fatal("the running model did not receive the stored images in order")
+	}
 	if err := repository.Conversations.StopQueued(ctx, "owner", session.ID, first.ID, time.Now()); !errors.Is(err, run.ErrTurnClaimed) {
 		t.Fatalf("queued stop did not detect a claimed turn: %v", err)
 	}
@@ -379,15 +382,17 @@ func TestWorkerStopsRunningTurnAndRetainsQueue(t *testing.T) {
 	}
 }
 
-func awaitInput(t *testing.T, ctx context.Context, inputs <-chan run.Input, prompt string) {
+func awaitInput(t *testing.T, ctx context.Context, inputs <-chan run.Input, prompt string) run.Input {
 	t.Helper()
 	select {
 	case input := <-inputs:
 		if input.Prompt != prompt {
 			t.Fatalf("started %q, expected %q", input.Prompt, prompt)
 		}
+		return input
 	case <-ctx.Done():
 		t.Fatalf("worker did not start %q", prompt)
+		return run.Input{}
 	}
 }
 

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -42,24 +43,34 @@ type row struct {
 func (row) TableName() string { return "runs" }
 
 func (r *ConversationStore) ClaimNext(ctx context.Context, now time.Time) (*run.Run, error) {
-	var records []row
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var err error
-		records, err = claimNext(tx, now)
-		if err != nil || len(records) == 0 {
-			return err
+	if r.read != r.db {
+		// Idle probes and work blocked by a running project only need a read
+		// connection. Recheck eligibility in the write to handle concurrent changes.
+		var candidate struct{ ID string }
+		err := eligibleTurns(r.read.WithContext(ctx)).Take(&candidate).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
 		}
-		return hydrateRunAttachments(tx, records)
-	})
-	if err != nil || len(records) == 0 {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	db := r.db.WithContext(ctx)
+	next := eligibleTurns(db).Order("candidate.created_at, candidate.id").Limit(1)
+	var records []row
+	result := db.Model(&records).Clauses(clause.Returning{}).
+		Where("id = (?) AND status = ?", next, run.Queued).
+		Updates(map[string]any{"status": run.Running, "started_at": now, "updated_at": now})
+	if result.Error != nil || len(records) == 0 {
+		return nil, result.Error
 	}
 	item := run.Run(records[0])
 	return &item, nil
 }
 
-func claimNext(db *gorm.DB, now time.Time) ([]row, error) {
-	next := db.Table("runs AS candidate").Select("candidate.id").
+func eligibleTurns(db *gorm.DB) *gorm.DB {
+	return db.Table("runs AS candidate").Select("candidate.id").
 		Joins("LEFT JOIN agent_sessions AS workspace ON workspace.id = candidate.session_id AND workspace.owner_id = candidate.owner_id").
 		Where("candidate.status = ? AND candidate.owner_id <> '' AND candidate.session_id <> ''", run.Queued).
 		Where(`NOT EXISTS (
@@ -71,14 +82,8 @@ func claimNext(db *gorm.DB, now time.Time) ([]row, error) {
 			JOIN agent_sessions AS active_session ON active_session.id = executing.session_id
 				AND active_session.owner_id = executing.owner_id
 			WHERE executing.status = 'RUNNING' AND executing.owner_id = candidate.owner_id
-				AND active_session.project_id = workspace.project_id
-		)`).
-		Order("candidate.created_at, candidate.id").Limit(1)
-	var records []row
-	result := db.Model(&records).Clauses(clause.Returning{}).
-		Where("id = (?) AND status = ?", next, run.Queued).
-		Updates(map[string]any{"status": run.Running, "started_at": now, "updated_at": now})
-	return records, result.Error
+			AND active_session.project_id = workspace.project_id
+		)`)
 }
 
 func (r *ConversationStore) Complete(ctx context.Context, id string, completion run.Completion) error {

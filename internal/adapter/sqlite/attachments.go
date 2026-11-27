@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"gorm.io/gorm"
@@ -102,6 +103,22 @@ func hydrateRunAttachments(db *gorm.DB, turns []row) error {
 		}
 	}
 	return nil
+}
+
+func (r *ConversationStore) LoadTurnImages(ctx context.Context, turn run.Run) ([]run.Image, error) {
+	images := slices.Clone(turn.Payload.Images)
+	records := []row{{ID: turn.ID, Payload: run.Payload{Images: images}}}
+	db := r.read.WithContext(ctx)
+	claimed := conversationTurns(db, turn.OwnerID, turn.SessionID).Select("id").Where("id = ? AND status = ?", turn.ID, run.Running)
+	if err := hydrateRunAttachments(db.Where("turn_id IN (?)", claimed), records); err != nil {
+		return nil, err
+	}
+	for index, image := range images {
+		if image.Data == "" {
+			return nil, fmt.Errorf("missing image %d for turn %s", index+1, turn.ID)
+		}
+	}
+	return images, nil
 }
 
 func (r *ConversationStore) Attachment(ctx context.Context, ownerID, sessionID, turnID string, index int) (*run.Attachment, error) {

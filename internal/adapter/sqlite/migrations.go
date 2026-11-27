@@ -20,6 +20,15 @@ var migrations = [...]func(*gorm.DB) error{
 	initializeSchema, replaceLegacyTriggers, migrateRunAttachments, migrateAuthenticationTime, deleteRevokedMCPGrants,
 	migrateOwnership, migrateSettingsStorage, addInstanceSettingsRevision,
 	initSessionListRevisions, migrateThinkingSignatures, migrateProjectSSHBindings, indexRecentProjectSessions,
+	indexQueuedTurnOrder,
+}
+
+func indexQueuedTurnOrder(db *gorm.DB) error {
+	// Match eligibleTurns, including the timestamp tie-breaker. Running turns
+	// have their own partial index for scheduling and restart recovery.
+	return db.Exec(`DROP INDEX IF EXISTS idx_runs_queue;
+		CREATE INDEX idx_runs_queue ON runs (created_at, id, owner_id, session_id, sequence)
+		WHERE status = 'QUEUED' AND owner_id <> '' AND session_id <> ''`).Error
 }
 
 func indexRecentProjectSessions(db *gorm.DB) error {

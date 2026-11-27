@@ -68,6 +68,7 @@ type WorkerRepository interface {
 	turnClaimer
 	sessionProjectReader
 	Complete(ctx context.Context, id string, completion Completion) error
+	LoadTurnImages(ctx context.Context, turn Run) ([]Image, error)
 	History(ctx context.Context, turn Run, limit int) ([]Exchange, error)
 }
 
@@ -83,6 +84,7 @@ type sessionProjectReader interface {
 
 type turnClaimer interface {
 	// ClaimNext preserves session order and excludes projects with a running turn.
+	// Stored image contents are loaded separately once execution starts.
 	ClaimNext(ctx context.Context, now time.Time) (*Run, error)
 }
 

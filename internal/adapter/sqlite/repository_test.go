@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/OXeu/shinona/internal/auth"
 	"github.com/OXeu/shinona/internal/run"
 	"github.com/OXeu/shinona/internal/sandbox"
@@ -286,13 +288,180 @@ func TestDelayedCompletionPreservesNewerSessionActivity(t *testing.T) {
 	}
 }
 
-func TestRecoverInterruptedTurns(t *testing.T) {
+func TestClaimNextSkipsWriterWhenNothingCanRun(t *testing.T) {
 	ctx := t.Context()
-	repo, err := Open(ctx, ":memory:")
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "queue.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
+	assertIdle := func(t *testing.T) {
+		t.Helper()
+		tx := repo.db.WithContext(t.Context()).Begin()
+		if tx.Error != nil {
+			t.Fatal(tx.Error)
+		}
+		defer tx.Rollback()
+		probe, stop := context.WithTimeout(t.Context(), time.Second)
+		defer stop()
+		if item, err := repo.Conversations.ClaimNext(probe, time.Now().UTC()); err != nil || item != nil {
+			t.Fatalf("empty claim waited for the writer: %+v, %v", item, err)
+		}
+	}
+	t.Run("empty", assertIdle)
+	seedAccounts(t, repo, "owner")
+	newSession(t, repo, "owner", "running-session")
+	newSession(t, repo, "owner", "waiting-session")
+	now := time.Now().UTC()
+	for _, item := range []run.Run{
+		{ID: "running", OwnerID: "owner", SessionID: "running-session", Status: run.Running, CreatedAt: now, UpdatedAt: now},
+		{ID: "waiting", OwnerID: "owner", SessionID: "waiting-session", Status: run.Queued, CreatedAt: now, UpdatedAt: now},
+	} {
+		if _, err := repo.Conversations.Enqueue(ctx, item, "", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("busy project", assertIdle)
+	if err := repo.Conversations.Complete(ctx, "running", run.Completion{Status: run.Succeeded, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if claim, err := repo.Conversations.ClaimNext(ctx, now); err != nil || claim == nil || claim.ID != "waiting" {
+		t.Fatalf("the turn should be eligible when its project becomes available: %+v, %v", claim, err)
+	}
+}
+
+func TestClaimNextRechecksEligibilityAfterRead(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "queue-race.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner")
+	now := time.Now().UTC()
+	for _, id := range []string{"first", "second"} {
+		newSession(t, repo, "owner", id)
+		item := run.Run{ID: id, OwnerID: "owner", SessionID: id, Status: run.Queued, CreatedAt: now, UpdatedAt: now}
+		if _, err := repo.Conversations.Enqueue(ctx, item, "", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writer, err := repo.db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := repo.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	if err := tx.Model(&row{}).Where("id = ?", "first").UpdateColumn("status", run.Running).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := writer.Stats().WaitCount
+	limit, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	type claimResult struct {
+		turn *run.Run
+		err  error
+	}
+	result := make(chan claimResult, 1)
+	go func() {
+		turn, err := repo.Conversations.ClaimNext(limit, now)
+		result <- claimResult{turn, err}
+	}()
+	// Let the read see the queued turns while the writer still has an
+	// uncommitted change that makes their workspace busy.
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for writer.Stats().WaitCount == before {
+		select {
+		case <-tick.C:
+		case got := <-result:
+			t.Fatalf("claim did not wait for the writer: %+v, %v", got.turn, got.err)
+		case <-limit.Done():
+			t.Fatal("claim did not reach the writer pool")
+		}
+	}
+	if err := tx.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	got := <-result
+	if got.err != nil || got.turn != nil {
+		t.Fatalf("claimed a turn while its workspace was busy: %+v, %v", got.turn, got.err)
+	}
+}
+
+func TestClaimNextDefersAttachmentReads(t *testing.T) {
+	ctx := t.Context()
+	repo, err := Open(ctx, filepath.Join(t.TempDir(), "claim.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	seedAccounts(t, repo, "owner", "other")
+	newSession(t, repo, "owner", "session")
+	newSession(t, repo, "other", "other-session")
+	now := time.Now().UTC()
+	image := run.Image{Name: "fixture.png", MediaType: "image/png", Data: "iVBORw0KGgo="}
+	item := run.Run{
+		ID: "turn", OwnerID: "owner", SessionID: "session", Status: run.Queued, CreatedAt: now, UpdatedAt: now,
+		Payload: run.Payload{Images: []run.Image{image}},
+	}
+	if _, err := repo.Conversations.Enqueue(ctx, item, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.WithContext(ctx).Model(&runAttachmentRow{}).Where("turn_id = ?", item.ID).UpdateColumn("position", 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := repo.Conversations.ClaimNext(ctx, now.Add(time.Second))
+	if err != nil || claimed == nil || claimed.ID != item.ID || claimed.Status != run.Running {
+		t.Fatalf("attachment content interfered with claiming the turn: %+v, %v", claimed, err)
+	}
+	metadata := image
+	metadata.Data = ""
+	if !slices.Equal(claimed.Payload.Images, []run.Image{metadata}) {
+		t.Fatalf("claim must retain only image metadata: %+v", claimed.Payload.Images)
+	}
+	if _, err := repo.Conversations.LoadTurnImages(ctx, *claimed); err == nil {
+		t.Fatal("accepted an invalid image position")
+	}
+	other := run.Run{
+		ID: "other-turn", OwnerID: "other", SessionID: "other-session", Status: run.Queued, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := repo.Conversations.Enqueue(ctx, other, "", false); err != nil {
+		t.Fatal(err)
+	}
+	next, err := repo.Conversations.ClaimNext(ctx, now.Add(2*time.Second))
+	if err != nil || next == nil || next.ID != other.ID {
+		t.Fatalf("damaged attachment blocked another account's queue: %+v, %v", next, err)
+	}
+	if err := repo.db.WithContext(ctx).Model(&runAttachmentRow{}).Where("turn_id = ?", item.ID).UpdateColumn("position", 0).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreign := *claimed
+	foreign.OwnerID = "other"
+	if images, err := repo.Conversations.LoadTurnImages(ctx, foreign); err == nil || len(images) != 0 {
+		t.Fatalf("loaded attachments for another account: %+v, %v", images, err)
+	}
+	images, err := repo.Conversations.LoadTurnImages(ctx, *claimed)
+	if err != nil || !slices.Equal(images, []run.Image{image}) || claimed.Payload.Images[0].Data != "" {
+		t.Fatalf("load images without changing the claimed turn: %+v, %v", images, err)
+	}
+}
+
+func TestRecoverInterruptedTurns(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "interrupted.db")
+	repo, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if repo != nil {
+			_ = repo.Close()
+		}
+	})
 	seedAccounts(t, repo, "alice", "bob")
 	started := time.Now().UTC()
 	recovered := started.Add(time.Second)
@@ -316,6 +485,13 @@ func TestRecoverInterruptedTurns(t *testing.T) {
 		}
 	}
 	if err := repo.db.WithContext(ctx).Model(&row{}).Where("id = ?", "lost").UpdateColumn("parts", "[{broken").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err = Open(ctx, path)
+	if err != nil {
 		t.Fatal(err)
 	}
 	for _, at := range []time.Time{recovered, queuedAt.Add(time.Second)} {
@@ -343,6 +519,10 @@ func TestRecoverInterruptedTurns(t *testing.T) {
 	transcript := assertTranscript("bob", "two", queuedAt, true, []run.TurnPart{partial, failure})
 	if len(transcript.Turns) != 2 || transcript.Turns[1].Status != run.Queued || !transcript.Turns[1].UpdatedAt.Equal(queuedAt) {
 		t.Fatalf("recovery changed the pending turn: %+v", transcript.Turns)
+	}
+	claimed, err := repo.Conversations.ClaimNext(ctx, queuedAt.Add(2*time.Second))
+	if err != nil || claimed == nil || claimed.ID != "pending" || claimed.Status != run.Running {
+		t.Fatalf("failed to resume the queue after recovery: %+v, %v", claimed, err)
 	}
 }
 
@@ -537,22 +717,40 @@ func TestOpenMigratesSessionAndQueueIndexes(t *testing.T) {
 	if repo.db.Migrator().HasIndex(&row{}, "idx_runs_session_status") {
 		t.Error("the superseded two-column index is still present")
 	}
+	var queuePartial bool
+	if err := repo.db.Raw(`SELECT partial FROM pragma_index_list('runs') WHERE name = 'idx_runs_queue'`).Row().Scan(&queuePartial); err != nil {
+		t.Fatal(err)
+	}
+	if !queuePartial {
+		t.Error("the queue index includes completed turns")
+	}
 	var plan []planStep
-	err = repo.db.Raw(`EXPLAIN QUERY PLAN
-		SELECT candidate.id FROM runs AS candidate
-		WHERE candidate.status = ? AND candidate.owner_id <> '' AND candidate.session_id <> ''
-		AND NOT EXISTS (
-			SELECT 1 FROM runs AS earlier WHERE earlier.session_id = candidate.session_id
-			AND earlier.sequence < candidate.sequence AND earlier.status IN ?
-		)
-		ORDER BY candidate.created_at, candidate.id LIMIT 1`, run.Queued, []run.Status{run.Queued, run.Running}).Scan(&plan).Error
+	stmt := eligibleTurns(repo.db.Session(&gorm.Session{DryRun: true})).
+		Order("candidate.created_at, candidate.id").Limit(1).Find(&[]struct{ ID string }{}).Statement
+	err = repo.db.Raw("EXPLAIN QUERY PLAN "+stmt.SQL.String(), stmt.Vars...).Scan(&plan).Error
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.ContainsFunc(plan, func(step planStep) bool {
-		return strings.Contains(step.Detail, "SEARCH earlier USING COVERING INDEX idx_runs_session_status_sequence (session_id=? AND status=? AND sequence<?)")
+	for _, expected := range []string{
+		"USING INDEX idx_runs_queue",
+		"SEARCH earlier USING COVERING INDEX idx_runs_session_status_sequence (session_id=? AND status=? AND sequence<?)",
+		"SEARCH executing USING COVERING INDEX idx_runs_executing_project",
+	} {
+		if !slices.ContainsFunc(plan, func(step planStep) bool { return strings.Contains(step.Detail, expected) }) {
+			t.Errorf("expected %s in the queued turn query plan: %+v", expected, plan)
+		}
+	}
+	if slices.ContainsFunc(plan, func(step planStep) bool { return strings.Contains(step.Detail, "TEMP B-TREE") }) {
+		t.Errorf("expected the queue index to satisfy the full sort: %+v", plan)
+	}
+	var recoveryPlan []planStep
+	if err := repo.db.Raw("EXPLAIN QUERY PLAN SELECT id FROM runs WHERE status = ?", run.Running).Scan(&recoveryPlan).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(recoveryPlan, func(step planStep) bool {
+		return strings.Contains(step.Detail, "USING INDEX idx_runs_executing_project")
 	}) {
-		t.Errorf("expected the earlier-turn check to use the covering index: %+v", plan)
+		t.Errorf("expected restart recovery to use the running-turn index: %+v", recoveryPlan)
 	}
 }
 

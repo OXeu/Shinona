@@ -243,6 +243,12 @@ func (w *Worker) run(ctx context.Context, active *activeTurn) (_ Result, err err
 	if err != nil {
 		return Result{}, err
 	}
+	if len(item.Payload.Images) != 0 {
+		item.Payload.Images, err = w.repo.LoadTurnImages(startup, item)
+		if err != nil {
+			return Result{}, fmt.Errorf("load turn attachments: %w", err)
+		}
+	}
 	history, err := w.repo.History(startup, item, 0)
 	if err != nil {
 		return Result{}, fmt.Errorf("load conversation: %w", err)
