@@ -1,5 +1,9 @@
 # Repository instructions
 
+## Documentation and code conventions
+
+- When the documentation and existing code disagree, follow the code's conventions and list every inconsistency you found in your final reply.
+
 ## Temporary files and directories
 
 - Never write to `/tmp` or its descendants, including through tools that default to the system temporary directory.
