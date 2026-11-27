@@ -10,6 +10,27 @@ import (
 	"testing"
 )
 
+func TestContainerStartupUsesIntegerSleepDurations(t *testing.T) {
+	dir := t.TempDir()
+	const sleep = `#!/bin/sh
+case "$1" in ''|*[!0-9]*) exit 2 ;; esac
+printf '%s\n' "$1"
+[ ! -f slept ] || exit 3
+: > slept
+`
+	if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte(sleep), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	args := DefaultContainerConfig().createArgs("fixture", "strict-image")
+	command := exec.CommandContext(t.Context(), "sh", args[len(args)-2:]...)
+	command.Dir = dir
+	output, err := command.CombinedOutput()
+	if err == nil || len(strings.Fields(string(output))) != 2 {
+		t.Fatalf("expected the idle command to wait again and exit if sleep fails: %q, %v", output, err)
+	}
+}
+
 func TestDockerCommandRoundTripsArgumentsAndInputThroughLoginShell(t *testing.T) {
 	dir := t.TempDir()
 	const stub = "#!/bin/sh\nprintf '%s\\000' \"$@\"\ncat\n"

@@ -112,13 +112,13 @@ Shinona bounds workspace requests independently of the sandbox's idle lifetime. 
 
 `SHINONA_WORKSPACE_CLEANUP_TIMEOUT_SECONDS` controls the time allowed to release each workspace or terminal resource (default 5, range 1–60). E2B uses it to stop interrupted commands and PTYs, discard newly created sandboxes that a project did not retain, and clear bindings after remote sandbox deletion. SSH uses it to close an unresponsive transport after command or terminal cancellation. Restart Shinona to apply startup changes.
 
-E2B and SSH share one sandbox per account and project across sessions and turns. Shinona uses E2B as the instance default when both providers are configured. A project keeps its assigned provider until you switch it from **Manage sandbox**. The optional **Terminal** panel sits below the chat. Drag the divider or focus it and use the arrow keys to resize. Each tab runs an independent interactive Bash shell in the project workspace. A conversation supports up to eight tabs, and an account supports up to 32. Shinona keeps shells detached when the panel is hidden or the browser disconnects.
+E2B and SSH share one sandbox per account and project across sessions and turns. Shinona uses E2B as the instance default when both providers are configured. A project keeps its assigned provider until you switch it from **Manage sandbox**. The optional **Terminal** panel sits below the chat. Drag the divider or focus it and use the arrow keys to resize. Each tab runs an independent interactive shell in the project workspace. The terminal uses Bash when available and falls back to `sh`. A conversation supports up to eight tabs, and an account supports up to 32. Shinona keeps shells detached when the panel is hidden or the browser disconnects.
 
 Each browser remembers the active tab and panel visibility by conversation and restores up to 256 KiB of recent output per tab. Closing a tab ends its shell. Archiving a conversation closes its tabs. Tabs live in the Shinona process and depend on the current project sandbox.
 
 Forward `/api/terminal/v1/` and `/api/terminal/v1` through the reverse proxy. Preserve the WebSocket upgrade and browser `Origin` for `/api/terminal/v1/connect`.
 
-Agent turns require an OpenAI-compatible endpoint that serves streaming Chat Completions. The E2B template needs Bash for workspace shell access.
+Agent turns require an OpenAI-compatible endpoint that serves streaming Chat Completions. The E2B template needs `sh` for workspace shell access.
 
 1. Enter the API root in **Settings → Model**, such as `https://api.openai.com/v1`.
 2. Set the API key.
@@ -129,7 +129,7 @@ The model picker requires a model catalog. [OpenAI model listing reference](http
 ### Composer
 
 - Attach PNG, JPEG, or WebP images using the picker, paste, or drag and drop. A turn accepts up to four images totaling 4 MiB. The endpoint and model must support images. User messages load their images separately from the transcript. Model requests include earlier images when the model accepts them.
-- In **Options**, select the model, permissions, and thinking effort for the next turn. **Read only** exposes the sandbox read tool. **Workspace access** also exposes write, Bash, and tools from the selected MCP server. Thinking effort depends on endpoint support. The context indicator updates when the model endpoint reports token usage. It shows the latest measured context usage and the model's context limit when available.
+- In **Options**, select the model, permissions, and thinking effort for the next turn. **Read only** exposes the sandbox read tool. **Workspace access** also exposes write, shell commands, and tools from the selected MCP server. Thinking effort depends on endpoint support. The context indicator updates when the model endpoint reports token usage. It shows the latest measured context usage and the model's context limit when available.
 - In **Options**, use **Set as default** to save those three choices to your account for newly opened composers. **Reset to defaults** restores the saved choices in the current composer. If a saved model disappears from the catalog, the composer uses the account's default model.
 - A conversation restores the options and MCP servers from its latest submitted turn. The browser remembers each conversation's unsent selection for the signed-in account and restores it when the page reloads.
 - During a turn, the composer button stops the run when the draft is empty and queues the draft when it has text or an image. Right-click the queue button or press **Shift+F10** to open the action menu. In **Settings → Preferences**, choose **Queue** or **Steer** for Enter during a run. Steer supplies text to pi at its next checkpoint. Stopping an active turn leaves its queued turns intact.
@@ -170,7 +170,7 @@ User-configured SSH hosts use public network addresses by default. An operator c
 
 The SSH provider keeps one container per account and project across runs and SSH connections. It creates new containers with UID and GID 65534, an owned home and workspace, all Linux capabilities dropped, and no-new-privileges enabled. The default limits are 2 CPUs, 4 GiB of memory with no additional swap, and 512 processes. Operators can override these settings for shared and personal SSH providers using the `SHINONA_SSH_CONTAINER_*` startup variables.
 
-The default Docker image is `buildpack-deps:bookworm-scm` and the default working directory is `/workspace`. Custom images need `sh`, `sleep`, `setsid`, and standard file utilities. They should contain a user entry for the configured UID if tools need to resolve its name. Terminals use Bash when installed and fall back to `sh`. SSH must allow two session channels on a terminal connection so its watchdog can stop jobs in the terminal's process session when the connection closes. The repository panel requires Git.
+The default Docker image is `buildpack-deps:bookworm-scm` and the default working directory is `/workspace`. Custom images need `sh`, `sleep`, `setsid`, and standard file utilities. Preloaded workspace files need permissions that let the configured user read or modify them. Include a user entry for the configured UID if tools need to resolve its name. Terminals use Bash when installed and fall back to `sh`. SSH must allow two session channels on a terminal connection so its watchdog can stop jobs in the terminal's process session when the connection closes. The repository panel requires Git.
 
 Shinona applies resource limits to existing containers when they next run. Their original user and capabilities remain in effect until the project sandbox is recreated. Export any workspace files you want to retain before using **Recreate sandbox**.
 
@@ -237,7 +237,7 @@ The worker runs until the agent finishes or errors, the user stops it, or the se
 
 Tools accept an optional integer `timeout` in seconds from the tool call. Without one, the tool inherits turn cancellation. MCP tools with a native timeout parameter use their own schema. Tool errors are sent to the assistant with any captured output. Workspace cleanup and result persistence keep separate deadlines.
 
-SQLite stores conversations, thinking previews, and tool previews. Prompts are limited to 8,000 Unicode code points, image attachments to four images totaling 4 MiB per submission, and REST request bodies to 6 MiB. The initial workspace tools are text read, text write, and Bash. File tool operations are capped at 64 KiB and Bash output at 16 KiB per stream.
+SQLite stores conversations, thinking previews, and tool previews. Prompts are limited to 8,000 Unicode code points, image attachments to four images totaling 4 MiB per submission, and REST request bodies to 6 MiB. The initial workspace tools are text read, text write, and the `bash` command tool. The command tool uses Bash when available and falls back to `sh`. File tool operations are capped at 64 KiB and command output at 16 KiB per stream.
 
 The API listens on loopback. The skeleton uses Vite for frontend development and has process-level sign-in throttling. Production serving, distributed rate limiting, provider quotas, and multi-worker coordination are outside this pass.
 

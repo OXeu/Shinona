@@ -117,7 +117,7 @@ bash .github/scripts/benchmark-ssh.sh go test -p 1 -cpu 2 -run '^$' \
   -bench '^BenchmarkSandboxAPI$/^ssh$' -benchmem -benchtime=5x -count=1 ./cmd/shinona
 ```
 
-E2B runs against a dedicated benchmark account using `SHINONA_BENCH_E2B_API_KEY` and `SHINONA_BENCH_E2B_TEMPLATE`. The template needs Bash, Git, and the usual Linux file utilities. For self-hosted E2B, set `SHINONA_BENCH_E2B_API_URL` and, if needed, `SHINONA_BENCH_E2B_PROXY_URL` and `SHINONA_BENCH_E2B_DOMAIN`. Each sandbox case uses a new project ID, cleans up its own resources, and can incur provider charges.
+E2B runs against a dedicated benchmark account using `SHINONA_BENCH_E2B_API_KEY` and `SHINONA_BENCH_E2B_TEMPLATE`. The template needs `sh`, Git, and the usual Linux file utilities. For self-hosted E2B, set `SHINONA_BENCH_E2B_API_URL` and, if needed, `SHINONA_BENCH_E2B_PROXY_URL` and `SHINONA_BENCH_E2B_DOMAIN`. Each sandbox case uses a new project ID, cleans up its own resources, and can incur provider charges.
 
 ```sh
 go test -p 1 -cpu 2 -run '^$' -bench '^BenchmarkSandboxAPI$/^e2b$' \

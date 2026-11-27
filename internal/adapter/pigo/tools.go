@@ -53,7 +53,7 @@ func tools(workspace sandbox.Workspace, writable bool) []agent.AgentTool {
 			},
 		},
 		agent.AgentTool{
-			Name: "bash", Label: "bash", Description: "Run a Bash command inside the sandbox workspace.",
+			Name: "bash", Label: "bash", Description: "Run a shell command in the workspace. Uses Bash if available, or POSIX sh.",
 			Parameters: toolParameters(ai.Prop("command", ai.String())),
 			Execute: func(ctx context.Context, _ string, args map[string]any, _ agent.ToolUpdateFunc) (agent.AgentToolResult, error) {
 				command := args["command"].(string)
@@ -63,12 +63,12 @@ func tools(workspace sandbox.Workspace, writable bool) []agent.AgentTool {
 				start := time.Now()
 				result, err := workspace.Exec(ctx, sandbox.Shell("-c", command))
 				if err != nil {
-					text := fmt.Sprintf("Bash failed after %s without an exit code.\n%s%s",
+					text := fmt.Sprintf("Command failed after %s without an exit code.\n%s%s",
 						time.Since(start).Round(time.Millisecond), clipPart(err.Error(), 1024), failedCommandOutput(result))
 					return toolFailure(text), nil
 				}
 				if result.ExitCode != 0 {
-					text := fmt.Sprintf("Bash exited with code %d.", result.ExitCode)
+					text := fmt.Sprintf("Command exited with code %d.", result.ExitCode)
 					if result.ExitDetail != "" {
 						text += " " + clipPart(result.ExitDetail, 1024)
 					}

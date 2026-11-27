@@ -16,6 +16,8 @@ const (
 	containerPolicyLabel = "org.shinona.sandbox.policy"
 	containerPolicy      = "1"
 	containerHome        = "/.shinona-home"
+	// Keep the container running with an integer duration even on small images.
+	containerIdle = "while sleep 86400; do :; done; exit 1"
 )
 
 type ContainerConfig struct {
@@ -58,7 +60,7 @@ func (c ContainerConfig) createArgs(name, template string) []string {
 		"--workdir", c.WorkDirectory, "--env", "HOME=" + containerHome,
 		"--entrypoint", "sh"}
 	args = append(args, c.limits()...)
-	return append(args, "--", template, "-c", "exec sleep infinity")
+	return append(args, "--", template, "-c", containerIdle)
 }
 
 func (c ContainerConfig) directories() (*bytes.Reader, error) {

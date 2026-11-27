@@ -87,7 +87,7 @@ func benchmarkE2BProvider(b *testing.B, repo *sqlite.Database) sandbox.ManagedPr
 	}
 	template := os.Getenv("SHINONA_BENCH_E2B_TEMPLATE")
 	if template == "" {
-		b.Fatal("set SHINONA_BENCH_E2B_TEMPLATE to a benchmark template with bash and git")
+		b.Fatal("set SHINONA_BENCH_E2B_TEMPLATE to a benchmark template with sh and git")
 	}
 	provider, err := e2b.New(e2b.Config{
 		APIKey: key, Template: template, Timeout: 5 * time.Minute, OnTimeout: sandbox.TimeoutKill,
@@ -208,7 +208,7 @@ func (s *benchmarkSandbox) execProject(b *testing.B, script string) string {
 			b.Error(err)
 		}
 	}()
-	result, err := ws.Exec(ctx, sandbox.Command{Program: "/bin/bash", Args: []string{"-ec", script}})
+	result, err := ws.Exec(ctx, sandbox.Command{Program: "sh", Args: []string{"-ec", script}})
 	if err != nil || result.ExitCode != 0 {
 		b.Fatalf("run sandbox fixture command: %+v, %v", result, err)
 	}
@@ -226,13 +226,23 @@ func (s *benchmarkSandbox) gitFixture(b *testing.B) string {
 		git config user.name Benchmark
 		git config user.email benchmark@example.invalid
 		mkdir src
-		for i in {1..40}; do printf 'fixture %s\n' "$i" > "src/file-$i.txt"; done
-		for i in {1..1024}; do printf 'preview fixture %04d\n' "$i"; done > src/file-2.txt
+		i=1
+		while [ "$i" -le 40 ]; do
+			printf 'fixture %s\n' "$i" > "src/file-$i.txt"
+			i=$((i+1))
+		done
+		i=1
+		while [ "$i" -le 1024 ]; do
+			printf 'preview fixture %04d\n' "$i"
+			i=$((i+1))
+		done > src/file-2.txt
 		git add src
 		git commit -qm 'Fixture tree'
-		for i in {1..11}; do
+		i=1
+		while [ "$i" -le 11 ]; do
 			printf 'version %s\n' "$i" > src/file-1.txt
 			git commit -qam "Fixture version $i"
+			i=$((i+1))
 		done
 		printf 'modified\n' >> src/file-1.txt
 		printf 'untracked\n' > src/local.txt
