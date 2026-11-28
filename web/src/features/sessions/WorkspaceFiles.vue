@@ -13,7 +13,6 @@ const parentFolder = computed(() => {
   const separator = props.folder.lastIndexOf('/')
   return separator < 0 ? '.' : props.folder.slice(0, separator)
 })
-const rootLabel = computed(() => t('repository.currentRoot', { path: props.root || t('workspace.name') }))
 const folderName = computed(() => props.folder === '.' ? t('workspace.name') : props.folder)
 
 function openEntry(entry: WorkspaceEntry) {

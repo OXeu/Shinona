@@ -32,12 +32,6 @@ function openPage(close: () => void, name: 'settings' | 'account' | 'admin-users
   void router.push({ name })
 }
 
-function goBack() {
-  const back = (window.history.state as { back?: unknown } | null)?.back
-  if (typeof back === 'string' && back && back !== '/login') router.back()
-  else void router.push({ name: 'sessions' })
-}
-
 function signOut(close: () => void) {
   close()
   emit('signOut')
